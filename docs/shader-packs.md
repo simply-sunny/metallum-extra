@@ -231,3 +231,48 @@ Start the game with these JVM arguments:
   `MxGlobals` and are shown for every pack.
 - No inheritance or merging between packs, and no shader downloads.
 - Only Metal on macOS, and only with Sodium. Not together with Shine (see details.md).
+
+## Packs in the Iris layout (preview)
+
+A ZIP with a `shaders/` folder and **no** `pack.json` is read as an Iris/OptiFine-style pack. This is the beginning of
+Iris compatibility, not all of it: it runs the full-screen stages of a frame over named buffers, and the game's own shaders
+still draw the world.
+
+What runs, in the order Iris runs it, with the programs found as `shaders/world0/<name>.vsh|fsh` (or `world-1/`, `world1/`,
+or `shaders/<name>.vsh|fsh` for every dimension without its own):
+
+| When | Programs |
+|---|---|
+| Before the world is drawn | `begin`, `begin1` ... `begin99`, then `prepare`, `prepare1` ... |
+| Between opaque and translucent terrain | `deferred`, `deferred1` ... (the opaque world is `colortex0`; what they write goes back into the world) |
+| After the world | `composite`, `composite1` ... `composite99`, then `final` |
+
+Numbers count as numbers (`composite10` runs after `composite2`). A program needs both its `.vsh` and its `.fsh`; one
+missing from the pack is simply not run. If there is no `final`, the screen shows `colortex0`.
+
+**Buffers.** `colortex0` to `colortex15` (and the older names `gcolor`, `gdepth`, `gnormal`, `composite`, `gaux1` to `gaux4`)
+and `depthtex0` to `depthtex2` can be sampled; only the ones the programs name are allocated.
+- A program's fragment outputs go to the buffers in its `/* RENDERTARGETS: 0,3 */` (or `/* DRAWBUFFERS:03 */`) comment, in
+  order: output 0 to the first, output 1 to the second. Without one, outputs go to buffers 0, 1, 2 ... as far as the
+  program declares outputs. At most 8 at once.
+- Every buffer is two textures. A program reads the main one and draws into the other, and then they swap, for every buffer it
+  wrote. `flip.<program>.<buffer>=false` in `shaders.properties` (for example `flip.composite.colortex1=false`) switches that
+  off for one buffer: the program then draws straight into the texture other programs read, and so must not sample that buffer.
+- Buffers are cleared at the start of every frame: `colortex0` to the fog color, `colortex1` to white, the others to
+  transparent black. In a program: `const bool colortex3Clear = false;` keeps a buffer between frames,
+  `const vec4 colortex3ClearColor = vec4(...);` sets the color, and `const int colortex3Format = RGBA16F;` the format (`R8`,
+  `RG8`, `RGBA8`, `R16`, `RG16`, `RGBA16`, `R16F`, `RG16F`, `RGBA16F`, `R32F`, `RG32F`, `RGBA32F`; three-channel and packed
+  formats are stored with four channels).
+- `depthtex1` is the depth before translucent terrain, `depthtex0` the depth after it. Translucent terrain only changes the
+  depth where the game's own translucent shader wrote it (the opaque pixels of a glass texture, not its see-through middle), until
+  the `gbuffers_water` program is supported. `depthtex2` (no hand) is the same as `depthtex1`: the hand is drawn after everything.
+- `program.<name>.enabled=false` in `shaders.properties` switches a program off.
+
+**Not run yet** (they are found and listed in the log): `setup`, `shadow`, `shadowcomp`, every `gbuffers_*` program,
+compute shaders (`.csh`), geometry and tessellation shaders. A program that reads `shadowtex*`, `noisetex`, `shadowcolor*`
+or a buffer above `colortex15` is refused with the name. Programs must be written in modern GLSL (`#version 330`, `in`/`out`,
+`layout(location = n) out vec4 name;`, `gl_VertexID` for the vertex); the old `varying`, `gl_FragData` and `ftransform()` forms
+need the standard uniforms and vertex inputs that come next. While such a pack is in use, the built-in effects (shadows,
+sky, bloom, edges, ambient occlusion) are off.
+
+The test packs in `TestPacks.writeIrisPacks` are small examples of each rule above.

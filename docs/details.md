@@ -54,6 +54,13 @@ The shader files are plain GLSL in `assets/metallum-extra/shaders/` inside the j
 Cost: on an M4 Max at the default 8-chunk shadow distance, about a third of the frame rate in a forest scene
 (roughly 240 FPS without, 160 with). Shadows are most of that.
 
+The terrain part of the shadow map is cached: it is drawn again only when the sun has turned 0.2 degrees, you have
+walked 8 blocks from the map's center (the map is 8 blocks larger than the shadow distance to allow for that),
+Sodium changed a section's mesh, or a setting or the pack changed. On the other frames it is copied, and only mobs,
+items and the player are drawn on top. In a test scene this took the GPU time per frame from 11.1 ms to 6.1 ms and
+the terrain draw calls from about 5000 to about 1200 per frame, with the same picture.
+`-Dmetallumextra.noShadowCache=true` turns the cache off for comparing.
+
 Limits, as tested:
 - **Not together with Shine.** Shine replaces the same terrain shader with one of its own (colored light, its
   own water, caustics, foliage wind, bloom masks drawn into extra render targets), and both cannot own it at

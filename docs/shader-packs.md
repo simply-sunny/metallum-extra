@@ -276,3 +276,72 @@ need the standard uniforms and vertex inputs that come next. While such a pack i
 sky, bloom, edges, ambient occlusion) are off.
 
 The test packs in `TestPacks.writeIrisPacks` are small examples of each rule above.
+
+### Standard uniforms in Iris-layout packs
+
+A program declares the Iris uniforms it needs the usual way (`uniform mat4 gbufferModelView;`) and reads them by name. Metal has no
+loose uniforms, so the mod takes those declarations out and puts the same names in one `std140` block, `IrisUniforms`, per program;
+the program's code does not change. Provided now:
+
+- **Matrices:** `gbufferModelView`, `gbufferModelViewInverse`, `gbufferProjection`, `gbufferProjectionInverse`,
+  `gbufferPreviousModelView`, `gbufferPreviousProjection`.
+- **Positions (vec3):** `cameraPosition`, `previousCameraPosition`, `sunPosition`, `moonPosition`, `shadowLightPosition`, `upPosition`
+  (the last four in view space, 100 long), `fogColor`, `skyColor`.
+- **Floats:** `eyeAltitude`, `sunAngle`, `shadowAngle`, `rainStrength`, `wetness`, `thunderStrength`, `frameTime`, `frameTimeCounter`,
+  `viewWidth`, `viewHeight`, `aspectRatio`, `screenBrightness`, `near`, `far`, `nightVision`, `blindness`, `darknessFactor`.
+- **Integers:** `frameCounter`, `worldTime`, `worldDay`, `moonPhase`, `isEyeInWater`, and `eyeBrightness`, `eyeBrightnessSmooth` (ivec2).
+
+Conventions are Iris's, not the game's own:
+- `gbufferProjection` is an ordinary OpenGL perspective projection with `near` 0.05 and `far` the render distance in blocks (chunks times 16),
+  and the depth textures hold OpenGL depth to match: 0 at the near plane, 1 at the far plane. So
+  `gbufferProjectionInverse * vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0)` divided by its `w` is the view-space position.
+  (The game itself draws with depth running the other way; a full-screen pass converts it when `depthtex0` or `depthtex1` is read.)
+- Buffers have OpenGL orientation: row 0 and `texcoord.y = 0` are the bottom of the screen.
+- `sunAngle` is 0 at sunrise, 0.25 at noon, 0.5 at sunset and 0.75 at midnight. `shadowAngle` is `sunAngle` by day and `sunAngle - 0.5` by night.
+  `sunPathRotation` (degrees) is read from `const float sunPathRotation = ...;` in the programs, and tilts the sun's and moon's path.
+- `wetness` follows `rainStrength` with a half-life of 600 ticks, `eyeBrightnessSmooth` follows `eyeBrightness` with one of 10 ticks.
+- `blindness` is 1 while the effect is on and 0 otherwise (the game fades it, and this does not yet).
+- `frameTimeCounter` is real seconds, so it also runs while the game is paused. `cameraPosition` is a float of the true position;
+  far from the origin it loses precision, as in Iris without `cameraPositionFract`.
+
+An Iris uniform that is not provided yet is refused when the pack loads, with its name: the shadow matrices (with the shadow stage),
+the per-object ones (`entityId`, `entityColor`, ...; with the `gbuffers_*` programs), `centerDepthSmooth`, `fogStart`, `fogEnd`, the
+`...Fract`/`...Int` camera forms, held items, biomes. Custom uniforms from `shaders.properties` are not supported yet.
+`const int colortexNFormat = RGBA16F;` lines are removed before compiling, since the format names are not GLSL.
+
+### Terrain drawn by a pack's `gbuffers_*` programs
+
+Sodium draws the terrain, and it draws it with the pack's program when the pack has one. For each layer Sodium draws, the program is the
+first that exists in Iris's order:
+
+| Layer | Programs tried, in order |
+|---|---|
+| Solid terrain | `gbuffers_terrain_solid`, `gbuffers_terrain`, `gbuffers_textured_lit`, `gbuffers_textured`, `gbuffers_basic` |
+| Cut-out terrain (leaves, plants) | `gbuffers_terrain_cutout`, `gbuffers_terrain`, then the same three |
+| Translucent terrain (water, glass, ice) | `gbuffers_water`, `gbuffers_terrain`, then the same three |
+
+A layer with none of them is drawn with the game's own shader. The other `gbuffers_*` programs (entities, items, the hand, particles, sky,
+weather ...) are found and listed in the log but not run yet.
+
+Vertex inputs (the `core` profile names, `#version 330 core`): declare `in vec3 vaPosition;` and the others as usual.
+- `vaPosition` (vec3): the vertex in the chunk's region; add `chunkOffset` (uniform, vec3) for the position relative to the camera.
+- `vaColor` (vec4): the vertex color, alpha 1. `vaUV0` (vec2): the atlas coordinate. `vaUV2` (ivec2): the light map coordinate, 0 to 240.
+- `vaNormal` (vec3): the direction the quad faces, one of the six axes; a quad that faces none of them closely (plants) reads as up.
+  Sodium's mesh has no normals, so the mod writes the direction into spare bits when it builds the mesh.
+- `mc_Entity` (vec2): `x` is -1 (block ids from `block.properties` are not supported yet), `y` is 1 for fluids and -1 for everything else.
+
+Uniforms and samplers: `modelViewMatrix`, `modelViewMatrixInverse`, `projectionMatrix`, `projectionMatrixInverse`, `normalMatrix` (mat3),
+`chunkOffset`, `textureMatrix` (identity), `alphaTestRef` (0 for solid terrain, 0.5 for cut-out, 0.01 for translucent), `atlasSize`,
+`gtexture` (the block atlas), `lightmap`, and the standard uniforms above. `modelViewMatrix * vec4(vaPosition + chunkOffset, 1.0)` is in view
+space; `projectionMatrix` is the one the game's own depth buffer is drawn with, so the program's depth agrees with everything else the game draws.
+A program that draws the world cannot sample `colortexN` or `depthtexN` (Iris gives it the atlas there; this version refuses it).
+
+Outputs: `/* RENDERTARGETS: 0,1,2 */` as usual; the first output must go to `colortex0`, which is the game's own image. The other outputs go to the
+buffers named, which later programs read: terrain is drawn into the buffers' main textures and nothing flips. The buffers are cleared at
+the start of the frame, so only what the pack's programs draw into them is there; entities, the sky and the hand are drawn with the game's
+own shaders for now and write `colortex0` only.
+
+Not provided yet, and refused by name when the pack loads: `mc_midTexCoord`, `at_tangent`, `at_midBlock`, `vaUV1`, `mc_chunkFade`, the
+`normals` and `specular` samplers, geometry shaders, and the compatibility profile (`gl_Vertex`, `gl_Color`, `ftransform()`, `varying`,
+`gl_FragData`, `texture2D` ...; the next step translates it, and until then the error names the first such word it finds).
+Sodium's fade-in of new chunks is not applied, and the atlas is read with Sodium's own coordinate nudge.

@@ -11,7 +11,8 @@ folder next to Metallum.
 
 ## Features
 - **Shaders** (experimental, off by default): sun and moon shadows, reflective water, glow, colored light,
-  sun rays, ambient occlusion and a new sky. One built-in look; it does not load OptiFine or Iris shader packs.
+  sun rays, ambient occlusion and a new sky. One built-in look, and shader packs of your own as ZIP files
+  (choose one with the **I** key; to make one see [docs/shader-packs.md](docs/shader-packs.md)). It does not load OptiFine or Iris shader packs.
 - **Unlocked frame rate:** with VSync off, the game no longer pauses to wait for the screen. Higher FPS and
   fewer small stutters.
 - **Smooth chunk crossing:** removes the freeze when you move into a new chunk at very high render distances.

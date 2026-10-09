@@ -6,8 +6,8 @@ For the short version see the [README](../README.md).
 ## Features
 
 ### Shaders (`shaders.enabled`, off by default)
-A shader pipeline of Metallum Extra's own, written for Metal. It is one fixed look, built in; it does **not** load
-OptiFine or Iris shader packs. Needs Sodium. Switch it on under **Video Settings → Metallum Extra → Shaders**.
+A shader pipeline of Metallum Extra's own, written for Metal. It comes with one built-in look and can load shader
+packs written for it (below); it does **not** load OptiFine or Iris shader packs. Needs Sodium. Switch it on under **Video Settings → Metallum Extra → Shaders**.
 
 What it draws:
 - **Sun and moon light with shadows.** Terrain, mobs, block entities, dropped items and the player (in first
@@ -37,7 +37,7 @@ What it draws:
 - **Shine on smooth things:** polished stone, glass, ice and metal catch the sun; everything is wet and shiny in rain.
 - **Night sky:** stars that twinkle, the band of the Milky Way, and a halo around the moon.
 
-A **Shader Quality** preset (Low, Medium, High, Ultra; Medium by default) sets the expensive parts: shadow
+A **Shader Quality** preset (on the Shader Options screen) (Low, Medium, High, Ultra; Medium by default) sets the expensive parts: shadow
 sharpness and distance, reflections, ambient occlusion and sun rays. Each part also has its own switch (Shadows,
 Glow, Water Reflections, Moving Water and Plants, Sun Rays, Ambient Occlusion, Colored Light, Smooth Edges), and all of them
 change while the game is running; changing one makes the preset read Custom. On an M4 Max in a forest scene:
@@ -162,6 +162,7 @@ The same settings appear in two places, with the same names:
 | In game | Config key |
 |---|---|
 | Shaders | `shaders.enabled` (off by default) |
+| Shader pack | `shaders.pack` (a ZIP's file name, or `builtin`) |
 | Shadows | `shaders.shadows` |
 | Glow | `shaders.bloom` |
 | Water Reflections | `shaders.waterReflections` |
@@ -205,6 +206,54 @@ game won't crash. To add a new release:
    against the new source. The mod is compiled against the oldest accepted version, so it must only call Metallum
    methods that all of them have; where they differ, branch on `MetallumVersion`.
 4. Launch once more on the oldest version (`./gradlew runClient`).
+
+### Shader packs
+Open the shader menu from **Video Settings → Shaders** (a link under Metallum Extra in Sodium's sidebar), from Mod
+Menu → Metallum Extra → Shaders..., or with the **I** key. The menu has OFF and the packs in a list, **Shaders Folder**,
+**Done** (which reads **Apply** while a choice is not yet applied) and **Shader Options...** (quality and each effect;
+these settings are no longer on the Metallum Extra page). Escape closes the menu and drops what was not applied. **Drag a pack's ZIP onto the menu** to copy it into
+`shaderpacks/` and list it (only ZIPs with a `pack.json`; an existing file is never overwritten).
+
+There is no separate on/off setting any more: OFF in the list is off. Three keys are in Controls under Miscellaneous:
+**Reload Current Shaders** (R; does nothing while shaders are off), **Toggle Shaders** (K) and **Open Shaders Menu** (I).
+Reload and toggle say what they did in the chat, as Iris does ("Toggled shaders to <pack>!", "Shaders disabled!",
+"Shaders reloaded"), unless **Shader Chat Messages** is switched off (Metallum Extra page; then the shaders never write to the chat).
+The `shaderpacks/` folder of the game instance is read every time the menu opens.
+OFF switches shaders off without forgetting the pack (`shaders.pack`).
+
+A pack is an ordinary ZIP; its name without `.zip` is its name in the menu:
+```
+Example.zip
+├── pack.json          {"format": 1}
+└── shaders/
+    ├── override/      minecraft/core/..., sodium/blocks/...   (replace the game's and Sodium's shaders)
+    ├── program/       fullscreen.vsh, edges.fsh, ...          (this mod's own passes)
+    └── lib/           anything the shaders #include "..."
+```
+- **Complete and independent.** A pack must hold every file in `PackManager.REQUIRED` (the same files as the built-in
+  `assets/metallum-extra/shaders/`) and every `#include` must resolve inside the same ZIP. Nothing is ever taken from
+  the built-in shaders or another pack; an incomplete pack is listed in red with the reason and cannot be chosen.
+  ZIPs without a `pack.json` (Iris/OptiFine packs) are ignored. Two ZIPs with the same name, or one named like the
+  built-in pack, are refused.
+- **Switching** happens at the start of a frame; compiled pipelines are thrown away and rebuilt from the new pack.
+  The ZIP is read into memory when the menu opens, so editing the file does not disturb a pack in use; press Apply
+  again to read a changed ZIP.
+- **Mistakes in a pack** (bad GLSL, a missing uniform) show when a pipeline is first compiled. The pack is put aside
+  with the shader's name and the compiler's message in the log and in the menu, the previously working pack (or the
+  built-in shaders) takes over, and the game keeps running. Selecting the pack again tries it again.
+- If the saved pack is missing at startup, the built-in shaders are used and a line is logged; the saved choice is kept.
+
+**Translation cache.** The conversion of a shader from SPIR-V to Metal text (SPIRV-Cross) is kept in
+`cache/metallum-extra/shaders/<sha256>.msl`, keyed by the SPIR-V, vertex input formats, conversion options and the
+versions of this mod, Metallum and LWJGL. Packs with identical shaders share entries, and switching back to a pack does
+not convert again. Damaged entries are ignored; the folder can be deleted at any time. The log says
+`MSL cache hits: N, MSL translations: M` after each burst of compiling. `-Dmetallumextra.noMslCache=true` turns it off.
+Metal pipelines are not cached (they belong to the running GPU).
+
+**Making a pack:** see [shader-packs.md](shader-packs.md).
+
+**Tests.** `gradlew packTest` (also part of `check`) tests loading, validation and the cache without the game.
+`src/test/pack-regression/run.sh` plays RedToBlue and BlueToRed through the game and checks the pictures; see its README.
 
 ## Working on the shaders
 Start the dev client with `-Dmetallumextra.shaderDir=<path to src/main/resources/assets/metallum-extra/shaders>` to

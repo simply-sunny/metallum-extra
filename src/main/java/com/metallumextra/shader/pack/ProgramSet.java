@@ -20,26 +20,32 @@ import java.util.regex.Pattern;
  * ({@code world0/}, {@code world-1/}, {@code world1/}) is used in that dimension, and one in the {@code shaders/} folder
  * itself in every dimension that has none of its own. Programs the pack leaves out are simply not run.
  * <p>
- * Only the programs listed in {@link #SUPPORTED} are run so far; the pack's other programs are listed in
+ * The programs of the stages in {@link Stage} that {@link Stage#supported()} are run; the pack's other programs
+ * (the world's {@code gbuffers_*} and {@code shadow} ones, {@code setup}, compute shaders) are listed in
  * {@link #unsupported()} and left alone.
  */
 public final class ProgramSet {
-    /** The programs this version can run. */
-    public static final List<String> SUPPORTED = List.of("final");
+    /** The stages of a frame that run a program over the whole screen, in the order Iris runs them in. */
+    public enum Stage {
+        BEGIN, SHADOWCOMP, PREPARE, DEFERRED, COMPOSITE, FINAL;
+
+        /** Whether this version runs the stage's programs; the others are found and reported. */
+        public boolean supported() {
+            return this != SHADOWCOMP;
+        }
+    }
 
     public static final List<String> DIMENSIONS = List.of("world0", "world-1", "world1");
 
-    /** The name of every program Iris defines, without its dimension folder or file extension (numbers and variants included). */
-    private static final Pattern FILE = Pattern.compile("(?:(world-?\\d+)/)?([a-z][a-z0-9_]*)\\.(vsh|fsh|gsh|tcs|tes|csh)");
-    private static final Pattern PROGRAM = Pattern.compile("setup\\d*|begin\\d*|prepare\\d*|deferred\\d*|composite\\d*|shadowcomp\\d*|shadow|final"
-            + "|(?:dh_)?gbuffers_[a-z_]+|dh_shadow|shadow_[a-z]+");
+    /** A program's file name: its stage, then for most stages a number from 1 to 99 (none means the first). */
+    private static final Pattern NUMBERED = Pattern.compile("(begin|shadowcomp|prepare|deferred|composite)([1-9]\\d?)?");
+    private static final Pattern FILE = Pattern.compile("(?:(world-?\\d+)/)?([a-z][a-z0-9_]*)\\.(vsh|fsh|gsh|csh|tcs|tes)");
+    /** Every other name Iris defines, which this version finds and reports without running. */
+    private static final Pattern OTHER = Pattern.compile("setup[1-9]?\\d?|shadow|shadow_[a-z]+|dh_shadow|(?:dh_)?gbuffers_[a-z_]+|(?:begin|shadowcomp|prepare|deferred|composite)[1-9]?\\d?_[a-z]");
     private static final Pattern SAMPLER = Pattern.compile("(?m)^\\s*uniform\\s+(?:(?:highp|mediump|lowp)\\s+)?sampler2D\\s+(\\w+)\\s*;");
 
-    /** The samplers a program may declare so far; see {@link #samplers}. */
-    public static final Set<String> SUPPORTED_SAMPLERS = Set.of("colortex0", "depthtex0");
-
-    /** One program: where its two files are (a path inside the pack), null where the pack has none. */
-    public record Program(String name, @Nullable String vertex, @Nullable String fragment) {
+    /** One program: its stage, its number within the stage, and where its files are (a path inside the pack; null where it has none). */
+    public record Program(String name, Stage stage, int number, @Nullable String vertex, @Nullable String fragment, boolean geometry) {
         public boolean complete() {
             return vertex != null && fragment != null;
         }
@@ -71,23 +77,49 @@ public final class ProgramSet {
     public static ProgramSet discover(final ShaderPack pack, final @Nullable String dimension) {
         Set<String> files = pack.files();
         Set<String> names = new TreeSet<>();
+        Set<String> computeOnly = new TreeSet<>();
         List<String> unsupported = new ArrayList<>();
         for (String file : files) {
             Matcher match = FILE.matcher(file);
-            if (!match.matches() || !PROGRAM.matcher(match.group(2)).matches()) continue;
+            if (!match.matches()) continue;
             String folder = match.group(1);
             if (folder != null && !folder.equals(dimension)) continue;
-            names.add(match.group(2));
+            String name = match.group(2);
+            if (name.equals("final") || NUMBERED.matcher(name).matches()) {
+                if (match.group(3).equals("vsh") || match.group(3).equals("fsh")) names.add(name);
+                else if (match.group(3).equals("csh")) computeOnly.add(name);
+            } else if (OTHER.matcher(name).matches() && !unsupported.contains(name)) {
+                unsupported.add(name);
+            }
+        }
+        for (String name : computeOnly) {
+            if (!names.contains(name)) unsupported.add(name + " (compute only)");
         }
         List<Program> programs = new ArrayList<>();
         for (String name : names) {
-            if (!SUPPORTED.contains(name)) {
-                unsupported.add(name);
+            Stage stage = stageOf(name);
+            if (!stage.supported()) {
+                unsupported.add(name + " (needs shadow maps)");
                 continue;
             }
-            programs.add(new Program(name, find(files, dimension, name, "vsh"), find(files, dimension, name, "fsh")));
+            programs.add(new Program(name, stage, numberOf(name), find(files, dimension, name, "vsh"), find(files, dimension, name, "fsh"),
+                    find(files, dimension, name, "gsh") != null));
         }
+        programs.sort(java.util.Comparator.comparing(Program::stage).thenComparingInt(Program::number));
+        unsupported.sort(String::compareTo);
         return new ProgramSet(dimension == null ? "" : dimension, List.copyOf(programs), List.copyOf(unsupported), properties(pack));
+    }
+
+    private static Stage stageOf(final String name) {
+        if (name.equals("final")) return Stage.FINAL;
+        Matcher match = NUMBERED.matcher(name);
+        match.matches();
+        return Stage.valueOf(match.group(1).toUpperCase(java.util.Locale.ROOT));
+    }
+
+    private static int numberOf(final String name) {
+        Matcher match = NUMBERED.matcher(name);
+        return match.matches() && match.group(2) != null ? Integer.parseInt(match.group(2)) : 0;
     }
 
     private static @Nullable String find(final Set<String> files, final @Nullable String dimension, final String name, final String extension) {
@@ -155,6 +187,42 @@ public final class ProgramSet {
         return result;
     }
 
+    /** The programs of a stage that can run, in the order they run in. */
+    public List<Program> runnable(final Stage stage) {
+        List<Program> result = new ArrayList<>();
+        for (Program program : runnable()) {
+            if (program.stage == stage) result.add(program);
+        }
+        return result;
+    }
+
+    /** Programs with a geometry shader, which this version cannot run. */
+    public List<String> withGeometry() {
+        List<String> result = new ArrayList<>();
+        for (Program program : runnable()) {
+            if (program.geometry) result.add(program.name);
+        }
+        return result;
+    }
+
+    /**
+     * The buffers whose flip after {@code program} is switched off, from {@code flip.<program>.<buffer>=false} in
+     * {@code shaders.properties}. Buffers are named {@code colortexN}.
+     */
+    public Set<Integer> flipsOff(final String program) {
+        Set<Integer> result = new TreeSet<>();
+        String prefix = "flip." + program + ".colortex";
+        for (String key : properties.stringPropertyNames()) {
+            if (!key.startsWith(prefix) || !properties.getProperty(key).strip().equalsIgnoreCase("false")) continue;
+            try {
+                result.add(Integer.parseInt(key.substring(prefix.length())));
+            } catch (NumberFormatException e) {
+                // not a buffer name
+            }
+        }
+        return result;
+    }
+
     /**
      * Checks that a standard pack has something this version can run, and that what it has can be.
      *
@@ -168,19 +236,12 @@ public final class ProgramSet {
             for (String name : set.incomplete()) {
                 throw new PackException(name + " needs both " + name + ".vsh and " + name + ".fsh");
             }
-            for (Program program : set.runnable()) {
+            for (String name : set.withGeometry()) {
+                throw new PackException(name + " has a geometry shader, which this version cannot run yet");
+            }
+            if (!set.runnable().isEmpty()) {
                 any = true;
-                try {
-                    String vertex = pack.load(program.vertex);
-                    String fragment = pack.load(program.fragment);
-                    for (String sampler : samplers(vertex + "\n" + fragment)) {
-                        if (!SUPPORTED_SAMPLERS.contains(sampler)) {
-                            throw new PackException(program.name + " reads " + sampler + ", which this version cannot provide yet");
-                        }
-                    }
-                } catch (IllegalStateException e) {
-                    throw new PackException(e.getMessage(), e);
-                }
+                IrisPlan.build(pack, dimension);
             }
             for (String name : set.unsupported()) {
                 if (!others.contains(name)) others.add(name);
@@ -188,7 +249,8 @@ public final class ProgramSet {
         }
         if (!any) {
             throw new PackException("None of its programs can run in this version"
-                    + (others.isEmpty() ? " (it has none)" : " (it has " + String.join(", ", others.subList(0, Math.min(5, others.size()))) + (others.size() > 5 ? " and more" : "") + "; only " + String.join(", ", SUPPORTED) + " runs so far)"));
+                    + (others.isEmpty() ? " (it has none)" : " (it has " + String.join(", ", others.subList(0, Math.min(5, others.size()))) + (others.size() > 5 ? " and more" : "")
+                    + "; only begin, prepare, deferred, composite and final run so far)"));
         }
     }
 }

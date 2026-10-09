@@ -1,6 +1,7 @@
 package com.metallumextra;
 
 import com.metallumextra.shader.pack.BuiltinPack;
+import com.metallumextra.shader.pack.IrisPlan;
 import com.metallumextra.shader.pack.PackException;
 import com.metallumextra.shader.pack.PackManager;
 import com.metallumextra.shader.pack.PackOption;
@@ -8,6 +9,8 @@ import com.metallumextra.shader.pack.PackOptions;
 import com.metallumextra.shader.pack.ProgramSet;
 import com.metallumextra.shader.pack.ShaderPack;
 import com.metallumextra.shader.pack.TranslationCache;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import com.metallumextra.shader.pack.ZipPack;
 
 import java.io.IOException;
@@ -38,6 +41,11 @@ public final class PackTests {
             System.out.println(checks + " checks, " + failures + " failed");
             System.exit(failures > 0 ? 1 : 0);
         }
+        if (args.length == 2 && args[0].equals("iris")) {
+            iris(Path.of(args[1]));
+            System.out.println(checks + " checks, " + failures + " failed");
+            System.exit(failures > 0 ? 1 : 0);
+        }
         if (args.length >= 3 && args[0].equals("compare")) {
             compare(Path.of(args[1]), Path.of(args[2]), args.length > 3 ? Double.parseDouble(args[3]) : 0.5, args.length > 4 ? Double.parseDouble(args[4]) : 1.0);
             System.out.println(checks + " checks, " + failures + " failed");
@@ -49,6 +57,7 @@ public final class PackTests {
             loading(work.resolve("loading"));
             options(work.resolve("options"));
             standardLayout(work.resolve("standard"));
+            irisPlans(work.resolve("plans"));
             discovery(work.resolve("discovery"));
             translationCache(work.resolve("cache"));
         } finally {
@@ -58,6 +67,257 @@ public final class PackTests {
         }
         System.out.println(checks + " checks, " + failures + " failed");
         if (failures > 0) System.exit(1);
+    }
+
+    // ---- the multi-pass pipeline test: src/test/iris-pipeline/run.sh ----
+
+    /** A program the pipeline ran: the frame, its stage and name, and the buffers it wrote. */
+    private record Run(int frame, String stage, String program, String writes) {
+    }
+
+    /** What a program drew into a buffer: five pixels read back, as r, g, b, a. */
+    private record Pixels(int frame, String program, int buffer, int width, int height, int[][] pixel) {
+    }
+
+    private static final Pattern RUN_LINE = Pattern.compile("iris frame (\\d+) stage (\\w+) program (\\w+) writes (\\[[\\d, ]*\\])");
+    private static final Pattern PIXEL_LINE = Pattern.compile("iris frame (\\d+) program (\\w+) colortex(\\d+) (\\d+)x(\\d+) pixels(.*)");
+    private static final Pattern PIXEL = Pattern.compile("\\((\\d+),(\\d+),(\\d+),(\\d+)\\)");
+
+    /** Everything the log said while one pack was the one asked for: from its {@code pack} step to the next. */
+    private static final class Section {
+        final String pack;
+        final List<Run> runs = new ArrayList<>();
+        final List<Pixels> pixels = new ArrayList<>();
+
+        Section(final String pack) {
+            this.pack = pack;
+        }
+
+        List<String> order(final int frame) {
+            List<String> result = new ArrayList<>();
+            for (Run run : runs) if (run.frame == frame) result.add(run.program);
+            return result;
+        }
+
+        List<Integer> frames() {
+            List<Integer> result = new ArrayList<>();
+            for (Run run : runs) if (!result.contains(run.frame)) result.add(run.frame);
+            return result;
+        }
+
+        /** What {@code program} drew into {@code buffer}, frame by frame. */
+        List<Pixels> drew(final String program, final int buffer) {
+            List<Pixels> result = new ArrayList<>();
+            for (Pixels p : pixels) if (p.program.equals(program) && p.buffer == buffer) result.add(p);
+            result.sort(java.util.Comparator.comparingInt(Pixels::frame));
+            return result;
+        }
+    }
+
+    private static boolean near(final int[] pixel, final int red, final int green, final int blue) {
+        return Math.abs(pixel[0] - red) <= 3 && Math.abs(pixel[1] - green) <= 3 && Math.abs(pixel[2] - blue) <= 3;
+    }
+
+    /** Every pixel sampled of what {@code program} drew into {@code buffer} (in every frame traced) is this color. */
+    private static void drewColor(final Section section, final String program, final int buffer, final int red, final int green, final int blue) {
+        List<Pixels> list = section.drew(program, buffer);
+        boolean ok = !list.isEmpty();
+        StringBuilder seen = new StringBuilder();
+        for (Pixels p : list) {
+            for (int[] pixel : p.pixel) {
+                ok &= near(pixel, red, green, blue);
+                if (seen.length() < 60) seen.append(java.util.Arrays.toString(pixel));
+            }
+        }
+        check(String.format("%s: %s drew colortex%d (%d, %d, %d) everywhere sampled in %d frames%s", section.pack, program, buffer, red, green, blue, list.size(), ok ? "" : " (saw " + seen + ")"), ok);
+    }
+
+    private static double share(final java.awt.image.BufferedImage image, final int red, final int green, final int blue, final double from, final double to) {
+        long hits = 0, total = 0;
+        for (int x = (int) (image.getWidth() * from); x < (int) (image.getWidth() * to); x += 2) {
+            for (int y = 0; y < image.getHeight(); y += 2) {
+                int rgb = image.getRGB(x, y);
+                if (Math.abs(((rgb >> 16) & 255) - red) <= 4 && Math.abs(((rgb >> 8) & 255) - green) <= 4 && Math.abs((rgb & 255) - blue) <= 4) hits++;
+                total++;
+            }
+        }
+        return hits / (double) total;
+    }
+
+    private static java.awt.image.BufferedImage picture(final Path folder, final String name) throws IOException {
+        return javax.imageio.ImageIO.read(folder.resolve(name + ".png").toFile());
+    }
+
+    private static void screenIs(final Path folder, final String name, final int red, final int green, final int blue, final double least) throws IOException {
+        double share = share(picture(folder, name), red, green, blue, 0, 1);
+        check(String.format("%s: the screen is (%d, %d, %d) over at least %.0f%% (%.1f%%)", name, red, green, blue, least * 100, share * 100), share >= least);
+    }
+
+    private static void iris(final Path folder) throws IOException {
+        Map<String, Section> sections = new java.util.LinkedHashMap<>();
+        Section current = new Section("start");
+        List<String> windows = new ArrayList<>();
+        List<String> lines = Files.readAllLines(folder.resolve("game.log"));
+        for (String line : lines) {
+            int pack = line.indexOf("debug script: pack ");
+            if (pack >= 0) {
+                String name = line.substring(pack + "debug script: pack ".length()).trim().replace(".zip", "");
+                current = sections.computeIfAbsent(name, Section::new);
+                continue;
+            }
+            Matcher run = RUN_LINE.matcher(line);
+            if (run.find()) {
+                current.runs.add(new Run(Integer.parseInt(run.group(1)), run.group(2), run.group(3), run.group(4)));
+                continue;
+            }
+            Matcher pixels = PIXEL_LINE.matcher(line);
+            if (pixels.find()) {
+                List<int[]> points = new ArrayList<>();
+                Matcher point = PIXEL.matcher(pixels.group(6));
+                while (point.find()) points.add(new int[] {Integer.parseInt(point.group(1)), Integer.parseInt(point.group(2)), Integer.parseInt(point.group(3)), Integer.parseInt(point.group(4))});
+                current.pixels.add(new Pixels(Integer.parseInt(pixels.group(1)), pixels.group(2), Integer.parseInt(pixels.group(3)), Integer.parseInt(pixels.group(4)), Integer.parseInt(pixels.group(5)),
+                        points.toArray(new int[0][])));
+                continue;
+            }
+            if (line.contains("debug script: window is now ")) windows.add(line.substring(line.indexOf("window is now ") + "window is now ".length()).trim() + "@" + (current.pack));
+        }
+        Section none = new Section("none");
+        java.util.function.Function<String, Section> get = name -> sections.getOrDefault(name, none);
+
+        // A1: one buffer.
+        Section single = get.apply("IrisSingle");
+        drewColor(single, "composite", 0, 255, 0, 0);
+        check("IrisSingle: the programs ran composite then final", single.order(single.frames().get(0)).equals(List.of("composite", "final")));
+        screenIs(folder, "IrisSingle", 255, 0, 0, 0.99);
+
+        // A2: two buffers, each drawn once.
+        Section two = get.apply("IrisTwoTargets");
+        drewColor(two, "composite", 0, 255, 0, 0);
+        drewColor(two, "composite", 1, 0, 0, 255);
+        check("IrisTwoTargets: left half red, right half blue", share(picture(folder, "IrisTwoTargets"), 255, 0, 0, 0, 0.49) > 0.98 && share(picture(folder, "IrisTwoTargets"), 0, 0, 255, 0.51, 1) > 0.98);
+
+        // A4: a program that draws one buffer leaves the other as it was.
+        Section independent = get.apply("IrisIndependent");
+        drewColor(independent, "composite1", 0, 0, 255, 0);
+        check("IrisIndependent: composite1 drew only colortex0", independent.drew("composite1", 1).isEmpty() && independent.runs.stream().anyMatch(r -> r.program.equals("composite1") && r.writes.equals("[0]")));
+        check("IrisIndependent: left half green, right half still blue", share(picture(folder, "IrisIndependent"), 0, 255, 0, 0, 0.49) > 0.98 && share(picture(folder, "IrisIndependent"), 0, 0, 255, 0.51, 1) > 0.98);
+
+        // A3: flipping.
+        Section once = get.apply("IrisFlipOnce");
+        drewColor(once, "composite", 0, 255, 0, 0);
+        drewColor(once, "composite1", 0, 0, 0, 255);
+        screenIs(folder, "IrisFlipOnce", 0, 0, 255, 0.99);
+        Section twice = get.apply("IrisFlipTwice");
+        drewColor(twice, "composite", 0, 255, 0, 0);
+        drewColor(twice, "composite1", 0, 0, 255, 0);
+        drewColor(twice, "composite2", 0, 0, 0, 255);
+        screenIs(folder, "IrisFlipTwice", 0, 0, 255, 0.99);
+        Section noFlip = get.apply("IrisNoFlip");
+        drewColor(noFlip, "composite", 0, 255, 0, 0);
+        drewColor(noFlip, "composite1", 0, 0, 0, 255);
+        screenIs(folder, "IrisNoFlip", 0, 0, 255, 0.99);
+
+        // A5: a buffer that is not cleared keeps its value from one frame to the next; one that is cleared does not.
+        Section persist = get.apply("IrisPersist");
+        List<Pixels> kept = persist.drew("composite", 1);
+        List<Pixels> cleared = persist.drew("composite", 2);
+        boolean counts = kept.size() >= 3;
+        StringBuilder values = new StringBuilder();
+        for (int i = 0; i < kept.size(); i++) {
+            values.append(kept.get(i).pixel[0][0]).append(' ');
+            if (i > 0) counts &= Math.floorMod(kept.get(i).pixel[0][0] - kept.get(i - 1).pixel[0][0], 256) == 16 && kept.get(i).frame - kept.get(i - 1).frame == 1;
+        }
+        check("IrisPersist: colortex1 (never cleared) counts up by 16 every frame, wrapping at 256: " + values.toString().trim(), counts);
+        boolean constant = cleared.size() >= 3;
+        for (Pixels p : cleared) constant &= p.pixel[0][0] == 16;
+        check("IrisPersist: colortex2 (cleared every frame) stays at 16", constant);
+
+        // B1: numbered programs run by number.
+        Section order = get.apply("IrisOrder");
+        check("IrisOrder: composite, composite2, composite10, final in that order, every frame", !order.frames().isEmpty() && order.frames().stream().allMatch(f -> order.order(f).equals(List.of("composite", "composite2", "composite10", "final"))));
+        screenIs(folder, "IrisOrder", 0, 0, 255, 0.99);
+
+        // B2: a program switched off does not run, and the next one gets the right input.
+        Section disabled = get.apply("IrisDisabled");
+        check("IrisDisabled: composite1 never ran", !disabled.frames().isEmpty() && disabled.frames().stream().allMatch(f -> disabled.order(f).equals(List.of("composite", "composite2", "final"))));
+        drewColor(disabled, "composite2", 0, 0, 0, 255);
+        screenIs(folder, "IrisDisabled", 0, 0, 255, 0.99);
+
+        // B3: no final program: the screen shows buffer 0.
+        Section noFinal = get.apply("IrisNoFinal");
+        check("IrisNoFinal: only composite and composite2 ran", !noFinal.frames().isEmpty() && noFinal.frames().stream().allMatch(f -> noFinal.order(f).equals(List.of("composite", "composite2"))));
+        screenIs(folder, "IrisNoFinal", 0, 0, 255, 0.99);
+
+        // A8: the three depth textures. depthtex0 and depthtex1 differ where translucent terrain wrote depth (the glass block in
+        // the middle of the picture) and nowhere else; depthtex2 is depthtex1 (the hand is drawn after everything here).
+        java.awt.image.BufferedImage depthPicture = picture(folder, "IrisDepth");
+        long insideDiffers = 0, insideTotal = 0, outsideDiffers = 0, greenAnywhere = 0;
+        for (int x = 0; x < depthPicture.getWidth(); x += 2) {
+            for (int y = 0; y < depthPicture.getHeight(); y += 2) {
+                int rgb = depthPicture.getRGB(x, y);
+                boolean differs = ((rgb >> 16) & 255) > 128;
+                if ((rgb >> 8 & 255) > 128) greenAnywhere++;
+                boolean inGlass = x > depthPicture.getWidth() * 0.37 && x < depthPicture.getWidth() * 0.63 && y > depthPicture.getHeight() * 0.33 && y < depthPicture.getHeight() * 0.77;
+                boolean clearOfGlass = x < depthPicture.getWidth() * 0.3 || x > depthPicture.getWidth() * 0.7 || y < depthPicture.getHeight() * 0.25 || y > depthPicture.getHeight() * 0.85;
+                if (inGlass) {
+                    insideTotal++;
+                    if (differs) insideDiffers++;
+                }
+                if (clearOfGlass && differs) outsideDiffers++;
+            }
+        }
+        check(String.format("IrisDepth: depthtex0 differs from depthtex1 over %.1f%% of the glass block and nowhere else (%d pixels outside)", 100.0 * insideDiffers / insideTotal, outsideDiffers),
+                insideDiffers > insideTotal / 50 && outsideDiffers == 0);
+        check("IrisDepth: depthtex2 is the same as depthtex1 everywhere (" + greenAnywhere + " pixels differ)", greenAnywhere == 0);
+
+        // Stages: where in the frame each runs, and the deferred program's result reaching the screen.
+        Section stages = get.apply("IrisStages");
+        check("IrisStages: begin, prepare, deferred, final in that order, every frame", !stages.frames().isEmpty() && stages.frames().stream().allMatch(f -> stages.order(f).equals(List.of("begin", "prepare", "deferred", "final"))));
+        drewColor(stages, "begin", 2, 255, 0, 0);
+        drewColor(stages, "prepare", 2, 255, 255, 0);
+        drewColor(stages, "deferred", 0, 0, 255, 0);
+        screenIs(folder, "IrisStages", 0, 255, 0, 0.9);
+
+        // A pack that does not compile is put aside; the one before it takes over.
+        check("IrisBroken: it was reported broken and put aside", lines.stream().anyMatch(l -> l.contains("IrisBroken.zip is broken")));
+        screenIs(folder, "IrisBroken_after", 0, 255, 0, 0.9);
+
+        // A6: the buffers follow the window.
+        List<String> sizes = new ArrayList<>();
+        for (String window : windows) sizes.add(window.substring(0, window.indexOf('@')));
+        Section resized = get.apply("IrisFlipTwice");
+        check("resize: after the window became " + sizes + " the buffers had those sizes (seen " + sizesOf(resized) + ")", sizes.size() >= 2 && sizesOf(resized).containsAll(sizes));
+
+        // A7: a pack never sees another pack's buffers.
+        screenIs(folder, "IrisReadsOne_after_TwoTargets", 255, 255, 255, 0.99);
+
+        // Switching shaders off and on, reloading, other dimensions.
+        check("shaders off: the screen is not the pack's red", share(picture(folder, "shaders_off"), 255, 0, 0, 0, 1) < 0.05);
+        screenIs(folder, "shaders_on_again", 255, 0, 0, 0.99);
+        screenIs(folder, "after_reload", 255, 0, 0, 0.99);
+        check("the Nether has no program in this pack, so it is not red", share(picture(folder, "nether_view"), 255, 0, 0, 0, 1) < 0.05);
+        screenIs(folder, "overworld_again", 255, 0, 0, 0.99);
+        check("built-in shaders again after the packs: not one flat color", share(picture(folder, "builtin_after"), 255, 0, 0, 0, 1) < 0.05 && share(picture(folder, "builtin_after"), 0, 255, 0, 0, 1) < 0.05);
+
+        // Metal's validation layer, and errors we did not expect.
+        List<String> validation = new ArrayList<>();
+        List<String> errors = new ArrayList<>();
+        for (String line : lines) {
+            String lower = line.toLowerCase(java.util.Locale.ROOT);
+            if ((lower.contains("validation") && !lower.contains("library validation") && !lower.contains("validation enabled")) || lower.contains("mtldebug") || lower.contains("failed assertion")) validation.add(line);
+            if (line.contains("Render thread/ERROR") && !line.contains("IrisBroken")) errors.add(line);
+        }
+        check("no Metal validation messages in the log" + (validation.isEmpty() ? "" : ": " + validation.get(0)), validation.isEmpty());
+        check("no errors in the log except the broken pack's" + (errors.isEmpty() ? "" : ": " + errors.get(0)), errors.isEmpty());
+    }
+
+    private static List<String> sizesOf(final Section section) {
+        List<String> result = new ArrayList<>();
+        for (Pixels p : section.pixels) {
+            String size = p.width + "x" + p.height;
+            if (!result.contains(size)) result.add(size);
+        }
+        return result;
     }
 
     // ---- the pictures of two runs of src/test/baseline/run.sh ----
@@ -320,14 +580,13 @@ public final class PackTests {
 
         // Programs this version does not run are listed, not an error, as long as something runs.
         Map<String, String> more = finalFiles();
-        more.put("world0/composite.fsh", "#version 330\n");
-        more.put("world0/composite.vsh", "#version 330\n");
         more.put("world0/gbuffers_terrain.fsh", "#version 330\n");
+        more.put("world0/gbuffers_terrain.vsh", "#version 330\n");
         more.put("world0/shadow.vsh", "#version 330\n");
         more.put("lib/common.glsl", "// not a program\n");
         ZipPack extra = openStandard(dir.resolve("More.zip"), more);
         validates("programs that are not run yet do not stop a pack that has final", extra);
-        check("they are listed", ProgramSet.discover(extra, "world0").unsupported().equals(java.util.List.of("composite", "gbuffers_terrain", "shadow")));
+        check("they are listed", ProgramSet.discover(extra, "world0").unsupported().equals(java.util.List.of("gbuffers_terrain", "shadow")));
         check("library files are not programs", ProgramSet.discover(extra, "world0").unsupported().stream().noneMatch(n -> n.contains("common")));
 
         // Switching a program off.
@@ -340,15 +599,15 @@ public final class PackTests {
 
         // Packs that cannot be used say why.
         Map<String, String> onlyComposite = new java.util.LinkedHashMap<>();
-        onlyComposite.put("world0/composite.fsh", "#version 330\n");
-        onlyComposite.put("world0/composite.vsh", "#version 330\n");
-        rejects("a pack with no program this version runs is rejected, naming what it has", openStandard(dir.resolve("OnlyComposite.zip"), onlyComposite), "composite");
+        onlyComposite.put("world0/gbuffers_terrain.fsh", "#version 330\n");
+        onlyComposite.put("world0/gbuffers_terrain.vsh", "#version 330\n");
+        rejects("a pack with no program this version runs is rejected, naming what it has", openStandard(dir.resolve("OnlyComposite.zip"), onlyComposite), "gbuffers_terrain");
         Map<String, String> halfway = finalFiles();
         halfway.remove("world0/final.vsh");
         rejects("a program with one of its two files is rejected", openStandard(dir.resolve("Half.zip"), halfway), "needs both");
         Map<String, String> sampler = finalFiles();
-        sampler.put("world0/final.fsh", "#version 330\nuniform sampler2D colortex0;\nuniform sampler2D colortex1;\nvoid main() {}\n");
-        rejects("a program reading a buffer that does not exist yet is rejected", openStandard(dir.resolve("Sampler.zip"), sampler), "colortex1");
+        sampler.put("world0/final.fsh", "#version 330\nuniform sampler2D colortex0;\nuniform sampler2D shadowtex0;\nvoid main() {}\n");
+        rejects("a program reading a texture that does not exist yet is rejected", openStandard(dir.resolve("Sampler.zip"), sampler), "shadowtex0");
         try {
             TestPacks.writeStandard(dir.resolve("Empty.zip"), Map.of());
             ZipPack.open(dir.resolve("Empty.zip"));
@@ -386,7 +645,124 @@ public final class PackTests {
         // Discovery lists them next to the older packs.
         java.util.List<PackManager.Entry> entries = PackManager.scan(dir);
         check("standard packs are listed", entry(entries, "SolidBlue.zip") != null && entry(entries, "SolidBlue.zip").selectable());
-        check("an unusable standard pack is listed with the reason", entry(entries, "OnlyComposite.zip") != null && !entry(entries, "OnlyComposite.zip").selectable() && entry(entries, "OnlyComposite.zip").error().contains("composite"));
+        check("an unusable standard pack is listed with the reason", entry(entries, "OnlyComposite.zip") != null && !entry(entries, "OnlyComposite.zip").selectable() && entry(entries, "OnlyComposite.zip").error().contains("gbuffers_terrain"));
+    }
+
+    // ---- the plan of a standard pack: stages, buffers, flips ----
+
+    private static final String VERTEX = "#version 330\nout vec2 texcoord;\nvoid main() { gl_Position = vec4(0.0); texcoord = vec2(0.0); }\n";
+
+    /** A fragment program with these lines at the top of an otherwise empty {@code main}. */
+    private static String fragment(final String header) {
+        return "#version 330\n" + header + "\nin vec2 texcoord;\nvoid main() {}\n";
+    }
+
+    private static IrisPlan planOf(final Path dir, final String name, final Map<String, String> programs, final String properties) throws Exception {
+        Map<String, String> files = new java.util.LinkedHashMap<>();
+        for (Map.Entry<String, String> program : programs.entrySet()) {
+            files.put(program.getKey() + ".vsh", VERTEX);
+            files.put(program.getKey() + ".fsh", program.getValue());
+        }
+        if (properties != null) files.put("shaders.properties", properties);
+        return IrisPlan.build(openStandard(dir.resolve(name + ".zip"), files), null);
+    }
+
+    private static void planFails(final String what, final Path dir, final String name, final Map<String, String> programs, final String properties, final String mentions) throws Exception {
+        try {
+            planOf(dir, name, programs, properties);
+            check(what, false);
+        } catch (PackException e) {
+            check(what + " (" + e.getMessage() + ")", e.getMessage().contains(mentions));
+        }
+    }
+
+    private static List<String> names(final List<IrisPlan.Step> steps) {
+        List<String> result = new ArrayList<>();
+        for (IrisPlan.Step step : steps) result.add(step.program().name());
+        return result;
+    }
+
+    private static void irisPlans(final Path dir) throws Exception {
+        Files.createDirectories(dir);
+        String one = fragment("uniform sampler2D colortex0;\nout vec4 color;");
+
+        // Order: the stages in Iris's order, and numbers counted as numbers (composite10 comes after composite2).
+        Map<String, String> order = new java.util.LinkedHashMap<>();
+        for (String name : List.of("composite10", "composite", "composite2", "deferred", "prepare", "begin", "final", "composite1")) order.put(name, one);
+        IrisPlan plan = planOf(dir, "Order", order, null);
+        check("composite programs run by number, not by name", names(plan.steps(ProgramSet.Stage.COMPOSITE)).equals(List.of("composite", "composite1", "composite2", "composite10")));
+        check("each stage has its own programs", names(plan.steps(ProgramSet.Stage.BEGIN)).equals(List.of("begin")) && names(plan.steps(ProgramSet.Stage.PREPARE)).equals(List.of("prepare"))
+                && names(plan.steps(ProgramSet.Stage.DEFERRED)).equals(List.of("deferred")) && plan.finalStep().program().name().equals("final"));
+        check("something runs after the world", plan.afterWorld());
+
+        // What a program writes.
+        Map<String, String> writes = new java.util.LinkedHashMap<>();
+        writes.put("composite", fragment("uniform sampler2D colortex0;\n/* RENDERTARGETS: 0,3,7 */\nlayout(location = 0) out vec4 a;\nlayout(location = 1) out vec4 b;\nlayout(location = 2) out vec4 c;"));
+        writes.put("composite1", fragment("/* DRAWBUFFERS:12 */\nlayout(location = 0) out vec4 a;\nlayout(location = 1) out vec4 b;"));
+        writes.put("composite2", fragment("out vec4 outColor0;\nout vec4 outColor1;"));
+        writes.put("composite3", fragment("layout(location = 0) out vec4 a;"));
+        IrisPlan w = planOf(dir, "Writes", writes, null);
+        List<IrisPlan.Step> steps = w.steps(ProgramSet.Stage.COMPOSITE);
+        check("RENDERTARGETS gives the buffers in order", java.util.Arrays.equals(steps.get(0).writes(), new int[] {0, 3, 7}));
+        check("DRAWBUFFERS gives the buffers from its digits", java.util.Arrays.equals(steps.get(1).writes(), new int[] {1, 2}));
+        check("without either, as many buffers as the program has outputs, from 0", java.util.Arrays.equals(steps.get(2).writes(), new int[] {0, 1}) && java.util.Arrays.equals(steps.get(3).writes(), new int[] {0}));
+        check("only the buffers the programs touch exist", w.buffers().keySet().equals(java.util.Set.of(0, 1, 2, 3, 7)));
+        planFails("more than 8 buffers at once is refused", dir, "Nine", Map.of("composite", fragment("/* RENDERTARGETS: 0,1,2,3,4,5,6,7,8 */")), null, "at most 8");
+        planFails("a buffer past colortex15 is refused", dir, "Sixteen", Map.of("composite", fragment("/* RENDERTARGETS: 16 */")), null, "colortex16");
+        planFails("the same buffer twice is refused", dir, "Twice", Map.of("composite", fragment("/* RENDERTARGETS: 2,2 */")), null, "twice");
+
+        // Flips: on by default, off when the pack says so; a program cannot read what it draws into in place.
+        Map<String, String> flips = new java.util.LinkedHashMap<>();
+        flips.put("composite", fragment("/* RENDERTARGETS: 0,1 */\nlayout(location = 0) out vec4 a;\nlayout(location = 1) out vec4 b;"));
+        IrisPlan flipped = planOf(dir, "Flips", flips, null);
+        check("flipping is on for every buffer by default", !flipped.steps(ProgramSet.Stage.COMPOSITE).get(0).inPlace()[0] && !flipped.steps(ProgramSet.Stage.COMPOSITE).get(0).inPlace()[1]);
+        IrisPlan unflipped = planOf(dir, "NoFlips", flips, "flip.composite.colortex1=false\n");
+        check("flip.<program>.<buffer>=false turns it off for that buffer only", !unflipped.steps(ProgramSet.Stage.COMPOSITE).get(0).inPlace()[0] && unflipped.steps(ProgramSet.Stage.COMPOSITE).get(0).inPlace()[1]);
+        planFails("a program that reads a buffer it draws into in place is refused", dir, "Hazard",
+                Map.of("composite", fragment("uniform sampler2D colortex1;\n/* RENDERTARGETS: 1 */\nlayout(location = 0) out vec4 a;")), "flip.composite.colortex1=false\n", "colortex1");
+        IrisPlan readsAndWrites = planOf(dir, "ReadWrite", Map.of("composite", fragment("uniform sampler2D colortex1;\n/* RENDERTARGETS: 1 */\nlayout(location = 0) out vec4 a;")), null);
+        check("reading a buffer and drawing into it is fine with flipping on", readsAndWrites.steps(ProgramSet.Stage.COMPOSITE).get(0).reads(1));
+
+        // Formats and clearing.
+        Map<String, String> formats = new java.util.LinkedHashMap<>();
+        formats.put("composite", fragment("uniform sampler2D colortex0;\nuniform sampler2D colortex1;\nuniform sampler2D colortex2;\nuniform sampler2D colortex4;\n"
+                + "const int colortex1Format = RGBA16F;\nconst int colortex2Format = R32F;\nconst bool colortex2Clear = false;\nconst vec4 colortex4ClearColor = vec4(0.25, 0.5, 0.75, 1.0);\n/* RENDERTARGETS: 0 */\nlayout(location = 0) out vec4 a;"));
+        IrisPlan f = planOf(dir, "Formats", formats, null);
+        check("buffers are RGBA8 unless a program says otherwise", f.buffers().get(0).format() == com.mojang.blaze3d.GpuFormat.RGBA8_UNORM);
+        check("colortexNFormat sets the format", f.buffers().get(1).format() == com.mojang.blaze3d.GpuFormat.RGBA16_FLOAT && f.buffers().get(2).format() == com.mojang.blaze3d.GpuFormat.R32_FLOAT);
+        check("buffers clear every frame unless colortexNClear is false", f.buffers().get(0).clear() && f.buffers().get(1).clear() && !f.buffers().get(2).clear());
+        float[] fog = {0.1F, 0.2F, 0.3F, 1.0F};
+        check("default clear colors: buffer 0 the fog, buffer 1 white, the others transparent black",
+                java.util.Arrays.equals(f.buffers().get(0).colorToClear(fog), fog) && java.util.Arrays.equals(f.buffers().get(1).colorToClear(fog), new float[] {1, 1, 1, 1})
+                        && java.util.Arrays.equals(f.buffers().get(2).colorToClear(fog), new float[] {0, 0, 0, 0}));
+        check("colortexNClearColor sets the clear color", java.util.Arrays.equals(f.buffers().get(4).colorToClear(fog), new float[] {0.25F, 0.5F, 0.75F, 1.0F}));
+        planFails("a format that does not exist here is refused", dir, "BadFormat", Map.of("composite", fragment("uniform sampler2D colortex0;\nconst int colortex0Format = RGBA32UI;")), null, "RGBA32UI");
+
+        // Depth and old names.
+        IrisPlan depth = planOf(dir, "Depth", Map.of("composite", fragment("uniform sampler2D depthtex0;\nuniform sampler2D depthtex2;\nuniform sampler2D gaux1;")), null);
+        check("depthtex0 and depthtex2 are used, depthtex1 is not asked for by name", depth.usesDepth(0) && !depth.usesDepth(1) && depth.usesDepth(2));
+        check("an older sampler name is the buffer it stands for", depth.steps(ProgramSet.Stage.COMPOSITE).get(0).reads(4) && depth.buffers().containsKey(4));
+        check("buffer 0 exists whenever anything runs after the world", planOf(dir, "OnlyFinal", Map.of("final", fragment("uniform sampler2D depthtex0;")), null).buffers().containsKey(0));
+
+        // What it cannot do yet.
+        Map<String, String> notYet = new java.util.LinkedHashMap<>();
+        notYet.put("composite", one);
+        notYet.put("shadowcomp", one);
+        notYet.put("gbuffers_water", one);
+        IrisPlan not = planOf(dir, "NotYet", notYet, null);
+        check("shadowcomp and gbuffers programs are reported, not run", not.notes().stream().anyMatch(n -> n.contains("shadowcomp")) && not.notes().stream().anyMatch(n -> n.contains("gbuffers_water")) && not.stepCount() == 1);
+        Map<String, String> gs = new java.util.LinkedHashMap<>();
+        gs.put("composite.vsh", VERTEX);
+        gs.put("composite.fsh", one);
+        gs.put("composite.gsh", "#version 330\n");
+        try {
+            ProgramSet.validate(openStandard(dir.resolve("Geometry.zip"), gs));
+            check("a program with a geometry shader is refused", false);
+        } catch (PackException e) {
+            check("a program with a geometry shader is refused (" + e.getMessage() + ")", e.getMessage().contains("geometry"));
+        }
+        check("a program with only a compute shader is listed as not run", ProgramSet.discover(openStandard(dir.resolve("Compute.zip"), Map.of("composite.csh", "#version 430\n", "final.vsh", VERTEX, "final.fsh", one)), null)
+                .unsupported().contains("composite (compute only)"));
     }
 
     private static ZipPack openWithJson(final Path zip, final String json) throws IOException, PackException {
@@ -441,7 +817,7 @@ public final class PackTests {
         missing.remove("program/sky.fsh");
         TestPacks.write(folder.resolve("Incomplete.zip"), "{\"format\": 1}", missing);
         // A shader pack in the Iris layout that this version cannot run: listed, with the reason.
-        TestPacks.write(folder.resolve("SomeIrisPack.zip"), null, Map.of("world0/composite.fsh", "void main() {}", "world0/composite.vsh", "void main() {}"));
+        TestPacks.write(folder.resolve("SomeIrisPack.zip"), null, Map.of("world0/gbuffers_terrain.fsh", "void main() {}", "world0/gbuffers_terrain.vsh", "void main() {}"));
         Files.writeString(folder.resolve("notes.txt"), "not a zip");
         // The built-in pack's name, taken by a ZIP.
         TestPacks.writeBuiltinCopy(folder.resolve(BuiltinPack.NAME + ".zip"));

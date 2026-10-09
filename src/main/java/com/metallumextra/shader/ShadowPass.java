@@ -95,7 +95,7 @@ public final class ShadowPass {
 
     /** Works out this frame's shadow matrix. Sets the shadow strength to zero when no map will be drawn. */
     static void prepare(final CameraRenderState cameraState, final ShaderGlobals globals) {
-        wanted = ExtraConfig.get().shaderShadows && !StandardPipeline.inUse() && Shaders.celestialLight() && globals.lightDir.w > 0.0F;
+        wanted = ExtraConfig.get().shaderShadows && !IrisPipeline.inUse() && Shaders.celestialLight() && globals.lightDir.w > 0.0F;
         if (!wanted) {
             globals.shadow.identity();
             globals.lightDir.w = 0.0F;

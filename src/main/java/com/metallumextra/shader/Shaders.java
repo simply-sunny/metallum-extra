@@ -109,12 +109,12 @@ public final class Shaders {
 
     /** Whether a shadow map is being drawn this frame. */
     public static boolean castsShadows() {
-        return active && !StandardPipeline.inUse() && GLOBALS.lightDir.w > 0.0F;
+        return active && !IrisPipeline.inUse() && GLOBALS.lightDir.w > 0.0F;
     }
 
     /** Whether the world is being drawn under an open sky, which the shader pipeline then draws itself. */
     public static boolean drawsSky() {
-        return active && phase == PHASE_WORLD && GLOBALS.skyHorizon.w == 0.0F && !StandardPipeline.inUse();
+        return active && phase == PHASE_WORLD && GLOBALS.skyHorizon.w == 0.0F && !IrisPipeline.inUse();
     }
 
     /** Development aid: wind and waves stand still, so pictures taken at different times can be compared. */
@@ -161,7 +161,7 @@ public final class Shaders {
         ShaderSources.clear();
         ShaderBindings.forget();
         ShadowPass.invalidate();
-        StandardPipeline.forget();
+        IrisPipeline.forget();
         RenderSystem.getDevice().clearPipelineCache();
         if (value) {
             GLOBALS.upload(PHASE_NONE);
@@ -183,7 +183,7 @@ public final class Shaders {
      */
     private static void switchPack() {
         ShadowPass.invalidate();
-        StandardPipeline.forget();
+        IrisPipeline.forget();
         ShaderSources.clear();
         ShaderBindings.forget();
         RenderSystem.getDevice().clearPipelineCache();
@@ -201,7 +201,7 @@ public final class Shaders {
         if (!active) return;
         RenderSystem.assertOnRenderThread();
         ShadowPass.invalidate();
-        StandardPipeline.forget();
+        IrisPipeline.forget();
         ShaderSources.clear();
         RenderSystem.getDevice().clearPipelineCache();
     }
@@ -217,12 +217,20 @@ public final class Shaders {
     /** After the game has set up the frame's passes and before it runs them: no render pass is open. */
     public static void beforeWorldPasses(final FeatureRenderDispatcher.PreparedFrame features) {
         if (!active || !drawingWorld) return;
+        if (IrisPipeline.inUse()) {
+            IrisPipeline.beforeWorld();
+            return;
+        }
         ShadowPass.render(features);
     }
 
     /** Just before translucent terrain: what has been drawn so far is what water reflects and refracts. */
     public static void beforeTranslucentTerrain() {
         if (!active || !drawingWorld || phase != PHASE_WORLD) return;
+        if (IrisPipeline.inUse()) {
+            IrisPipeline.beforeTranslucent();
+            return;
+        }
         TARGETS.copyScene(Minecraft.getInstance().gameRenderer.mainRenderTarget());
     }
 
@@ -231,8 +239,8 @@ public final class Shaders {
         if (!active || !drawingWorld) return;
         ExtraConfig config = ExtraConfig.get();
         RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
-        if (StandardPipeline.inUse()) {
-            StandardPipeline.renderFinal(main);
+        if (IrisPipeline.inUse()) {
+            IrisPipeline.afterWorld();
             setPhase(PHASE_HAND);
             return;
         }
@@ -271,6 +279,7 @@ public final class Shaders {
         LightmapRenderState lightmap = state.lightmapRenderState;
         ShaderGlobals g = GLOBALS;
 
+        IrisPipeline.setFog(camera.fogData.color.x, camera.fogData.color.y, camera.fogData.color.z);
         g.view.set(camera.viewRotationMatrix);
         g.view.invert(g.viewInverse);
         g.projection.set(projection);

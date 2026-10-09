@@ -41,6 +41,9 @@ public final class ShaderSources {
     private record Lookup(ShaderPack pack, Map<String, Optional<String>> files) {
     }
 
+    private static final ShaderPack BUILTIN = new BuiltinPack();
+    private static final Map<String, Optional<String>> INTERNAL = new ConcurrentHashMap<>();
+
     private static volatile Lookup lookup = new Lookup(new BuiltinPack(), new ConcurrentHashMap<>());
 
     private ShaderSources() {
@@ -60,6 +63,11 @@ public final class ShaderSources {
         Lookup current = lookup;
         String extension = type == ShaderType.VERTEX ? ".vsh" : ".fsh";
         boolean ours = id.getNamespace().equals(MetallumExtra.MOD_ID);
+        if (ours && id.getPath().startsWith("internal/")) {
+            // The mod's own helper programs, which no pack provides or replaces.
+            return INTERNAL.computeIfAbsent(id.getPath() + extension, f -> Optional.ofNullable(readExpanded(BUILTIN, f))).orElseThrow(
+                    () -> new IllegalStateException("Missing built-in shader " + id.getPath() + extension));
+        }
         if (ours && current.pack.standard()) {
             return standard(current, id.getPath(), type);
         }
@@ -79,8 +87,15 @@ public final class ShaderSources {
      * The dimension in use picks between a program's files in the dimension's folder and in the shared one.
      */
     private static String standard(final Lookup current, final String path, final ShaderType type) {
-        String name = path.startsWith("standard/") ? path.substring("standard/".length()) : path;
-        ProgramSet.Program program = StandardPipeline.programs().find(name);
+        // standard/<generation>/<program>: the generation says which plan the pipeline was made for.
+        String[] parts = path.split("/");
+        // Asking for the programs first brings the plan up to date, if the pack has changed since it was made.
+        ProgramSet programs = IrisPipeline.programs();
+        if (parts.length != 3 || Integer.parseInt(parts[1]) != IrisPipeline.generation()) {
+            throw new StalePipelineException("The shader " + path + " belongs to a pack that is no longer in use");
+        }
+        String name = parts[2];
+        ProgramSet.Program program = programs.find(name);
         String file = program == null ? null : type == ShaderType.VERTEX ? program.vertex() : program.fragment();
         if (file == null) throw new IllegalStateException("Shader pack " + current.pack.name() + " has no " + name + " program for this dimension");
         return current.files.computeIfAbsent(file, f -> Optional.ofNullable(readExpanded(current.pack, f))).orElseThrow();

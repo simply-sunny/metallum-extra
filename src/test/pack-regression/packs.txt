@@ -1,4 +1,4 @@
-# Shader pack regression, run by run.sh. Needs RedToBlue.zip, BlueToRed.zip and WithOption.zip in run/shaderpacks
+# Shader pack regression, run by run.sh. Needs RedToBlue.zip, BlueToRed.zip, WithOption.zip, SolidBlue.zip, SolidRed.zip and SwapRedBlue.zip in run/shaderpacks
 # (gradlew writeTestPacks). Looks straight down at a platform: red on the screen's left, blue on its right.
 world PackTest
 wait 2000
@@ -45,6 +45,28 @@ screen close
 wait 600
 shot 5_redtoblue_again
 cache
+pack SolidBlue.zip
+wait 4000
+screen close
+wait 600
+shot 9_solidblue
+cache
+pack SolidRed.zip
+wait 4000
+screen close
+wait 600
+shot 10_solidred
+pack SwapRedBlue.zip
+wait 4000
+screen close
+wait 600
+shot 11_swap
+pack builtin
+wait 4000
+screen close
+wait 600
+shot 12_builtin_after_standard
+cache
 pack WithOption.zip
 wait 4000
 screen close
@@ -60,5 +82,5 @@ wait 4000
 shot 8_option_off_again
 screen options
 wait 1000
-shot 9_options_screen
+shot 13_options_screen
 quit

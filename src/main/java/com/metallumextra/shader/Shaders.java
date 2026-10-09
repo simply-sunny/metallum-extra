@@ -109,13 +109,16 @@ public final class Shaders {
 
     /** Whether a shadow map is being drawn this frame. */
     public static boolean castsShadows() {
-        return active && GLOBALS.lightDir.w > 0.0F;
+        return active && !StandardPipeline.inUse() && GLOBALS.lightDir.w > 0.0F;
     }
 
     /** Whether the world is being drawn under an open sky, which the shader pipeline then draws itself. */
     public static boolean drawsSky() {
-        return active && phase == PHASE_WORLD && GLOBALS.skyHorizon.w == 0.0F;
+        return active && phase == PHASE_WORLD && GLOBALS.skyHorizon.w == 0.0F && !StandardPipeline.inUse();
     }
+
+    /** Development aid: wind and waves stand still, so pictures taken at different times can be compared. */
+    private static final boolean FROZEN_TIME = Boolean.getBoolean("metallumextra.freezeTime");
 
     /** Start of every frame, before anything is drawn. Applies a change of the on/off setting. */
     public static void beginFrame() {
@@ -158,6 +161,7 @@ public final class Shaders {
         ShaderSources.clear();
         ShaderBindings.forget();
         ShadowPass.invalidate();
+        StandardPipeline.forget();
         RenderSystem.getDevice().clearPipelineCache();
         if (value) {
             GLOBALS.upload(PHASE_NONE);
@@ -179,6 +183,7 @@ public final class Shaders {
      */
     private static void switchPack() {
         ShadowPass.invalidate();
+        StandardPipeline.forget();
         ShaderSources.clear();
         ShaderBindings.forget();
         RenderSystem.getDevice().clearPipelineCache();
@@ -196,6 +201,7 @@ public final class Shaders {
         if (!active) return;
         RenderSystem.assertOnRenderThread();
         ShadowPass.invalidate();
+        StandardPipeline.forget();
         ShaderSources.clear();
         RenderSystem.getDevice().clearPipelineCache();
     }
@@ -225,6 +231,11 @@ public final class Shaders {
         if (!active || !drawingWorld) return;
         ExtraConfig config = ExtraConfig.get();
         RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
+        if (StandardPipeline.inUse()) {
+            StandardPipeline.renderFinal(main);
+            setPhase(PHASE_HAND);
+            return;
+        }
         if (config.shaderAmbientOcclusion || (config.shaderSunRays && castsShadows())) {
             // The copy made for water is taken again now, so the effects see the finished world, water included.
             TARGETS.copyScene(main);
@@ -373,7 +384,7 @@ public final class Shaders {
         g.minAmbient.w = lightmap.darknessEffectScale;
 
         Vec3 position = camera.pos;
-        g.cameraPos.set((float) wrap(position.x), (float) wrap(position.y), (float) wrap(position.z), (float) ((System.nanoTime() / 1.0e9) % 3600.0));
+        g.cameraPos.set((float) wrap(position.x), (float) wrap(position.y), (float) wrap(position.z), FROZEN_TIME ? 0.0F : (float) ((System.nanoTime() / 1.0e9) % 3600.0));
 
         ShaderTargets targets = TARGETS;
         g.screen.set(targets.width(), targets.height(), 1.0F / targets.width(), 1.0F / targets.height());

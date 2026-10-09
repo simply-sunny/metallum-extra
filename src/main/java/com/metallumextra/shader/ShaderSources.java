@@ -3,6 +3,7 @@ package com.metallumextra.shader;
 import com.metallumextra.MetallumExtra;
 import com.metallumextra.shader.pack.BuiltinPack;
 import com.metallumextra.shader.pack.PackManager;
+import com.metallumextra.shader.pack.ProgramSet;
 import com.metallumextra.shader.pack.ShaderPack;
 import com.mojang.blaze3d.shaders.ShaderSource;
 import com.mojang.blaze3d.shaders.ShaderType;
@@ -59,6 +60,9 @@ public final class ShaderSources {
         Lookup current = lookup;
         String extension = type == ShaderType.VERTEX ? ".vsh" : ".fsh";
         boolean ours = id.getNamespace().equals(MetallumExtra.MOD_ID);
+        if (ours && current.pack.standard()) {
+            return standard(current, id.getPath(), type);
+        }
         String file = ours
                 ? "program/" + id.getPath() + extension
                 : "override/" + id.getNamespace() + "/" + id.getPath() + extension;
@@ -68,6 +72,18 @@ public final class ShaderSources {
             throw new IllegalStateException("Shader pack " + current.pack.name() + " has no " + file);
         }
         return text;
+    }
+
+    /**
+     * A program of a standard pack, asked for as {@code metallum-extra:standard/<program>}; see {@link StandardPipeline}.
+     * The dimension in use picks between a program's files in the dimension's folder and in the shared one.
+     */
+    private static String standard(final Lookup current, final String path, final ShaderType type) {
+        String name = path.startsWith("standard/") ? path.substring("standard/".length()) : path;
+        ProgramSet.Program program = StandardPipeline.programs().find(name);
+        String file = program == null ? null : type == ShaderType.VERTEX ? program.vertex() : program.fragment();
+        if (file == null) throw new IllegalStateException("Shader pack " + current.pack.name() + " has no " + name + " program for this dimension");
+        return current.files.computeIfAbsent(file, f -> Optional.ofNullable(readExpanded(current.pack, f))).orElseThrow();
     }
 
     /** Use this pack's files from now on. */

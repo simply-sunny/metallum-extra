@@ -1,5 +1,7 @@
 package com.metallumextra.shader.pack;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.jspecify.annotations.Nullable;
@@ -8,8 +10,12 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
@@ -24,12 +30,16 @@ public final class ZipPack implements ShaderPack {
     /** A pack is a few hundred kilobytes of text; this only stops a damaged or hostile file from filling memory. */
     private static final long MAX_BYTES = 64L * 1024 * 1024;
 
+    private static final int MAX_OPTIONS = 64;
+
     private final String name;
     private final Map<String, String> files;
+    private final List<PackOption> options;
 
-    private ZipPack(final String name, final Map<String, String> files) {
+    private ZipPack(final String name, final Map<String, String> files, final List<PackOption> options) {
         this.name = name;
         this.files = files;
+        this.options = options;
     }
 
     /** Whether the ZIP declares itself a shader pack at all (it has a {@code pack.json}). Other ZIPs are not ours to judge. */
@@ -48,7 +58,7 @@ public final class ZipPack implements ShaderPack {
         try (ZipFile file = new ZipFile(zip.toFile())) {
             ZipEntry meta = file.getEntry("pack.json");
             if (meta == null) throw new PackException("pack.json is missing");
-            checkFormat(new String(read(file, meta, MAX_BYTES), StandardCharsets.UTF_8));
+            List<PackOption> options = parse(new String(read(file, meta, MAX_BYTES), StandardCharsets.UTF_8));
 
             Map<String, String> files = new HashMap<>();
             long budget = MAX_BYTES;
@@ -60,14 +70,14 @@ public final class ZipPack implements ShaderPack {
                 budget -= bytes.length;
                 files.put(entryName.substring(SHADERS.length()), new String(bytes, StandardCharsets.UTF_8));
             }
-            return new ZipPack(name, Map.copyOf(files));
+            return new ZipPack(name, Map.copyOf(files), options);
         } catch (IOException | RuntimeException e) {
             if (e instanceof PackException pack) throw pack;
             throw new PackException("could not read the ZIP: " + e.getMessage(), e);
         }
     }
 
-    private static void checkFormat(final String json) throws PackException {
+    private static List<PackOption> parse(final String json) throws PackException {
         JsonObject root;
         try {
             root = JsonParser.parseString(json).getAsJsonObject();
@@ -81,6 +91,69 @@ public final class ZipPack implements ShaderPack {
         if (format != FORMAT) {
             throw new PackException("pack format " + format + " is not supported (this version reads format " + FORMAT + ")");
         }
+        return parseOptions(root.get("options"));
+    }
+
+    private static List<PackOption> parseOptions(final JsonElement element) throws PackException {
+        if (element == null) return List.of();
+        if (!element.isJsonArray()) throw new PackException("pack.json: \"options\" must be a list");
+        JsonArray array = element.getAsJsonArray();
+        if (array.size() > MAX_OPTIONS) throw new PackException("pack.json: more than " + MAX_OPTIONS + " options");
+        List<PackOption> options = new ArrayList<>();
+        Set<String> ids = new HashSet<>();
+        for (int i = 0; i < array.size(); i++) {
+            String where = "pack.json: option " + (i + 1);
+            if (!array.get(i).isJsonObject()) throw new PackException(where + " must be an object");
+            JsonObject o = array.get(i).getAsJsonObject();
+            String id = text(o, "id", where);
+            if (!PackOption.ID.matcher(id).matches()) {
+                throw new PackException(where + ": id \"" + id + "\" must be capital letters, digits and _, starting with a letter");
+            }
+            if (!ids.add(id)) throw new PackException(where + ": id " + id + " is used twice");
+            where = "pack.json: option " + id;
+            String label = o.has("name") ? text(o, "name", where) : id;
+            String type = o.has("type") ? text(o, "type", where) : "choice";
+            if (type.equals("toggle")) {
+                boolean on = false;
+                if (o.has("default")) {
+                    if (!o.get("default").isJsonPrimitive() || !o.get("default").getAsJsonPrimitive().isBoolean()) {
+                        throw new PackException(where + ": default of a toggle must be true or false");
+                    }
+                    on = o.get("default").getAsBoolean();
+                }
+                options.add(new PackOption(id, label, List.of("Off", "On"), on ? 1 : 0, true));
+            } else if (type.equals("choice")) {
+                if (!o.has("values") || !o.get("values").isJsonArray()) throw new PackException(where + ": \"values\" must be a list");
+                List<String> values = new ArrayList<>();
+                for (JsonElement v : o.getAsJsonArray("values")) {
+                    if (!v.isJsonPrimitive() || !v.getAsJsonPrimitive().isString() || v.getAsString().isBlank()) {
+                        throw new PackException(where + ": every value must be a text");
+                    }
+                    if (values.contains(v.getAsString())) throw new PackException(where + ": value " + v.getAsString() + " is listed twice");
+                    values.add(v.getAsString());
+                }
+                if (values.size() < 2 || values.size() > PackOption.MAX_VALUES) {
+                    throw new PackException(where + ": needs 2 to " + PackOption.MAX_VALUES + " values");
+                }
+                int def = 0;
+                if (o.has("default")) {
+                    def = values.indexOf(text(o, "default", where));
+                    if (def < 0) throw new PackException(where + ": default is not one of the values");
+                }
+                options.add(new PackOption(id, label, List.copyOf(values), def, false));
+            } else {
+                throw new PackException(where + ": type must be \"choice\" or \"toggle\"");
+            }
+        }
+        return List.copyOf(options);
+    }
+
+    private static String text(final JsonObject o, final String key, final String where) throws PackException {
+        JsonElement e = o.get(key);
+        if (e == null || !e.isJsonPrimitive() || !e.getAsJsonPrimitive().isString() || e.getAsString().isBlank()) {
+            throw new PackException(where + ": \"" + key + "\" must be a text");
+        }
+        return e.getAsString();
     }
 
     private static byte[] read(final ZipFile file, final ZipEntry entry, final long limit) throws IOException {
@@ -99,5 +172,10 @@ public final class ZipPack implements ShaderPack {
     @Override
     public String name() {
         return name;
+    }
+
+    @Override
+    public List<PackOption> options() {
+        return options;
     }
 }

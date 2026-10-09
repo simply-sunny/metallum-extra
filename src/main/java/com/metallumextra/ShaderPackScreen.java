@@ -2,6 +2,7 @@ package com.metallumextra;
 
 import com.metallumextra.shader.Shaders;
 import com.metallumextra.shader.pack.PackManager;
+import com.metallumextra.shader.pack.ShaderPack;
 import com.metallumextra.shader.pack.PackManager.Entry;
 import com.metallumextra.shader.pack.ZipPack;
 import net.minecraft.ChatFormatting;
@@ -95,9 +96,15 @@ public final class ShaderPackScreen extends Screen {
                 onClose();
             }
         }).bounds(width / 2 - 50, bottom, 100, ROW).build());
-        options = addRenderableWidget(Button.builder(Component.literal("Shader Options..."), button -> minecraft.gui.setScreen(new ShaderOptionsScreen(this)))
+        options = addRenderableWidget(Button.builder(Component.literal("Shader Options..."), button -> minecraft.gui.setScreen(new ShaderOptionsScreen(this, chosenPack())))
                 .bounds(width / 2 + 54, bottom, 100, ROW).build());
         options.active = !chosen.equals(OFF_ID);
+    }
+
+    /** The pack that is highlighted, which may not be the one in use yet; null for OFF. */
+    private @Nullable ShaderPack chosenPack() {
+        Entry entry = PackManager.find(chosen);
+        return entry == null ? null : entry.pack();
     }
 
     private Component doneLabel() {

@@ -167,7 +167,7 @@ public final class DebugScript {
                 pause(100);
             }
             case "screen" -> {
-                minecraft.gui.setScreen(rest.equals("settings") ? new ExtraConfigScreen(null) : rest.equals("packs") ? new ShaderPackScreen(null) : rest.equals("options") ? new ShaderOptionsScreen(null) : null);
+                minecraft.gui.setScreen(rest.equals("settings") ? new ExtraConfigScreen(null) : rest.equals("packs") ? new ShaderPackScreen(null) : rest.equals("options") ? new ShaderOptionsScreen(null, null) : null);
                 pause(300);
             }
             case "key" -> {
@@ -199,6 +199,17 @@ public final class DebugScript {
                 PackManager.rescan();
                 String error = PackManager.select(rest);
                 if (error != null) MetallumExtra.LOGGER.warn("[Metallum Extra] debug script: pack {} not chosen: {}", rest, error);
+                pause(300);
+            }
+            case "packopt" -> {
+                // packopt <ID> <index>: sets an option of the pack in use and compiles its shaders again.
+                String[] parts = rest.split("\\s+");
+                for (var option : PackManager.active().options()) {
+                    if (option.id().equals(parts[0])) {
+                        com.metallumextra.shader.pack.PackOptions.set(PackManager.active().name(), option, Integer.parseInt(parts[1]));
+                        Shaders.packOptionsChanged();
+                    }
+                }
                 pause(300);
             }
             case "packs" -> {

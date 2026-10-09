@@ -31,6 +31,48 @@ MyPack.zip
 version of the mod never half-understands a newer pack. There is no author, version or ID field: the **name of the ZIP
 file** (without `.zip`) is the pack's name in the menu.
 
+## Options your pack offers
+
+A pack can list settings in `pack.json`. They show up under **Shader Options... > "<your pack> Options..."**, are
+saved per pack (in `config/metallum-extra-packs.properties`), and reach your shaders as `#define`s.
+
+```json
+{
+  "format": 1,
+  "options": [
+    {"id": "QUALITY", "name": "Quality", "values": ["Low", "Medium", "High", "Ultra"], "default": "High"},
+    {"id": "BLOOM", "name": "Bloom", "type": "toggle", "default": true},
+    {"id": "GRAIN", "name": "Film Grain", "type": "toggle"}
+  ]
+}
+```
+
+- `id`: capital letters, digits and `_`, starting with a letter; the shaders see `OPTION_<id>`. Required, and unique.
+- `name`: the label in the menu (the id if left out).
+- A **choice** (the default type) has `values`, 2 to 16 texts, and an optional `default` that is one of them (the first
+  if left out). The define is the value's position, counting from 0: `OPTION_QUALITY` is 2 for `High`.
+- A **toggle** (`"type": "toggle"`) is Off (0) or On (1); `default` is `true` or `false` (false if left out).
+- Up to 64 options; 12 are shown per page.
+
+The mod puts the defines right after the first line of every shader of the pack, which is why that line must be the
+`#version`. Use them like any other define:
+
+```glsl
+#if OPTION_QUALITY >= 2
+    // shadows with more samples
+#endif
+#if OPTION_BLOOM == 1
+    color += glow;
+#endif
+```
+
+Changes are saved as they are made, and the shaders are compiled again when the player leaves the options screen. Every
+shader is read again with the new defines, so the first change to a value you have not used before takes a moment; the
+Metal translations of the results are cached, so going back is instant. A pack with a mistake in an option in
+`pack.json` is shown in the menu with the reason and cannot be chosen.
+
+This is also how one pack serves several quality levels: one ZIP, with a `QUALITY` choice, instead of one ZIP per level.
+
 The ZIP must have `pack.json` and `shaders/` at its top level, not inside a folder. (Zipping a folder on macOS usually adds
 that folder; zip its *contents*: `cd MyPack && zip -r ../MyPack.zip .`)
 
@@ -184,7 +226,8 @@ Start the game with these JVM arguments:
 
 - Packs use this mod's pipeline as it is: you can change what every pass computes, but not add passes, add uniforms,
   change a pipeline's vertex format, or change render targets.
-- No per-pack settings screen. The options in Shader Options (quality, shadows, glow, ...) are the mod's and reach your
-  shaders through `MxGlobals`.
+- A pack's own options are choices and toggles only (no sliders), and they are compile-time defines, so changing one
+  recompiles the shaders. The mod's own Shader Options (quality, shadows, glow, ...) reach your shaders through
+  `MxGlobals` and are shown for every pack.
 - No inheritance or merging between packs, and no shader downloads.
 - Only Metal on macOS, and only with Sodium. Not together with Shine (see details.md).

@@ -1,5 +1,7 @@
 package com.metallumextra;
 
+import com.metallumextra.shader.pack.PackManager;
+import com.metallumextra.shader.pack.ShaderPack;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.layouts.GridLayout;
 import net.minecraft.client.gui.layouts.HeaderAndFooterLayout;
@@ -13,11 +15,14 @@ public final class ShaderOptionsScreen extends Screen {
     private static final int BUTTON_WIDTH = 200;
 
     private final Screen parent;
+    private final ShaderPack pack;
     private final HeaderAndFooterLayout layout = new HeaderAndFooterLayout(this);
 
-    public ShaderOptionsScreen(final Screen parent) {
+    /** @param pack the pack whose own options are offered below the mod's settings; null for the one in use */
+    public ShaderOptionsScreen(final Screen parent, final @org.jspecify.annotations.Nullable ShaderPack pack) {
         super(Component.literal("Shader Options"));
         this.parent = parent;
+        this.pack = pack != null ? pack : PackManager.active();
     }
 
     @Override
@@ -31,6 +36,13 @@ public final class ShaderOptionsScreen extends Screen {
         cells.addChild(ExtraConfigScreen.choice(Settings.shaderQuality()));
         for (Settings.Toggle toggle : Settings.shaders()) {
             cells.addChild(ExtraConfigScreen.button(toggle));
+        }
+
+        if (!pack.options().isEmpty()) {
+            Button own = rows.addChild(Button.builder(Component.literal(pack.name() + " Options..."),
+                    button -> minecraft.gui.setScreen(new PackOptionsScreen(this, pack))).width(BUTTON_WIDTH * 2 + 6).build());
+            own.setTooltip(net.minecraft.client.gui.components.Tooltip.create(Component.literal(
+                    "Settings that this shader pack offers itself.")));
         }
 
         layout.addToFooter(Button.builder(CommonComponents.GUI_DONE, button -> onClose()).width(BUTTON_WIDTH).build());

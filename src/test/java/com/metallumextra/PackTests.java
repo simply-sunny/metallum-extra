@@ -3,6 +3,8 @@ package com.metallumextra;
 import com.metallumextra.shader.pack.BuiltinPack;
 import com.metallumextra.shader.pack.PackException;
 import com.metallumextra.shader.pack.PackManager;
+import com.metallumextra.shader.pack.PackOption;
+import com.metallumextra.shader.pack.PackOptions;
 import com.metallumextra.shader.pack.ShaderPack;
 import com.metallumextra.shader.pack.TranslationCache;
 import com.metallumextra.shader.pack.ZipPack;
@@ -37,7 +39,9 @@ public final class PackTests {
         }
         Path work = Files.createTempDirectory("pack-tests");
         try {
+            System.setProperty("metallumextra.packOptionsFile", work.resolve("packs.properties").toString());
             loading(work.resolve("loading"));
+            options(work.resolve("options"));
             discovery(work.resolve("discovery"));
             translationCache(work.resolve("cache"));
         } finally {
@@ -63,7 +67,10 @@ public final class PackTests {
                 {"2_redtoblue", false, true},
                 {"3_bluetored", true, false},
                 {"4_builtin_again", true, true},
-                {"5_redtoblue_again", false, true}};
+                {"5_redtoblue_again", false, true},
+                {"6_option_off", true, true},
+                {"7_option_on", false, true},
+                {"8_option_off_again", true, true}};
         for (Object[] row : expected) {
             java.awt.image.BufferedImage image = javax.imageio.ImageIO.read(folder.resolve(row[0] + ".png").toFile());
             double red = share(image, true);
@@ -165,6 +172,44 @@ public final class PackTests {
         expectOpenFails("pack.json without a format", dir.resolve("NoFormat.zip"), "{}", "format");
         expectOpenFails("pack.json with a text format", dir.resolve("TextFormat.zip"), "{\"format\": \"1\"}", "format");
         validates("extra fields in pack.json are ignored", openWithJson(dir.resolve("Extra.zip"), "{\"format\": 1, \"author\": \"x\"}"));
+    }
+
+    private static final String OPTIONS_JSON = "{\"format\": 1, \"options\": ["
+            + "{\"id\": \"QUALITY\", \"name\": \"Quality\", \"values\": [\"Low\", \"Medium\", \"High\", \"Ultra\"], \"default\": \"High\"},"
+            + "{\"id\": \"BLOOM\", \"type\": \"toggle\", \"default\": true},"
+            + "{\"id\": \"GRAIN\", \"type\": \"toggle\"}]}";
+
+    private static void options(final Path dir) throws Exception {
+        ZipPack pack = openWithJson(dir.resolve("WithOptions.zip"), OPTIONS_JSON);
+        var options = pack.options();
+        check("three options are read", options.size() == 3);
+        check("a choice keeps its values and default", options.get(0).values().equals(java.util.List.of("Low", "Medium", "High", "Ultra")) && options.get(0).defaultIndex() == 2);
+        check("a toggle is Off/On and defaults on when asked", options.get(1).toggle() && options.get(1).defaultIndex() == 1 && options.get(1).values().equals(java.util.List.of("Off", "On")));
+        check("a toggle is off by default otherwise", options.get(2).defaultIndex() == 0 && options.get(2).label().equals("GRAIN"));
+        check("a pack without options has none", openWithJson(dir.resolve("Plain.zip"), "{\"format\": 1}").options().isEmpty());
+        validates("a pack with options is valid", pack);
+
+        String edges = pack.load("program/edges.fsh");
+        String[] lines = edges.split("\n");
+        check("defines come right after the #version line", lines[0].startsWith("#version") && lines[1].equals("#define OPTION_QUALITY 2") && lines[2].equals("#define OPTION_BLOOM 1") && lines[3].equals("#define OPTION_GRAIN 0"));
+        check("a pack without options gets no defines", !openWithJson(dir.resolve("Plain.zip"), "{\"format\": 1}").load("program/edges.fsh").contains("OPTION_"));
+
+        PackOptions.set("WithOptions", options.get(0), 3);
+        PackOptions.set("WithOptions", options.get(2), 1);
+        String changed = pack.load("program/edges.fsh");
+        check("a chosen value reaches the shader", changed.contains("#define OPTION_QUALITY 3\n") && changed.contains("#define OPTION_GRAIN 1\n"));
+        check("options are kept per pack", PackOptions.get("Other", options.get(0)) == 2);
+        check("the choice is saved by label, so a reordered pack keeps it", options.get(0).indexOf("Ultra") == 3 && new PackOption("QUALITY", "Quality", java.util.List.of("Ultra", "Low"), 1, false).indexOf("Ultra") == 0);
+        check("a value the pack no longer has falls back to the default", new PackOption("QUALITY", "Quality", java.util.List.of("Low", "High"), 1, false).indexOf("Ultra") == 1);
+        PackOptions.reset("WithOptions", options);
+        check("reset brings the defaults back", pack.load("program/edges.fsh").contains("#define OPTION_QUALITY 2\n"));
+
+        expectOpenFails("an option id in lower case is refused", dir.resolve("B1.zip"), "{\"format\":1,\"options\":[{\"id\":\"quality\",\"type\":\"toggle\"}]}", "id");
+        expectOpenFails("a repeated id is refused", dir.resolve("B2.zip"), "{\"format\":1,\"options\":[{\"id\":\"A\",\"type\":\"toggle\"},{\"id\":\"A\",\"type\":\"toggle\"}]}", "twice");
+        expectOpenFails("a choice with one value is refused", dir.resolve("B3.zip"), "{\"format\":1,\"options\":[{\"id\":\"A\",\"values\":[\"x\"]}]}", "values");
+        expectOpenFails("a default that is not a value is refused", dir.resolve("B4.zip"), "{\"format\":1,\"options\":[{\"id\":\"A\",\"values\":[\"x\",\"y\"],\"default\":\"z\"}]}", "default");
+        expectOpenFails("an unknown type is refused", dir.resolve("B5.zip"), "{\"format\":1,\"options\":[{\"id\":\"A\",\"type\":\"slider\"}]}", "type");
+        expectOpenFails("options that are not a list are refused", dir.resolve("B6.zip"), "{\"format\":1,\"options\":{}}", "list");
     }
 
     private static ZipPack openWithJson(final Path zip, final String json) throws IOException, PackException {

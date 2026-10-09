@@ -3,6 +3,7 @@ package com.metallumextra.shader.pack;
 import org.jspecify.annotations.Nullable;
 
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -18,9 +19,15 @@ public interface ShaderPack {
     /** What the player sees in the menu. */
     String name();
 
+    /** The settings this pack offers, in menu order. Most packs have none. */
+    default List<PackOption> options() {
+        return List.of();
+    }
+
     /**
      * The file with every {@code #include "name.glsl"} replaced by {@code lib/name.glsl} from this same pack. A library
-     * file goes in once per shader, however many of the files it includes ask for it.
+     * file goes in once per shader, however many of the files it includes ask for it. The pack's options, as the player
+     * set them, follow the file's first line (its {@code #version}) as {@code #define OPTION_<ID> <index>}.
      *
      * @throws IllegalStateException if the file or something it includes is not in the pack
      */
@@ -29,6 +36,14 @@ public interface ShaderPack {
         if (text == null) throw new IllegalStateException("Shader pack " + name() + " has no " + path);
         StringBuilder out = new StringBuilder(text.length() + 4096);
         expand(text, path, out, new HashSet<>());
+        List<PackOption> options = options();
+        if (!options.isEmpty()) {
+            StringBuilder defines = new StringBuilder();
+            for (PackOption option : options) {
+                defines.append("#define ").append(option.define()).append(' ').append(PackOptions.get(name(), option)).append('\n');
+            }
+            out.insert(out.indexOf("\n") + 1, defines);
+        }
         return out.toString();
     }
 

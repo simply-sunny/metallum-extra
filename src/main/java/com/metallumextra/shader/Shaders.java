@@ -182,6 +182,13 @@ public final class Shaders {
         RenderSystem.getDevice().clearPipelineCache();
     }
 
+    /** The pack in use has had its own options changed: its shaders are read and compiled again with the new values. */
+    public static void packOptionsChanged() {
+        if (!active) return;
+        RenderSystem.assertOnRenderThread();
+        switchPack();
+    }
+
     /** Asks for the shaders to be read and compiled again; used after a setting that is baked into them changes. */
     public static void reload() {
         if (!active) return;

@@ -81,6 +81,10 @@ public final class TestPacks {
         Map<String, String> blue = builtinFiles();
         blue.put("program/edges.fsh", BLUE_TO_RED);
         write(folder.resolve("BlueToRed.zip"), "{\"format\": 1}", blue);
+        // A pack with an option: red becomes blue only while SWAP is On.
+        Map<String, String> optional = builtinFiles();
+        optional.put("program/edges.fsh", RED_TO_BLUE.replace("if (color.r", "if (OPTION_SWAP == 1 && color.r"));
+        write(folder.resolve("WithOption.zip"), "{\"format\": 1, \"options\": [{\"id\": \"SWAP\", \"name\": \"Swap\", \"type\": \"toggle\"}]}", optional);
         // Packs that must not take the game down: one whose GLSL has a mistake, and one that lacks a shader.
         Map<String, String> syntax = builtinFiles();
         syntax.put("program/edges.fsh", "#version 330\n\nuniform sampler2D InSampler;\nin vec2 texCoord;\nout vec4 fragColor;\n\nvoid main() {\n    fragColor = texture(InSampler, texCoord)\n}\n");

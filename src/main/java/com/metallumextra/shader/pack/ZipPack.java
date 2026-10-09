@@ -35,17 +35,27 @@ public final class ZipPack implements ShaderPack {
     private final String name;
     private final Map<String, String> files;
     private final List<PackOption> options;
+    private final boolean standard;
 
-    private ZipPack(final String name, final Map<String, String> files, final List<PackOption> options) {
+    private ZipPack(final String name, final Map<String, String> files, final List<PackOption> options, final boolean standard) {
         this.name = name;
         this.files = files;
         this.options = options;
+        this.standard = standard;
     }
 
-    /** Whether the ZIP declares itself a shader pack at all (it has a {@code pack.json}). Other ZIPs are not ours to judge. */
+    /**
+     * Whether the ZIP is a shader pack at all: it has a {@code pack.json} (this mod's earlier layout) or a
+     * {@code shaders/} folder holding shaders or {@code shaders.properties} (the Iris layout). Other ZIPs are not ours to judge.
+     */
     public static boolean isPack(final Path zip) {
         try (ZipFile file = new ZipFile(zip.toFile())) {
-            return file.getEntry("pack.json") != null;
+            if (file.getEntry("pack.json") != null) return true;
+            for (var entries = file.entries(); entries.hasMoreElements(); ) {
+                String entry = entries.nextElement().getName();
+                if (entry.startsWith(SHADERS) && (entry.endsWith(".fsh") || entry.endsWith(".vsh") || entry.endsWith("/shaders.properties"))) return true;
+            }
+            return false;
         } catch (IOException | RuntimeException e) {
             return false;
         }
@@ -57,8 +67,9 @@ public final class ZipPack implements ShaderPack {
         String name = fileName.toLowerCase(java.util.Locale.ROOT).endsWith(".zip") ? fileName.substring(0, fileName.length() - 4) : fileName;
         try (ZipFile file = new ZipFile(zip.toFile())) {
             ZipEntry meta = file.getEntry("pack.json");
-            if (meta == null) throw new PackException("pack.json is missing");
-            List<PackOption> options = parse(new String(read(file, meta, MAX_BYTES), StandardCharsets.UTF_8));
+            // No pack.json: the Iris layout, which has no metadata file of ours.
+            boolean standard = meta == null;
+            List<PackOption> options = standard ? List.of() : parse(new String(read(file, meta, MAX_BYTES), StandardCharsets.UTF_8));
 
             Map<String, String> files = new HashMap<>();
             long budget = MAX_BYTES;
@@ -70,7 +81,8 @@ public final class ZipPack implements ShaderPack {
                 budget -= bytes.length;
                 files.put(entryName.substring(SHADERS.length()), new String(bytes, StandardCharsets.UTF_8));
             }
-            return new ZipPack(name, Map.copyOf(files), options);
+            if (standard && files.isEmpty()) throw new PackException("there is no shaders/ folder with files in it");
+            return new ZipPack(name, Map.copyOf(files), options, standard);
         } catch (IOException | RuntimeException e) {
             if (e instanceof PackException pack) throw pack;
             throw new PackException("could not read the ZIP: " + e.getMessage(), e);
@@ -172,6 +184,16 @@ public final class ZipPack implements ShaderPack {
     @Override
     public String name() {
         return name;
+    }
+
+    @Override
+    public boolean standard() {
+        return standard;
+    }
+
+    @Override
+    public Set<String> files() {
+        return files.keySet();
     }
 
     @Override

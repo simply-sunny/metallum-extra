@@ -19,6 +19,19 @@ public interface ShaderPack {
     /** What the player sees in the menu. */
     String name();
 
+    /**
+     * Whether the pack follows the Iris/OptiFine layout ({@code shaders/world0/final.fsh}, {@code shaders.properties}, ...)
+     * and not this mod's earlier one ({@code pack.json} with {@code program/} and {@code override/}).
+     */
+    default boolean standard() {
+        return false;
+    }
+
+    /** Every file of the pack, by path, for discovering programs. */
+    default Set<String> files() {
+        return Set.of();
+    }
+
     /** The settings this pack offers, in menu order. Most packs have none. */
     default List<PackOption> options() {
         return List.of();
@@ -47,6 +60,30 @@ public interface ShaderPack {
         return out.toString();
     }
 
+    /**
+     * Where an {@code #include} points. In a standard pack a name starting with {@code /} counts from the {@code shaders/}
+     * folder and any other from the folder of the file that includes it, as in Iris; in this mod's earlier layout every
+     * name is a file in {@code lib/}.
+     */
+    private String includePath(final String from, final String name) {
+        if (!standard()) return "lib/" + name;
+        java.util.ArrayDeque<String> parts = new java.util.ArrayDeque<>();
+        if (!name.startsWith("/")) {
+            String[] folder = from.split("/");
+            for (int i = 0; i < folder.length - 1; i++) parts.addLast(folder[i]);
+        }
+        for (String part : name.split("/")) {
+            if (part.isEmpty() || part.equals(".")) continue;
+            if (part.equals("..")) {
+                if (parts.isEmpty()) throw new IllegalStateException("Bad #include \"" + name + "\" in " + from + ": it leaves the shaders folder");
+                parts.removeLast();
+            } else {
+                parts.addLast(part);
+            }
+        }
+        return String.join("/", parts);
+    }
+
     private void expand(final String text, final String file, final StringBuilder out, final Set<String> included) {
         for (String line : text.split("\n", -1)) {
             String trimmed = line.trim();
@@ -54,7 +91,7 @@ public interface ShaderPack {
                 int open = trimmed.indexOf('"');
                 int close = trimmed.lastIndexOf('"');
                 if (open < 0 || close <= open) throw new IllegalStateException("Bad #include in " + file + ": " + line);
-                String name = "lib/" + trimmed.substring(open + 1, close);
+                String name = includePath(file, trimmed.substring(open + 1, close));
                 if (!included.add(name)) continue;
                 String library = read(name);
                 if (library == null) throw new IllegalStateException("Missing shader include " + name + " (from " + file + ")");

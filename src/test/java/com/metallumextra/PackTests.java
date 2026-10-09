@@ -5,6 +5,7 @@ import com.metallumextra.shader.pack.PackException;
 import com.metallumextra.shader.pack.PackManager;
 import com.metallumextra.shader.pack.PackOption;
 import com.metallumextra.shader.pack.PackOptions;
+import com.metallumextra.shader.pack.ProgramSet;
 import com.metallumextra.shader.pack.ShaderPack;
 import com.metallumextra.shader.pack.TranslationCache;
 import com.metallumextra.shader.pack.ZipPack;
@@ -37,11 +38,17 @@ public final class PackTests {
             System.out.println(checks + " checks, " + failures + " failed");
             System.exit(failures > 0 ? 1 : 0);
         }
+        if (args.length >= 3 && args[0].equals("compare")) {
+            compare(Path.of(args[1]), Path.of(args[2]), args.length > 3 ? Double.parseDouble(args[3]) : 0.5, args.length > 4 ? Double.parseDouble(args[4]) : 1.0);
+            System.out.println(checks + " checks, " + failures + " failed");
+            System.exit(failures > 0 ? 1 : 0);
+        }
         Path work = Files.createTempDirectory("pack-tests");
         try {
             System.setProperty("metallumextra.packOptionsFile", work.resolve("packs.properties").toString());
             loading(work.resolve("loading"));
             options(work.resolve("options"));
+            standardLayout(work.resolve("standard"));
             discovery(work.resolve("discovery"));
             translationCache(work.resolve("cache"));
         } finally {
@@ -51,6 +58,55 @@ public final class PackTests {
         }
         System.out.println(checks + " checks, " + failures + " failed");
         if (failures > 0) System.exit(1);
+    }
+
+    // ---- the pictures of two runs of src/test/baseline/run.sh ----
+
+    /**
+     * Every picture in {@code a} must have a twin in {@code b} that shows the same scene (the {@code .txt} next to it says
+     * where and with what it was taken) and differs by at most {@code meanTolerance} (the average difference per
+     * color channel, 0 to 255) and in at most {@code percentTolerance} percent of its pixels by more than 30 (summed over the channels).
+     */
+    private static void compare(final Path a, final Path b, final double meanTolerance, final double percentTolerance) throws IOException {
+        try (Stream<Path> list = Files.list(a)) {
+            for (Path first : list.filter(p -> p.toString().endsWith(".png")).sorted().toList()) {
+                String name = first.getFileName().toString();
+                Path second = b.resolve(name);
+                if (!Files.exists(second)) {
+                    check(name + ": missing from " + b, false);
+                    continue;
+                }
+                String infoA = Files.readString(first.resolveSibling(name.replace(".png", ".txt")));
+                String infoB = Files.readString(second.resolveSibling(name.replace(".png", ".txt")));
+                // The game time of a scene differs between runs; everything else about it must not.
+                check(name + ": same scene (resolution, place, dimension, settings)", sceneOf(infoA).equals(sceneOf(infoB)));
+                java.awt.image.BufferedImage x = javax.imageio.ImageIO.read(first.toFile());
+                java.awt.image.BufferedImage y = javax.imageio.ImageIO.read(second.toFile());
+                if (x.getWidth() != y.getWidth() || x.getHeight() != y.getHeight()) {
+                    check(name + ": same size", false);
+                    continue;
+                }
+                long sum = 0, strong = 0, total = 0;
+                for (int i = 0; i < x.getWidth(); i++) {
+                    for (int j = 0; j < x.getHeight(); j++) {
+                        int p = x.getRGB(i, j), q = y.getRGB(i, j);
+                        int d = Math.abs(((p >> 16) & 255) - ((q >> 16) & 255)) + Math.abs(((p >> 8) & 255) - ((q >> 8) & 255)) + Math.abs((p & 255) - (q & 255));
+                        sum += d;
+                        if (d > 30) strong++;
+                        total++;
+                    }
+                }
+                double mean = sum / (double) total / 3.0;
+                double percent = 100.0 * strong / total;
+                check(String.format("%s: mean difference %.3f (limit %.2f), %.3f%% of pixels differ strongly (limit %.2f%%)", name, mean, meanTolerance, percent, percentTolerance),
+                        mean <= meanTolerance && percent <= percentTolerance);
+            }
+        }
+    }
+
+    /** The lines of a scene description that must agree between runs: all but the game time. */
+    private static String sceneOf(final String info) {
+        return info.lines().filter(line -> !line.startsWith("gameTime")).collect(java.util.stream.Collectors.joining("\n"));
     }
 
     // ---- the pictures from src/test/pack-regression/packs.txt ----
@@ -68,6 +124,10 @@ public final class PackTests {
                 {"3_bluetored", true, false},
                 {"4_builtin_again", true, true},
                 {"5_redtoblue_again", false, true},
+                {"9_solidblue", false, true},
+                {"10_solidred", true, false},
+                {"11_swap", true, true},
+                {"12_builtin_after_standard", true, true},
                 {"6_option_off", true, true},
                 {"7_option_on", false, true},
                 {"8_option_off_again", true, true}};
@@ -79,6 +139,15 @@ public final class PackTests {
             check(String.format("%s: red %s, blue %s (red %.1f%%, blue %.1f%%)", row[0], (boolean) row[1] ? "present" : "gone",
                     (boolean) row[2] ? "present" : "gone", red * 100, blue * 100), ok);
         }
+        imageRelations(folder);
+    }
+
+    private static void imageRelations(final Path folder) throws IOException {
+        // The built-in pack draws more red than blue here; swapping the two in a standard pack's final program reverses that.
+        java.awt.image.BufferedImage plain = javax.imageio.ImageIO.read(folder.resolve("12_builtin_after_standard.png").toFile());
+        java.awt.image.BufferedImage swapped = javax.imageio.ImageIO.read(folder.resolve("11_swap.png").toFile());
+        check("a standard pack that swaps red and blue shows more blue than red where the built-in pack shows more red",
+                share(plain, true) > share(plain, false) && share(swapped, false) > share(swapped, true));
     }
 
     /** The share of the picture that is strongly red (or blue): that channel at least 2.5 times each of the others. */
@@ -212,6 +281,114 @@ public final class PackTests {
         expectOpenFails("options that are not a list are refused", dir.resolve("B6.zip"), "{\"format\":1,\"options\":{}}", "list");
     }
 
+    private static ZipPack openStandard(final Path zip, final Map<String, String> files) throws IOException, PackException {
+        TestPacks.writeStandard(zip, files);
+        return ZipPack.open(zip);
+    }
+
+    private static Map<String, String> finalFiles() {
+        Map<String, String> files = new java.util.LinkedHashMap<>();
+        files.put("world0/final.vsh", "#version 330\nvoid main() { gl_Position = vec4(0.0); }\n");
+        files.put("world0/final.fsh", TestPacks.finalFragment("fragColor = color;"));
+        return files;
+    }
+
+    private static void standardLayout(final Path dir) throws Exception {
+        Files.createDirectories(dir);
+        TestPacks.writeStandardPack(dir.resolve("SolidBlue.zip"), "fragColor = vec4(0.0, 0.0, 1.0, 1.0);");
+        check("a ZIP with shaders/ and no pack.json is a pack", ZipPack.isPack(dir.resolve("SolidBlue.zip")));
+        ZipPack blue = ZipPack.open(dir.resolve("SolidBlue.zip"));
+        check("it is a standard pack, named after the file", blue.standard() && blue.name().equals("SolidBlue"));
+        check("an older pack is not a standard one", !openWithJson(dir.resolve("Old.zip"), "{\"format\": 1}").standard());
+        validates("a pack with only world0/final is valid", blue);
+
+        ProgramSet overworld = ProgramSet.discover(blue, "world0");
+        check("final is found in the overworld folder", overworld.find("final") != null && overworld.find("final").fragment().equals("world0/final.fsh"));
+        check("no program for the Nether when only world0 has one", ProgramSet.discover(blue, "world-1").find("final") == null);
+        check("a dimension without a folder uses the shared files only", ProgramSet.discover(blue, null).find("final") == null);
+
+        // Shared files and the dimension's own: the dimension wins.
+        Map<String, String> shared = finalFiles();
+        shared.put("final.vsh", shared.remove("world0/final.vsh"));
+        shared.put("final.fsh", shared.remove("world0/final.fsh"));
+        shared.put("world-1/final.fsh", TestPacks.finalFragment("fragColor = color * 2.0;"));
+        shared.put("world-1/final.vsh", "#version 330\nvoid main() { gl_Position = vec4(1.0); }\n");
+        ZipPack both = openStandard(dir.resolve("Shared.zip"), shared);
+        check("the shared program serves a dimension without its own", ProgramSet.discover(both, "world0").find("final").fragment().equals("final.fsh"));
+        check("a dimension's own program wins over the shared one", ProgramSet.discover(both, "world-1").find("final").fragment().equals("world-1/final.fsh"));
+        check("a folder of another dimension is ignored", ProgramSet.discover(both, "world1").find("final").fragment().equals("final.fsh"));
+
+        // Programs this version does not run are listed, not an error, as long as something runs.
+        Map<String, String> more = finalFiles();
+        more.put("world0/composite.fsh", "#version 330\n");
+        more.put("world0/composite.vsh", "#version 330\n");
+        more.put("world0/gbuffers_terrain.fsh", "#version 330\n");
+        more.put("world0/shadow.vsh", "#version 330\n");
+        more.put("lib/common.glsl", "// not a program\n");
+        ZipPack extra = openStandard(dir.resolve("More.zip"), more);
+        validates("programs that are not run yet do not stop a pack that has final", extra);
+        check("they are listed", ProgramSet.discover(extra, "world0").unsupported().equals(java.util.List.of("composite", "gbuffers_terrain", "shadow")));
+        check("library files are not programs", ProgramSet.discover(extra, "world0").unsupported().stream().noneMatch(n -> n.contains("common")));
+
+        // Switching a program off.
+        Map<String, String> off = finalFiles();
+        off.put("shaders.properties", "program.final.enabled=false\n");
+        check("program.final.enabled=false switches it off", ProgramSet.discover(openStandard(dir.resolve("Off.zip"), off), "world0").find("final") == null);
+        Map<String, String> on = finalFiles();
+        on.put("shaders.properties", "program.final.enabled=true\n");
+        check("program.final.enabled=true leaves it on", ProgramSet.discover(openStandard(dir.resolve("On.zip"), on), "world0").find("final") != null);
+
+        // Packs that cannot be used say why.
+        Map<String, String> onlyComposite = new java.util.LinkedHashMap<>();
+        onlyComposite.put("world0/composite.fsh", "#version 330\n");
+        onlyComposite.put("world0/composite.vsh", "#version 330\n");
+        rejects("a pack with no program this version runs is rejected, naming what it has", openStandard(dir.resolve("OnlyComposite.zip"), onlyComposite), "composite");
+        Map<String, String> halfway = finalFiles();
+        halfway.remove("world0/final.vsh");
+        rejects("a program with one of its two files is rejected", openStandard(dir.resolve("Half.zip"), halfway), "needs both");
+        Map<String, String> sampler = finalFiles();
+        sampler.put("world0/final.fsh", "#version 330\nuniform sampler2D colortex0;\nuniform sampler2D colortex1;\nvoid main() {}\n");
+        rejects("a program reading a buffer that does not exist yet is rejected", openStandard(dir.resolve("Sampler.zip"), sampler), "colortex1");
+        try {
+            TestPacks.writeStandard(dir.resolve("Empty.zip"), Map.of());
+            ZipPack.open(dir.resolve("Empty.zip"));
+            check("a ZIP with nothing in shaders/ is rejected", false);
+        } catch (PackException e) {
+            check("a ZIP with nothing in shaders/ is rejected (" + e.getMessage() + ")", true);
+        }
+
+        // #include: from the shaders folder with a leading slash, from the including file's folder without one.
+        Map<String, String> includes = finalFiles();
+        includes.put("lib/color.glsl", "#include \"/lib/inner.glsl\"\nvec4 mx_tint(vec4 c) { return c; }\n");
+        includes.put("lib/inner.glsl", "// inner\n");
+        includes.put("world0/local.glsl", "// local\n");
+        includes.put("world0/final.fsh", "#version 330\n#include \"/lib/color.glsl\"\n#include \"local.glsl\"\n#include \"../lib/inner.glsl\"\nuniform sampler2D colortex0;\nvoid main() {}\n");
+        ZipPack included = openStandard(dir.resolve("Includes.zip"), includes);
+        String text = included.load("world0/final.fsh");
+        check("includes from the shaders folder, from the file's folder and with .. all arrive", text.contains("mx_tint") && text.contains("// local") && text.contains("// inner"));
+        check("a file included twice goes in once", text.indexOf("// inner") == text.lastIndexOf("// inner"));
+        Map<String, String> missing = finalFiles();
+        missing.put("world0/final.fsh", "#version 330\n#include \"/lib/nothing.glsl\"\n");
+        rejects("an include that is not in the pack is rejected", openStandard(dir.resolve("MissingInclude.zip"), missing), "nothing.glsl");
+        Map<String, String> escape = finalFiles();
+        escape.put("world0/final.fsh", "#version 330\n#include \"../../x.glsl\"\n");
+        rejects("an include that leaves the shaders folder is rejected", openStandard(dir.resolve("Escape.zip"), escape), "leaves");
+
+        // Other ZIPs are not ours.
+        TestPacks.write(dir.resolve("Other.zip"), null, Map.of());
+        try (java.util.zip.ZipOutputStream out = new java.util.zip.ZipOutputStream(Files.newOutputStream(dir.resolve("Unrelated.zip")))) {
+            out.putNextEntry(new java.util.zip.ZipEntry("readme.txt"));
+            out.write("hi".getBytes());
+            out.closeEntry();
+        }
+        check("a ZIP with no shaders is not a pack", !ZipPack.isPack(dir.resolve("Unrelated.zip")));
+
+        // Discovery lists them next to the older packs.
+        java.util.List<PackManager.Entry> entries = PackManager.scan(dir);
+        check("standard packs are listed", entry(entries, "SolidBlue.zip") != null && entry(entries, "SolidBlue.zip").selectable());
+        check("an unusable standard pack is listed with the reason", entry(entries, "OnlyComposite.zip") != null && !entry(entries, "OnlyComposite.zip").selectable() && entry(entries, "OnlyComposite.zip").error().contains("composite"));
+    }
+
     private static ZipPack openWithJson(final Path zip, final String json) throws IOException, PackException {
         TestPacks.write(zip, json, TestPacks.builtinFiles());
         return ZipPack.open(zip);
@@ -263,8 +440,8 @@ public final class PackTests {
         Map<String, String> missing = TestPacks.builtinFiles();
         missing.remove("program/sky.fsh");
         TestPacks.write(folder.resolve("Incomplete.zip"), "{\"format\": 1}", missing);
-        // A shader pack for another mod: no pack.json, so it is none of our business.
-        TestPacks.write(folder.resolve("SomeIrisPack.zip"), null, Map.of("shaders/final.fsh", "void main() {}"));
+        // A shader pack in the Iris layout that this version cannot run: listed, with the reason.
+        TestPacks.write(folder.resolve("SomeIrisPack.zip"), null, Map.of("world0/composite.fsh", "void main() {}", "world0/composite.vsh", "void main() {}"));
         Files.writeString(folder.resolve("notes.txt"), "not a zip");
         // The built-in pack's name, taken by a ZIP.
         TestPacks.writeBuiltinCopy(folder.resolve(BuiltinPack.NAME + ".zip"));
@@ -275,7 +452,7 @@ public final class PackTests {
         for (PackManager.Entry entry : entries) ids.add(entry.id());
         check("built-in pack is always first", ids.get(0).equals(PackManager.BUILTIN_ID));
         check("complete ZIPs are listed", ids.contains("RedToBlue.zip") && ids.contains("BlueToRed.zip"));
-        check("a ZIP without pack.json is not listed", !ids.contains("SomeIrisPack.zip"));
+        check("an Iris-layout ZIP is listed, and cannot be chosen when nothing in it runs", ids.contains("SomeIrisPack.zip") && !entry(entries, "SomeIrisPack.zip").selectable());
         check("an unreadable ZIP is not listed (it is not known to be ours)", !ids.contains("Damaged.zip"));
         check("order is by name", ids.indexOf("BlueToRed.zip") < ids.indexOf("RedToBlue.zip"));
 

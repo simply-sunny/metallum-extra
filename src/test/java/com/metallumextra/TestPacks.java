@@ -85,6 +85,10 @@ public final class TestPacks {
         Map<String, String> optional = builtinFiles();
         optional.put("program/edges.fsh", RED_TO_BLUE.replace("if (color.r", "if (OPTION_SWAP == 1 && color.r"));
         write(folder.resolve("WithOption.zip"), "{\"format\": 1, \"options\": [{\"id\": \"SWAP\", \"name\": \"Swap\", \"type\": \"toggle\"}]}", optional);
+        // Packs in the Iris layout: the whole image one color, and red and blue swapped.
+        writeStandardPack(folder.resolve("SolidBlue.zip"), "fragColor = vec4(0.0, 0.0, 1.0, 1.0);");
+        writeStandardPack(folder.resolve("SolidRed.zip"), "fragColor = vec4(1.0, 0.0, 0.0, 1.0);");
+        writeStandardPack(folder.resolve("SwapRedBlue.zip"), "fragColor = vec4(color.bgr, 1.0);");
         // Packs that must not take the game down: one whose GLSL has a mistake, and one that lacks a shader.
         Map<String, String> syntax = builtinFiles();
         syntax.put("program/edges.fsh", "#version 330\n\nuniform sampler2D InSampler;\nin vec2 texCoord;\nout vec4 fragColor;\n\nvoid main() {\n    fragColor = texture(InSampler, texCoord)\n}\n");
@@ -92,6 +96,38 @@ public final class TestPacks {
         Map<String, String> incomplete = builtinFiles();
         incomplete.remove("program/sky.fsh");
         write(folder.resolve("Incomplete.zip"), "{\"format\": 1}", incomplete);
+    }
+
+    /** The vertex shader of a full-screen program: one triangle that covers the screen. */
+    private static final String FULLSCREEN_VSH = """
+            #version 330
+
+            out vec2 texcoord;
+
+            void main() {
+                vec2 uv = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+                gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);
+                texcoord = uv;
+            }
+            """;
+
+    /** A final program with this body, reading the world image as {@code colortex0}. */
+    public static String finalFragment(final String body) {
+        return "#version 330\n\nuniform sampler2D colortex0;\n\nin vec2 texcoord;\nout vec4 fragColor;\n\nvoid main() {\n    vec4 color = texture(colortex0, texcoord);\n    " + body + "\n}\n";
+    }
+
+    /** A pack in the Iris layout (no pack.json) with a {@code world0/final} program of this body. */
+    public static void writeStandardPack(final Path zip, final String body) throws IOException {
+        Map<String, String> files = new java.util.LinkedHashMap<>();
+        files.put("world0/final.vsh", FULLSCREEN_VSH);
+        files.put("world0/final.fsh", finalFragment(body));
+        files.put("shaders.properties", "# nothing to configure\n");
+        writeStandard(zip, files);
+    }
+
+    /** A ZIP with only a {@code shaders/} folder of these files. */
+    public static void writeStandard(final Path zip, final Map<String, String> files) throws IOException {
+        write(zip, null, files);
     }
 
     private static void add(final ZipOutputStream zos, final String name, final String text) throws IOException {

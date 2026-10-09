@@ -164,6 +164,10 @@ public final class PackManager {
      * @throws PackException naming what is missing
      */
     public static void validate(final ShaderPack pack) throws PackException {
+        if (pack.standard()) {
+            ProgramSet.validate(pack);
+            return;
+        }
         List<String> missing = new ArrayList<>();
         for (String path : REQUIRED) {
             if (pack.read(path) == null) missing.add(path);

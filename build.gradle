@@ -69,3 +69,36 @@ jar {
 		rename { "${it}_${project.base.archivesName.get()}" }
 	}
 }
+
+// Checks of shader pack loading and the translation cache that need no game. Runs with `check` (and so `build`).
+tasks.register('packTest', JavaExec) {
+	group = 'verification'
+	description = 'Checks shader pack loading, validation and the translation cache.'
+	classpath = sourceSets.test.output + sourceSets.main.runtimeClasspath
+	mainClass = 'com.metallumextra.PackTests'
+	workingDir = projectDir
+}
+tasks.named('check') { dependsOn 'packTest' }
+
+// `gradlew writeTestPacks -Pto=<folder>` writes RedToBlue.zip and BlueToRed.zip, for trying packs by hand.
+tasks.register('writeTestPacks', JavaExec) {
+	group = 'verification'
+	description = 'Writes the RedToBlue and BlueToRed test packs into the folder given with -Pto.'
+	classpath = sourceSets.test.output + sourceSets.main.runtimeClasspath
+	mainClass = 'com.metallumextra.TestPacks'
+	workingDir = projectDir
+	args = [project.findProperty('to') ?: 'run/shaderpacks']
+}
+
+// `gradlew checkPackImages -Pfolder=<folder>`: checks the pictures a run of src/test/pack-regression/packs.txt saved.
+tasks.register('checkPackImages', JavaExec) {
+	group = 'verification'
+	description = 'Checks the colors in the pictures saved by the pack regression script.'
+	classpath = sourceSets.test.output + sourceSets.main.runtimeClasspath
+	mainClass = 'com.metallumextra.PackTests'
+	workingDir = projectDir
+	args = ['images', project.findProperty('folder') ?: 'run/pack-regression']
+}
+
+// The checks are plain programs (packTest), not JUnit, so Gradle's own test task has nothing to run.
+tasks.named('test') { enabled = false }

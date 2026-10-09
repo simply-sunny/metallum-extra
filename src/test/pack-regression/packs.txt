@@ -1,0 +1,48 @@
+# Shader pack regression, run by run.sh. Needs RedToBlue.zip and BlueToRed.zip in run/shaderpacks
+# (gradlew writeTestPacks). Looks straight down at a platform: red on the screen's left, blue on its right.
+world PackTest
+wait 2000
+screen close
+hud off
+cmd time set noon
+cmd weather clear
+cmd fill -10 199 -10 -1 199 10 minecraft:blue_wool
+cmd fill 0 199 -10 10 199 10 minecraft:red_wool
+cmd gamemode spectator @a
+wait 500
+cmd tp @a 0.5 201.5 0.5 0 90
+wait 4000
+pack builtin
+set shaders on
+set edges on
+wait 6000
+packs
+screen close
+wait 600
+shot 1_builtin
+cache
+pack RedToBlue.zip
+wait 4000
+screen close
+wait 600
+shot 2_redtoblue
+cache
+pack BlueToRed.zip
+wait 4000
+screen close
+wait 600
+shot 3_bluetored
+cache
+pack builtin
+wait 4000
+screen close
+wait 600
+shot 4_builtin_again
+cache
+pack RedToBlue.zip
+wait 4000
+screen close
+wait 600
+shot 5_redtoblue_again
+cache
+quit

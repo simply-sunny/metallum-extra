@@ -156,6 +156,38 @@ shot IrisBroken
 cache
 wait 2500
 shot IrisBroken_after
+# --- terrain drawn by the pack's gbuffers_terrain
+cmd tp @a 0.5 202 -9 0 0
+wait 300
+pack IrisTerrain.zip
+wait 6000
+screen close
+cmd tp @a 0.5 202 -9 0 0
+wait 1500
+trace 3
+wait 2500
+shot IrisTerrain
+# --- the standard uniforms: every one written out for comparison, and the distance to the wall rebuilt from depth
+cmd tp @a 0.5 202 -9 0 0
+wait 300
+pack IrisUniforms.zip
+wait 3500
+screen close
+cmd tp @a 0.5 202 -9 0 0
+wait 1500
+trace 3
+wait 2500
+shot IrisUniforms
+cmd tp @a 0.5 202 -9 0 0
+wait 300
+pack IrisViewDepth.zip
+wait 3500
+screen close
+cmd tp @a 0.5 202 -9 0 0
+wait 1500
+trace 3
+wait 2500
+shot IrisViewDepth
 # --- stability: resize, switching, shaders off and on, reload, dimensions
 cmd tp @a 0.5 202 -9 0 0
 wait 300

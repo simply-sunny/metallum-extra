@@ -67,6 +67,17 @@ screen close
 wait 600
 shot 12_builtin_after_standard
 cache
+pack IrisTerrain.zip
+wait 6000
+screen close
+wait 600
+shot 14_iristerrain
+pack builtin
+wait 4000
+screen close
+wait 600
+shot 15_builtin_after_terrain
+cache
 pack WithOption.zip
 wait 4000
 screen close

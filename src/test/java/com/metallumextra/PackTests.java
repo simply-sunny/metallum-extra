@@ -2,6 +2,8 @@ package com.metallumextra;
 
 import com.metallumextra.shader.pack.BuiltinPack;
 import com.metallumextra.shader.pack.IrisPlan;
+import com.metallumextra.shader.pack.IrisUniforms;
+import com.metallumextra.shader.IrisTerrain;
 import com.metallumextra.shader.pack.PackException;
 import com.metallumextra.shader.pack.PackManager;
 import com.metallumextra.shader.pack.PackOption;
@@ -58,6 +60,8 @@ public final class PackTests {
             options(work.resolve("options"));
             standardLayout(work.resolve("standard"));
             irisPlans(work.resolve("plans"));
+            irisUniforms();
+            irisTerrain(work.resolve("terrain"));
             discovery(work.resolve("discovery"));
             translationCache(work.resolve("cache"));
         } finally {
@@ -81,6 +85,8 @@ public final class PackTests {
 
     private static final Pattern RUN_LINE = Pattern.compile("iris frame (\\d+) stage (\\w+) program (\\w+) writes (\\[[\\d, ]*\\])");
     private static final Pattern PIXEL_LINE = Pattern.compile("iris frame (\\d+) program (\\w+) colortex(\\d+) (\\d+)x(\\d+) pixels(.*)");
+    private static final Pattern UNIFORM_LINE = Pattern.compile("iris frame (\\d+) program (\\w+) uniform (\\w+)((?: -?[\\d.]+)+)");
+    private static final Pattern FLOATS_LINE = Pattern.compile("iris frame (\\d+) program (\\w+) colortex(\\d+) floats (\\d+)x(\\d+) row0(.*)");
     private static final Pattern PIXEL = Pattern.compile("\\((\\d+),(\\d+),(\\d+),(\\d+)\\)");
 
     /** Everything the log said while one pack was the one asked for: from its {@code pack} step to the next. */
@@ -88,6 +94,10 @@ public final class PackTests {
         final String pack;
         final List<Run> runs = new ArrayList<>();
         final List<Pixels> pixels = new ArrayList<>();
+        /** (frame, program) to what the game said a uniform was (name to values). */
+        final Map<String, Map<String, double[]>> uniforms = new java.util.LinkedHashMap<>();
+        /** (frame, program, buffer) to the first pixels of the top row, as read back from the GPU. */
+        final Map<String, double[][]> rows = new java.util.LinkedHashMap<>();
 
         Section(final String pack) {
             this.pack = pack;
@@ -168,6 +178,27 @@ public final class PackTests {
             Matcher run = RUN_LINE.matcher(line);
             if (run.find()) {
                 current.runs.add(new Run(Integer.parseInt(run.group(1)), run.group(2), run.group(3), run.group(4)));
+                continue;
+            }
+            Matcher uniform = UNIFORM_LINE.matcher(line);
+            if (uniform.find()) {
+                String[] parts = uniform.group(4).strip().split(" ");
+                double[] value = new double[parts.length];
+                for (int i = 0; i < parts.length; i++) value[i] = Double.parseDouble(parts[i]);
+                current.uniforms.computeIfAbsent(uniform.group(1) + "/" + uniform.group(2), k -> new java.util.LinkedHashMap<>()).put(uniform.group(3), value);
+                continue;
+            }
+            Matcher floats = FLOATS_LINE.matcher(line);
+            if (floats.find()) {
+                List<double[]> row = new ArrayList<>();
+                Matcher point = Pattern.compile("\\(([^)]*)\\)").matcher(floats.group(6));
+                while (point.find()) {
+                    String[] parts = point.group(1).split(",");
+                    double[] pixel = new double[4];
+                    for (int i = 0; i < 4; i++) pixel[i] = Double.parseDouble(parts[i]);
+                    row.add(pixel);
+                }
+                current.rows.put(floats.group(1) + "/" + floats.group(2) + "/" + floats.group(3), row.toArray(new double[0][]));
                 continue;
             }
             Matcher pixels = PIXEL_LINE.matcher(line);
@@ -277,6 +308,100 @@ public final class PackTests {
         drewColor(stages, "prepare", 2, 255, 255, 0);
         drewColor(stages, "deferred", 0, 0, 255, 0);
         screenIs(folder, "IrisStages", 0, 255, 0, 0.9);
+
+        // The standard uniforms: what the shader read from the block is what the game computed.
+        Section uniforms = get.apply("IrisUniforms");
+        int compared = 0, mismatched = 0;
+        String first = "";
+        for (Map.Entry<String, Map<String, double[]>> entry : uniforms.uniforms.entrySet()) {
+            double[][] row = uniforms.rows.get(entry.getKey() + "/1");
+            if (row == null) continue;
+            int pixel = 0;
+            for (IrisUniforms.Uniform uniform : IrisUniforms.ALL) {
+                if (uniform.gbuffers()) continue;
+                double[] expected = entry.getValue().get(uniform.name());
+                int width = uniform.type().equals("mat4") ? 4 : 1;
+                for (int p = 0; p < width; p++, pixel++) {
+                    int components = uniform.type().equals("mat4") ? 4 : expected.length;
+                    for (int c = 0; c < components; c++) {
+                        double want = uniform.type().equals("mat4") ? expected[p * 4 + c] : expected[c];
+                        double got = row[pixel][c];
+                        compared++;
+                        if (Math.abs(want - got) > 1e-5 + 1e-5 * Math.abs(want)) {
+                            mismatched++;
+                            if (first.isEmpty()) first = uniform.name() + "[" + p + "][" + c + "] game " + want + " shader " + got;
+                        }
+                    }
+                }
+            }
+        }
+        check("IrisUniforms: the shader read all " + compared + " numbers of the block as the game computed them" + (first.isEmpty() ? "" : " (first difference: " + first + ")"), compared > 56 * 3 && mismatched == 0);
+        double[] width = null, cameraAt = null, sunAngle = null, sunPos = null, upPos = null, far = null, previousCamera = null, worldTime = null;
+        for (Map<String, double[]> frameValues : uniforms.uniforms.values()) {
+            width = frameValues.get("viewWidth");
+            cameraAt = frameValues.get("cameraPosition");
+            previousCamera = frameValues.get("previousCameraPosition");
+            sunAngle = frameValues.get("sunAngle");
+            sunPos = frameValues.get("sunPosition");
+            upPos = frameValues.get("upPosition");
+            far = frameValues.get("far");
+            worldTime = frameValues.get("worldTime");
+        }
+        check("IrisUniforms: the camera is where the player was put (0.5, about 203.6, -8.5) and was there the frame before",
+                cameraAt != null && Math.abs(cameraAt[0] - 0.5) < 1e-3 && Math.abs(cameraAt[1] - 203.62) < 0.1 && Math.abs(cameraAt[2] + 8.5) < 1e-3 && java.util.Arrays.equals(cameraAt, previousCamera));
+        check("IrisUniforms: at time 6000 it is noon: worldTime 6000, sunAngle 0.25, and the sun is straight up (view-space sun parallel to up)",
+                worldTime != null && worldTime[0] == 6000 && Math.abs(sunAngle[0] - 0.25) < 1e-3
+                        && (sunPos[0] * upPos[0] + sunPos[1] * upPos[1] + sunPos[2] * upPos[2]) / (100.0 * 100.0) > 0.999);
+        check("IrisUniforms: the screen width is the picture's, and far is a whole number of chunks", width != null && width[0] == picture(folder, "IrisUniforms").getWidth() && far[0] > 0 && far[0] % 16 == 0);
+
+        // The view-space distance of the wall rebuilt from depth: 5.5 blocks along the view direction (the camera is at z -8.5, the wall's face at -3).
+        Section viewDepth = get.apply("IrisViewDepth");
+        int rowsSeen = 0;
+        boolean wallDistance = true;
+        String seenDistance = "";
+        for (Map.Entry<String, double[][]> row : viewDepth.rows.entrySet()) {
+            if (!row.getKey().endsWith("/1")) continue;
+            rowsSeen++;
+            for (double[] pixel : row.getValue()) {
+                wallDistance &= Math.abs(pixel[0] - 5.5) < 0.02 && Math.abs(pixel[2] - 5.5) < 0.02;
+                if (seenDistance.isEmpty()) seenDistance = String.format("%.4f", pixel[0]);
+            }
+        }
+        check("IrisViewDepth: gbufferProjectionInverse and depthtex1/depthtex0 give the wall's distance, 5.5 (first pixel " + seenDistance + ")", rowsSeen >= 2 && wallDistance);
+
+        // Terrain drawn by the pack's gbuffers_terrain: it ran (magenta), what it saw of each quad's direction and light reached its buffers,
+        // and its geometry is where the game's is (the wall's distance, rebuilt from depth).
+        java.awt.image.BufferedImage terrain = picture(folder, "IrisTerrain");
+        double magenta = share(terrain, 255, 0, 255, 0.0, 0.32);
+        check(String.format("IrisTerrain: the terrain is drawn by the pack's program: %.1f%% of the left third is its magenta", magenta * 100), magenta > 0.95);
+        double wallNormal = share(terrain, 128, 128, 0, 0.34, 0.65);
+        double groundNormal = share(terrain, 128, 255, 128, 0.34, 0.65);
+        double flipped = share(terrain, 128, 128, 255, 0.34, 0.65);
+        check(String.format("IrisTerrain: vaNormal of the wall (facing the camera, -z) is (0, 0, -1): %.1f%% of the middle third is its color, %.1f%% the ground's (0, 1, 0), %.1f%% the opposite wall normal",
+                wallNormal * 100, groundNormal * 100, flipped * 100), wallNormal > 0.7 && groundNormal > 0.03 && flipped < 0.01);
+        java.awt.image.BufferedImage lightThird = terrain.getSubimage((int) (terrain.getWidth() * 0.68), 0, (int) (terrain.getWidth() * 0.3), terrain.getHeight());
+        long sky = 0, sampled = 0;
+        for (int x = 0; x < lightThird.getWidth(); x += 2) {
+            for (int y = 0; y < lightThird.getHeight() * 0.8; y += 2) {
+                int rgb = lightThird.getRGB(x, y);
+                if (((rgb >> 8) & 255) > 200 && ((rgb >> 16) & 255) < 20) sky++;
+                sampled++;
+            }
+        }
+        check(String.format("IrisTerrain: vaUV2 gives no block light and full sky light on the open wall: %.1f%% of the right third", 100.0 * sky / sampled), sky > sampled * 0.7);
+        Section terrainSection = get.apply("IrisTerrain");
+        int terrainRows = 0;
+        boolean terrainDistance = true;
+        String terrainSeen = "";
+        for (Map.Entry<String, double[][]> row : terrainSection.rows.entrySet()) {
+            if (!row.getKey().endsWith("/3")) continue;
+            terrainRows++;
+            for (double[] pixel : row.getValue()) {
+                terrainDistance &= Math.abs(pixel[0] - 5.5) < 0.02;
+                if (terrainSeen.isEmpty()) terrainSeen = String.format("%.4f", pixel[0]);
+            }
+        }
+        check("IrisTerrain: the geometry the pack's vertex shader made is where it belongs: the wall is 5.5 from the camera in depth (first pixel " + terrainSeen + ")", terrainRows >= 2 && terrainDistance);
 
         // A pack that does not compile is put aside; the one before it takes over.
         check("IrisBroken: it was reported broken and put aside", lines.stream().anyMatch(l -> l.contains("IrisBroken.zip is broken")));
@@ -388,6 +513,8 @@ public final class PackTests {
                 {"10_solidred", true, false},
                 {"11_swap", true, true},
                 {"12_builtin_after_standard", true, true},
+                {"14_iristerrain", false, false},
+                {"15_builtin_after_terrain", true, true},
                 {"6_option_off", true, true},
                 {"7_option_on", false, true},
                 {"8_option_off_again", true, true}};
@@ -406,6 +533,9 @@ public final class PackTests {
         // The built-in pack draws more red than blue here; swapping the two in a standard pack's final program reverses that.
         java.awt.image.BufferedImage plain = javax.imageio.ImageIO.read(folder.resolve("12_builtin_after_standard.png").toFile());
         java.awt.image.BufferedImage swapped = javax.imageio.ImageIO.read(folder.resolve("11_swap.png").toFile());
+        java.awt.image.BufferedImage before = javax.imageio.ImageIO.read(folder.resolve("4_builtin_again.png").toFile());
+        java.awt.image.BufferedImage after = javax.imageio.ImageIO.read(folder.resolve("15_builtin_after_terrain.png").toFile());
+        check("after a pack that draws the terrain itself, the built-in shaders draw what they drew before", Math.abs(share(before, true) - share(after, true)) < 0.02 && Math.abs(share(before, false) - share(after, false)) < 0.02);
         check("a standard pack that swaps red and blue shows more blue than red where the built-in pack shows more red",
                 share(plain, true) > share(plain, false) && share(swapped, false) > share(swapped, true));
     }
@@ -580,13 +710,13 @@ public final class PackTests {
 
         // Programs this version does not run are listed, not an error, as long as something runs.
         Map<String, String> more = finalFiles();
-        more.put("world0/gbuffers_terrain.fsh", "#version 330\n");
-        more.put("world0/gbuffers_terrain.vsh", "#version 330\n");
+        more.put("world0/gbuffers_entities.fsh", "#version 330\n");
+        more.put("world0/gbuffers_entities.vsh", "#version 330\n");
         more.put("world0/shadow.vsh", "#version 330\n");
         more.put("lib/common.glsl", "// not a program\n");
         ZipPack extra = openStandard(dir.resolve("More.zip"), more);
         validates("programs that are not run yet do not stop a pack that has final", extra);
-        check("they are listed", ProgramSet.discover(extra, "world0").unsupported().equals(java.util.List.of("gbuffers_terrain", "shadow")));
+        check("they are listed", ProgramSet.discover(extra, "world0").unsupported().equals(java.util.List.of("gbuffers_entities", "shadow")));
         check("library files are not programs", ProgramSet.discover(extra, "world0").unsupported().stream().noneMatch(n -> n.contains("common")));
 
         // Switching a program off.
@@ -599,9 +729,9 @@ public final class PackTests {
 
         // Packs that cannot be used say why.
         Map<String, String> onlyComposite = new java.util.LinkedHashMap<>();
-        onlyComposite.put("world0/gbuffers_terrain.fsh", "#version 330\n");
-        onlyComposite.put("world0/gbuffers_terrain.vsh", "#version 330\n");
-        rejects("a pack with no program this version runs is rejected, naming what it has", openStandard(dir.resolve("OnlyComposite.zip"), onlyComposite), "gbuffers_terrain");
+        onlyComposite.put("world0/gbuffers_entities.fsh", "#version 330\n");
+        onlyComposite.put("world0/gbuffers_entities.vsh", "#version 330\n");
+        rejects("a pack with no program this version runs is rejected, naming what it has", openStandard(dir.resolve("OnlyComposite.zip"), onlyComposite), "gbuffers_entities");
         Map<String, String> halfway = finalFiles();
         halfway.remove("world0/final.vsh");
         rejects("a program with one of its two files is rejected", openStandard(dir.resolve("Half.zip"), halfway), "needs both");
@@ -645,7 +775,7 @@ public final class PackTests {
         // Discovery lists them next to the older packs.
         java.util.List<PackManager.Entry> entries = PackManager.scan(dir);
         check("standard packs are listed", entry(entries, "SolidBlue.zip") != null && entry(entries, "SolidBlue.zip").selectable());
-        check("an unusable standard pack is listed with the reason", entry(entries, "OnlyComposite.zip") != null && !entry(entries, "OnlyComposite.zip").selectable() && entry(entries, "OnlyComposite.zip").error().contains("gbuffers_terrain"));
+        check("an unusable standard pack is listed with the reason", entry(entries, "OnlyComposite.zip") != null && !entry(entries, "OnlyComposite.zip").selectable() && entry(entries, "OnlyComposite.zip").error().contains("gbuffers_entities"));
     }
 
     // ---- the plan of a standard pack: stages, buffers, flips ----
@@ -748,9 +878,9 @@ public final class PackTests {
         Map<String, String> notYet = new java.util.LinkedHashMap<>();
         notYet.put("composite", one);
         notYet.put("shadowcomp", one);
-        notYet.put("gbuffers_water", one);
+        notYet.put("gbuffers_entities", one);
         IrisPlan not = planOf(dir, "NotYet", notYet, null);
-        check("shadowcomp and gbuffers programs are reported, not run", not.notes().stream().anyMatch(n -> n.contains("shadowcomp")) && not.notes().stream().anyMatch(n -> n.contains("gbuffers_water")) && not.stepCount() == 1);
+        check("shadowcomp and gbuffers programs are reported, not run", not.notes().stream().anyMatch(n -> n.contains("shadowcomp")) && not.notes().stream().anyMatch(n -> n.contains("gbuffers_entities")) && not.stepCount() == 1);
         Map<String, String> gs = new java.util.LinkedHashMap<>();
         gs.put("composite.vsh", VERTEX);
         gs.put("composite.fsh", one);
@@ -763,6 +893,222 @@ public final class PackTests {
         }
         check("a program with only a compute shader is listed as not run", ProgramSet.discover(openStandard(dir.resolve("Compute.zip"), Map.of("composite.csh", "#version 430\n", "final.vsh", VERTEX, "final.fsh", one)), null)
                 .unsupported().contains("composite (compute only)"));
+    }
+
+    // ---- programs that draw terrain ----
+
+    private static final String TERRAIN_VERTEX = "#version 330 core\nin vec3 vaPosition;\nin vec2 vaUV0;\nuniform mat4 modelViewMatrix;\nuniform mat4 projectionMatrix;\nuniform vec3 chunkOffset;\nout vec2 uv;\n"
+            + "void main() { gl_Position = projectionMatrix * modelViewMatrix * vec4(vaPosition + chunkOffset, 1.0); uv = vaUV0; }\n";
+    private static final String TERRAIN_FRAGMENT = "#version 330 core\nuniform sampler2D gtexture;\nin vec2 uv;\n/* RENDERTARGETS: 0,1 */\nlayout(location = 0) out vec4 a;\nlayout(location = 1) out vec4 b;\n"
+            + "void main() { a = texture(gtexture, uv); b = vec4(1.0); }\n";
+
+    private static IrisPlan terrainPlan(final Path dir, final String name, final Map<String, String> files) throws Exception {
+        return IrisPlan.build(openStandard(dir.resolve(name + ".zip"), files), null);
+    }
+
+    private static Map<String, String> terrainFiles(final String... programs) {
+        Map<String, String> files = new java.util.LinkedHashMap<>();
+        for (String program : programs) {
+            files.put("" + program + ".vsh", TERRAIN_VERTEX);
+            files.put("" + program + ".fsh", TERRAIN_FRAGMENT);
+        }
+        return files;
+    }
+
+    private static String terrainProgramFor(final IrisPlan plan, final IrisPlan.Layer layer) {
+        IrisPlan.Step step = plan.terrainStep(layer);
+        return step == null ? "none" : step.program().name();
+    }
+
+    private static void terrainFails(final String what, final Path dir, final String name, final Map<String, String> files, final String mentions) throws Exception {
+        try {
+            terrainPlan(dir, name, files);
+            check(what, false);
+        } catch (PackException e) {
+            check(what + " (" + e.getMessage() + ")", e.getMessage().contains(mentions));
+        }
+    }
+
+    private static void irisTerrain(final Path dir) throws Exception {
+        Files.createDirectories(dir);
+        // Which program draws which layer: its own, then the ones Iris falls back to.
+        IrisPlan plain = terrainPlan(dir, "Plain", terrainFiles("gbuffers_terrain"));
+        check("gbuffers_terrain draws every layer when it is all the pack has", terrainProgramFor(plain, IrisPlan.Layer.SOLID).equals("gbuffers_terrain")
+                && terrainProgramFor(plain, IrisPlan.Layer.CUTOUT).equals("gbuffers_terrain") && terrainProgramFor(plain, IrisPlan.Layer.TRANSLUCENT).equals("gbuffers_terrain"));
+        IrisPlan split = terrainPlan(dir, "Split", terrainFiles("gbuffers_terrain", "gbuffers_terrain_solid", "gbuffers_terrain_cutout", "gbuffers_water"));
+        check("terrain_solid, terrain_cutout and water draw their layers, each before gbuffers_terrain", terrainProgramFor(split, IrisPlan.Layer.SOLID).equals("gbuffers_terrain_solid")
+                && terrainProgramFor(split, IrisPlan.Layer.CUTOUT).equals("gbuffers_terrain_cutout") && terrainProgramFor(split, IrisPlan.Layer.TRANSLUCENT).equals("gbuffers_water"));
+        IrisPlan water = terrainPlan(dir, "WaterOnly", terrainFiles("gbuffers_terrain", "gbuffers_water"));
+        check("water draws translucent terrain only", terrainProgramFor(water, IrisPlan.Layer.SOLID).equals("gbuffers_terrain") && terrainProgramFor(water, IrisPlan.Layer.TRANSLUCENT).equals("gbuffers_water"));
+        check("without terrain, Iris falls back to textured_lit, then textured, then basic", terrainProgramFor(terrainPlan(dir, "Lit", terrainFiles("gbuffers_textured_lit", "gbuffers_textured", "gbuffers_basic")), IrisPlan.Layer.SOLID).equals("gbuffers_textured_lit")
+                && terrainProgramFor(terrainPlan(dir, "Tex", terrainFiles("gbuffers_textured", "gbuffers_basic")), IrisPlan.Layer.CUTOUT).equals("gbuffers_textured")
+                && terrainProgramFor(terrainPlan(dir, "Basic", terrainFiles("gbuffers_basic")), IrisPlan.Layer.TRANSLUCENT).equals("gbuffers_basic"));
+        check("a pack with only fullscreen programs has no terrain program", terrainProgramFor(planOf(dir, "NoTerrain", Map.of("final", fragment("uniform sampler2D colortex0;\nout vec4 color;")), null), IrisPlan.Layer.SOLID).equals("none"));
+        check("terrain programs draw into the buffers' main textures: nothing flips, and the first output is colortex0",
+                plain.terrainStep(IrisPlan.Layer.SOLID).writes()[0] == 0 && plain.terrainStep(IrisPlan.Layer.SOLID).writes()[1] == 1 && plain.terrainStep(IrisPlan.Layer.SOLID).inPlace()[0] && plain.terrainStep(IrisPlan.Layer.SOLID).inPlace()[1]);
+        check("the buffers the terrain program writes exist", plain.buffers().containsKey(0) && plain.buffers().containsKey(1));
+        check("a pack with only gbuffers_terrain is valid, and it does not run afterwards", plain.stepCount() == 1 && !plain.afterWorld());
+        validates("a pack with only gbuffers_terrain passes the checks", ZipPack.open(dir.resolve("Plain.zip")));
+
+        // What cannot be provided is refused by name.
+        Map<String, String> tangent = terrainFiles("gbuffers_terrain");
+        tangent.put("gbuffers_terrain.vsh", TERRAIN_VERTEX.replace("in vec2 vaUV0;", "in vec2 vaUV0;\nin vec4 at_tangent;"));
+        terrainFails("a vertex input that is not provided yet is refused", dir, "Tangent", tangent, "at_tangent");
+        Map<String, String> strange = terrainFiles("gbuffers_terrain");
+        strange.put("gbuffers_terrain.vsh", TERRAIN_VERTEX.replace("in vec2 vaUV0;", "in vec2 vaUV0;\nin vec3 myOwnInput;"));
+        terrainFails("a vertex input Iris does not have is refused", dir, "Strange", strange, "myOwnInput");
+        Map<String, String> wrongType = terrainFiles("gbuffers_terrain");
+        wrongType.put("gbuffers_terrain.vsh", TERRAIN_VERTEX.replace("in vec2 vaUV0;", "in vec3 vaUV0;"));
+        terrainFails("a vertex input of the wrong type is refused", dir, "WrongType", wrongType, "vec3");
+        Map<String, String> compat = terrainFiles("gbuffers_terrain");
+        compat.put("gbuffers_terrain.vsh", "#version 120\nvarying vec2 uv;\nvoid main() { gl_Position = ftransform(); uv = gl_MultiTexCoord0.xy; }\n");
+        terrainFails("compatibility-profile GLSL is named in the error", dir, "Compat", compat, "compatibility profile");
+        Map<String, String> compatFragment = new java.util.LinkedHashMap<>();
+        compatFragment.put("final.vsh", VERTEX);
+        compatFragment.put("final.fsh", "#version 330\nuniform sampler2D colortex0;\nvoid main() { gl_FragColor = texture2D(colortex0, vec2(0.0)); }\n");
+        terrainFails("the same goes for a full-screen program", dir, "CompatFragment", compatFragment, "gl_FragColor");
+        Map<String, String> commented = new java.util.LinkedHashMap<>();
+        commented.put("final.vsh", VERTEX);
+        commented.put("final.fsh", "#version 330\n// no gl_FragColor or varying here\n/* texture2D */\nuniform sampler2D colortex0;\nout vec4 c;\nvoid main() { c = texture(colortex0, vec2(0.0)); }\n");
+        check("words in comments are not mistaken for compatibility code", terrainPlan(dir, "Commented", commented).finalStep() != null);
+        Map<String, String> reads = terrainFiles("gbuffers_terrain");
+        reads.put("gbuffers_terrain.fsh", TERRAIN_FRAGMENT.replace("uniform sampler2D gtexture;", "uniform sampler2D gtexture;\nuniform sampler2D colortex0;"));
+        terrainFails("a program that draws the world cannot read a color buffer", dir, "ReadsBuffer", reads, "colortex0");
+        Map<String, String> first = terrainFiles("gbuffers_terrain");
+        first.put("gbuffers_terrain.fsh", TERRAIN_FRAGMENT.replace("RENDERTARGETS: 0,1", "RENDERTARGETS: 1,0"));
+        terrainFails("a terrain program must write colortex0 first", dir, "First", first, "first output");
+        Map<String, String> misplaced = new java.util.LinkedHashMap<>();
+        misplaced.put("composite.vsh", VERTEX);
+        misplaced.put("composite.fsh", fragment("uniform mat4 modelViewMatrix;\nout vec4 color;"));
+        terrainFails("a full-screen program cannot declare the matrices of the programs that draw the world", dir, "Misplaced", misplaced, "modelViewMatrix");
+
+        // The source is fitted to Sodium's pipeline.
+        String vertex = IrisTerrain.adapt("#version 330 core\nin vec3 vaPosition;\nin vec4 vaColor;\nuniform vec3 chunkOffset;\nuniform mat4 textureMatrix;\nuniform sampler2D gtexture;\nvoid main() { }\n", true);
+        check("the vertex stage loses its declarations of Iris's inputs and terrain uniforms", !vertex.contains("in vec3 vaPosition;") && !vertex.contains("in vec4 vaColor;") && !vertex.contains("uniform vec3 chunkOffset;")
+                && !vertex.contains("uniform mat4 textureMatrix;") && !vertex.contains("uniform sampler2D gtexture;"));
+        check("and gets Sodium's inputs, the definitions of Iris's names over them, and the atlas sampler Sodium binds", vertex.contains("in uvec2 a_Position;") && vertex.contains("#define vaPosition mx_va_position()")
+                && vertex.contains("#define chunkOffset u_RegionOffset") && vertex.contains("uniform sampler2D u_BlockTex;") && vertex.contains("#define gtexture u_BlockTex") && vertex.indexOf("#version") < vertex.indexOf("a_Position"));
+        String fragmentText = IrisTerrain.adapt("#version 330 core\nuniform sampler2D gtexture;\nuniform sampler2D lightmap;\nuniform float alphaTestRef;\nin vec2 uv;\nvoid main() { }\n", false);
+        check("the fragment stage gets the samplers and alphaTestRef, and none of the vertex inputs", fragmentText.contains("#define gtexture u_BlockTex") && fragmentText.contains("#define lightmap u_LightTex")
+                && fragmentText.contains("#define alphaTestRef ALPHA_CUTOUT") && !fragmentText.contains("a_Position") && !fragmentText.contains("uniform float alphaTestRef;"));
+        check("an unused sampler is not declared", !IrisTerrain.adapt("#version 330 core\nvoid main() { }\n", false).contains("u_BlockTex"));
+    }
+
+    // ---- the standard uniforms ----
+
+    private static org.joml.Matrix4f matrix(final Map<String, double[]> values, final String name) {
+        float[] floats = new float[16];
+        for (int i = 0; i < 16; i++) floats[i] = (float) values.get(name)[i];
+        return new org.joml.Matrix4f().set(floats);
+    }
+
+    private static boolean sameMatrix(final org.joml.Matrix4f a, final org.joml.Matrix4f b, final float tolerance) {
+        for (int c = 0; c < 4; c++) for (int r = 0; r < 4; r++) if (Math.abs(a.get(c, r) - b.get(c, r)) > tolerance) return false;
+        return true;
+    }
+
+    private static com.metallumextra.shader.IrisUniformValues.Inputs inputs(final org.joml.Matrix4f view, final org.joml.Matrix4f projection, final float sunAngle, final long ticks,
+                                                                          final float rain, final double frameTime, final int skyLight) {
+        return new com.metallumextra.shader.IrisUniformValues.Inputs(view, projection, 256.0F, 100.5, 64.0, -20.25, sunAngle, sunAngle + (float) Math.PI, 0.0F, ticks, 3,
+                rain, 0.25F, 12.5, frameTime, 7, 1600, 900, 0.5F, 0.0F, 0.0F, 0.0F, 0.7F, 0.8F, 0.9F, 0.2F, 0.4F, 0.8F, 5, skyLight, 0);
+    }
+
+    private static void irisUniforms() throws Exception {
+        // The block layout is std140: each member starts at a multiple of its alignment, and a float may follow a vec3 in its last four bytes.
+        IrisUniforms.Layout layout = IrisUniforms.layout();
+        check("std140 layout: the six matrices first (0, 64, ... 320), then vec3s at 384, 400 ...", layout.offsets().get("gbufferModelView") == 0 && layout.offsets().get("gbufferPreviousProjection") == 320
+                && layout.offsets().get("cameraPosition") == 384 && layout.offsets().get("previousCameraPosition") == 400);
+        int last = 0;
+        boolean ordered = true;
+        for (IrisUniforms.Uniform uniform : IrisUniforms.ALL) {
+            int at = layout.offsets().get(uniform.name());
+            ordered &= at >= last && at % (uniform.type().equals("float") || uniform.type().equals("int") ? 4 : uniform.type().equals("ivec2") ? 8 : 16) == 0;
+            last = at;
+        }
+        check("every member is aligned for its type and they do not overlap, in the order of ALL (" + layout.size() + " bytes)", ordered && layout.size() % 16 == 0);
+        check("ivec2 is aligned to 8, a float after it packs at 4, and mat3 takes 48", layout.offsets().get("eyeBrightness") % 8 == 0 && layout.offsets().get("eyeAltitude") == layout.offsets().get("eyeBrightnessSmooth") + 8
+                && layout.offsets().get("normalMatrix") + 48 <= layout.size());
+
+        // Loose declarations become one block that always has every member.
+        String source = "#version 330\n#extension GL_ARB_foo : enable\nuniform sampler2D colortex0;\nuniform mat4 gbufferModelView;\nuniform vec3 cameraPosition, sunPosition; // where\nuniform float frameTimeCounter;\nvoid main() { }\n";
+        List<String> declared = IrisUniforms.declared(source);
+        check("declared uniforms come in layout order, and samplers are not among them", declared.equals(List.of("gbufferModelView", "cameraPosition", "sunPosition", "frameTimeCounter")));
+        String rewritten = IrisUniforms.rewrite(source, declared);
+        check("the loose declarations are gone and the samplers stay", !rewritten.contains("uniform mat4") && !rewritten.contains("uniform vec3") && !rewritten.contains("uniform float") && rewritten.contains("uniform sampler2D colortex0;"));
+        check("the block follows the #version and #extension lines, holds every member in order, and names the ones not declared so no program can use them",
+                rewritten.indexOf("#extension") < rewritten.indexOf("layout(std140) uniform IrisUniforms") && rewritten.indexOf("mat4 gbufferModelView;") < rewritten.indexOf("mat4 _mx_unused_gbufferModelViewInverse;")
+                        && rewritten.contains("vec3 sunPosition;") && rewritten.contains("float frameTimeCounter;") && rewritten.contains("float _mx_unused_sunAngle;") && rewritten.contains("mat3 _mx_unused_normalMatrix;")
+                        && rewritten.indexOf("layout(std140)") < rewritten.indexOf("void main"));
+        check("every program gets the same block layout: the declarations differ only in names", IrisUniforms.rewrite("#version 330\nuniform float far;\n", List.of("far")).lines().filter(l -> l.contains(";")).count()
+                == IrisUniforms.rewrite("#version 330\nuniform float near;\n", List.of("near")).lines().filter(l -> l.contains(";")).count());
+        check("a program without standard uniforms is left as it is", IrisUniforms.rewrite("#version 330\nvoid main() {}\n", List.of()).equals("#version 330\nvoid main() {}\n"));
+        check("the terrain's own uniforms (chunkOffset ...) are not in the block", IrisUniforms.declared("#version 330\nuniform vec3 chunkOffset;\nuniform float alphaTestRef;\n").isEmpty());
+        for (String[] bad : new String[][] {
+                {"uniform mat4 shadowModelView;", "shadow stage"}, {"uniform int entityId;", "gbuffers"}, {"uniform float myOwnThing;", "custom uniforms"},
+                {"uniform vec3 frameTimeCounter;", "declared vec3"}, {"uniform float cameraPosition[2];", "arrays"}}) {
+            try {
+                IrisUniforms.declared("#version 330\n" + bad[0] + "\n");
+                check("refused: " + bad[0], false);
+            } catch (PackException e) {
+                check("refused: " + bad[0] + " (" + e.getMessage() + ")", e.getMessage().contains(bad[1]));
+            }
+        }
+
+        // The values.
+        org.joml.Matrix4f view = new org.joml.Matrix4f().rotateX(-0.3F).rotateY(0.5F);
+        org.joml.Matrix4f game = new org.joml.Matrix4f().perspective((float) Math.toRadians(70), 16.0F / 9.0F, 0.05F, 512.0F);
+        var values = new com.metallumextra.shader.IrisUniformValues();
+        Map<String, double[]> one = values.frame(inputs(view, game, 0.0F, 6000, 0.0F, 1.0 / 60.0, 15));
+        check("gbufferModelView times its inverse is the identity", sameMatrix(matrix(one, "gbufferModelView").mul(matrix(one, "gbufferModelViewInverse")), new org.joml.Matrix4f(), 1e-5F));
+        check("gbufferProjection times its inverse is the identity", sameMatrix(matrix(one, "gbufferProjection").mul(matrix(one, "gbufferProjectionInverse")), new org.joml.Matrix4f(), 1e-4F));
+        org.joml.Matrix4f projection = matrix(one, "gbufferProjection");
+        org.joml.Vector4f nearPoint = projection.transform(new org.joml.Vector4f(0, 0, -0.05F, 1));
+        org.joml.Vector4f farPoint = projection.transform(new org.joml.Vector4f(0, 0, -256.0F, 1));
+        check("gbufferProjection puts the near plane (0.05) at depth -1 and the far plane (the render distance) at +1", Math.abs(nearPoint.z / nearPoint.w + 1) < 1e-4 && Math.abs(farPoint.z / farPoint.w - 1) < 1e-4);
+        check("it keeps the game's field of view and aspect", projection.m00() == game.m00() && projection.m11() == game.m11());
+        check("the camera, the sun at noon, shadowAngle, worldTime and the screen", one.get("cameraPosition")[0] == 100.5 && one.get("cameraPosition")[2] == -20.25
+                && Math.abs(one.get("sunAngle")[0] - 0.25) < 1e-6 && one.get("worldTime")[0] == 6000 && one.get("viewWidth")[0] == 1600 && Math.abs(one.get("aspectRatio")[0] - 1600.0 / 900.0) < 1e-9
+                && one.get("near")[0] == 0.05F && one.get("far")[0] == 256.0 && one.get("moonPhase")[0] == 3 && Math.abs(one.get("shadowAngle")[0] - 0.25) < 1e-6);
+        org.joml.Vector3f sun = new org.joml.Vector3f((float) one.get("sunPosition")[0], (float) one.get("sunPosition")[1], (float) one.get("sunPosition")[2]);
+        org.joml.Vector3f expectedSun = view.transformDirection(new org.joml.Vector3f(0, 100, 0));
+        check("sunPosition at noon is straight up, 100 long, in view space", Math.abs(sun.length() - 100) < 1e-3 && sun.distance(expectedSun) < 1e-3);
+        org.joml.Vector3f up = new org.joml.Vector3f((float) one.get("upPosition")[0], (float) one.get("upPosition")[1], (float) one.get("upPosition")[2]);
+        check("upPosition is up in view space, 100 long", up.distance(expectedSun) < 1e-3);
+        check("by day the shadow light is the sun, and the moon is opposite it", java.util.Arrays.equals(one.get("shadowLightPosition"), one.get("sunPosition"))
+                && Math.abs(one.get("moonPosition")[0] + one.get("sunPosition")[0]) < 1e-3 && Math.abs(one.get("moonPosition")[1] + one.get("sunPosition")[1]) < 1e-3);
+        check("eyeBrightness is the light levels times 16", one.get("eyeBrightness")[0] == 5 * 16 && one.get("eyeBrightness")[1] == 15 * 16);
+
+        Map<String, double[]> two = values.frame(inputs(new org.joml.Matrix4f().rotateY(1.0F), game, (float) Math.PI, 18000 + 24000 * 3, 1.0F, 30.0, 0));
+        check("the previous frame's view, projection and camera are kept", sameMatrix(matrix(two, "gbufferPreviousModelView"), view, 1e-6F) && sameMatrix(matrix(two, "gbufferPreviousProjection"), projection, 1e-6F)
+                && two.get("previousCameraPosition")[0] == 100.5);
+        check("at midnight sunAngle is 0.75, shadowAngle 0.25 and the shadow light the moon", Math.abs(two.get("sunAngle")[0] - 0.75) < 1e-5 && Math.abs(two.get("shadowAngle")[0] - 0.25) < 1e-5
+                && java.util.Arrays.equals(two.get("shadowLightPosition"), two.get("moonPosition")));
+        check("worldTime counts within the day and worldDay the days", two.get("worldTime")[0] == 18000 && two.get("worldDay")[0] == 3);
+        check("wetness is rain smoothed with a half-life of 600 ticks: 30 s later it is halfway", Math.abs(two.get("wetness")[0] - 0.5) < 1e-9);
+        check("eyeBrightnessSmooth moves towards the new light with a half-life of 10 ticks", two.get("eyeBrightnessSmooth")[1] < 5 && two.get("eyeBrightnessSmooth")[1] >= 0 && two.get("eyeBrightnessSmooth")[0] == 80);
+        check("sunAngle: 0 at sunrise", Math.abs(com.metallumextra.shader.IrisUniformValues.irisSunAngle(1.5F * (float) Math.PI)) < 1e-5 || Math.abs(com.metallumextra.shader.IrisUniformValues.irisSunAngle(1.5F * (float) Math.PI) - 1) < 1e-5);
+
+        // Depth: the game's (any projection of its kind) to OpenGL depth.
+        for (float[] ab : new float[][] {{0.0F, 0.05F}, {-1.0000002F, -0.1F}, {0.05F, 0.2F}}) {
+            org.joml.Matrix4f gameMatrix = new org.joml.Matrix4f().m00(1).m11(1).m22(ab[0]).m32(ab[1]).m23(-1).m33(0);
+            boolean ok = true;
+            for (double distance : new double[] {0.05, 0.5, 3, 10, 100, 255}) {
+                double gameDepth = -ab[0] + ab[1] / distance;
+                double expected = 0.5 + 0.5 * ((256 + 0.05) / (256 - 0.05) - 2 * 256 * 0.05 / ((256 - 0.05) * distance));
+                ok &= Math.abs(com.metallumextra.shader.IrisUniformValues.glDepth(gameDepth, gameMatrix, 256.0F) - expected) < 1e-6;
+            }
+            check("OpenGL depth from the game's depth, for a projection with A=" + ab[0] + " B=" + ab[1], ok);
+        }
+        double nearDepth = com.metallumextra.shader.IrisUniformValues.glDepth(0.05 / 0.05, new org.joml.Matrix4f().m22(0).m32(0.05F).m23(-1).m33(0), 256.0F);
+        double farDepth = com.metallumextra.shader.IrisUniformValues.glDepth(0.05 / 256.0, new org.joml.Matrix4f().m22(0).m32(0.05F).m23(-1).m33(0), 256.0F);
+        check("depth is 0 at the near plane and 1 at the far plane", Math.abs(nearDepth) < 1e-6 && Math.abs(farDepth - 1) < 1e-6);
+
+        // Written into a block.
+        IrisUniforms.Layout block = IrisUniforms.layout();
+        java.nio.ByteBuffer bytes = java.nio.ByteBuffer.allocateDirect(block.size()).order(java.nio.ByteOrder.nativeOrder());
+        com.metallumextra.shader.IrisUniformValues.write(block, one, bytes);
+        check("values land where the layout says, ints as ints", bytes.getFloat(block.offsets().get("cameraPosition")) == 100.5F && bytes.getFloat(block.offsets().get("cameraPosition") + 8) == -20.25F
+                && bytes.getInt(block.offsets().get("worldTime")) == 6000 && bytes.getInt(block.offsets().get("eyeBrightness") + 4) == 240 && bytes.getFloat(block.offsets().get("frameTimeCounter")) == 12.5F);
     }
 
     private static ZipPack openWithJson(final Path zip, final String json) throws IOException, PackException {
@@ -817,7 +1163,7 @@ public final class PackTests {
         missing.remove("program/sky.fsh");
         TestPacks.write(folder.resolve("Incomplete.zip"), "{\"format\": 1}", missing);
         // A shader pack in the Iris layout that this version cannot run: listed, with the reason.
-        TestPacks.write(folder.resolve("SomeIrisPack.zip"), null, Map.of("world0/gbuffers_terrain.fsh", "void main() {}", "world0/gbuffers_terrain.vsh", "void main() {}"));
+        TestPacks.write(folder.resolve("SomeIrisPack.zip"), null, Map.of("world0/gbuffers_entities.fsh", "void main() {}", "world0/gbuffers_entities.vsh", "void main() {}"));
         Files.writeString(folder.resolve("notes.txt"), "not a zip");
         // The built-in pack's name, taken by a ZIP.
         TestPacks.writeBuiltinCopy(folder.resolve(BuiltinPack.NAME + ".zip"));

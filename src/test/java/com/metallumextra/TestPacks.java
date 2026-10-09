@@ -1,5 +1,7 @@
 package com.metallumextra;
 
+import com.metallumextra.shader.pack.IrisUniforms;
+
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
@@ -90,6 +92,7 @@ public final class TestPacks {
         writeStandardPack(folder.resolve("SolidRed.zip"), "fragColor = vec4(1.0, 0.0, 0.0, 1.0);");
         writeStandardPack(folder.resolve("SwapRedBlue.zip"), "fragColor = vec4(color.bgr, 1.0);");
         writeIrisPacks(folder);
+        writeUniformPacks(folder);
         // Packs that must not take the game down: one whose GLSL has a mistake, and one that lacks a shader.
         Map<String, String> syntax = builtinFiles();
         syntax.put("program/edges.fsh", "#version 330\n\nuniform sampler2D InSampler;\nin vec2 texCoord;\nout vec4 fragColor;\n\nvoid main() {\n    fragColor = texture(InSampler, texCoord)\n}\n");
@@ -223,6 +226,65 @@ public final class TestPacks {
         irisPack(folder, "IrisBroken", chain(
                 "composite", "#version 330\nin vec2 texcoord;\nlayout(location = 0) out vec4 color;\nvoid main() {\n    color = vec4(1.0)\n}\n",
                 "final", FINAL_COPY), null);
+    }
+
+    /**
+     * Writes every standard uniform into the top row of colortex1 (RGBA32F), in the order of {@link IrisUniforms#ALL}: a matrix takes
+     * four pixels (its columns), anything else one. The test reads the row back and compares it with what the game computed.
+     */
+    private static String uniformDump() {
+        StringBuilder declarations = new StringBuilder();
+        StringBuilder cases = new StringBuilder();
+        int pixel = 0;
+        for (IrisUniforms.Uniform uniform : IrisUniforms.ALL) {
+            if (uniform.gbuffers()) continue;
+            declarations.append("uniform ").append(uniform.type()).append(' ').append(uniform.name()).append(";\n");
+            switch (uniform.type()) {
+                case "mat4" -> {
+                    for (int column = 0; column < 4; column++) cases.append("    if (i == ").append(pixel++).append(") v = ").append(uniform.name()).append('[').append(column).append("];\n");
+                }
+                case "vec3" -> cases.append("    if (i == ").append(pixel++).append(") v = vec4(").append(uniform.name()).append(", 0.0);\n");
+                case "ivec2" -> cases.append("    if (i == ").append(pixel++).append(") v = vec4(vec2(").append(uniform.name()).append("), 0.0, 0.0);\n");
+                default -> cases.append("    if (i == ").append(pixel++).append(") v = vec4(float(").append(uniform.name()).append("), 0.0, 0.0, 0.0);\n");
+            }
+        }
+        return "#version 330\n\n" + declarations + "\nconst int colortex1Format = RGBA32F;\nin vec2 texcoord;\n/* RENDERTARGETS: 1 */\nlayout(location = 0) out vec4 color;\n\n"
+                + "void main() {\n    int i = int(gl_FragCoord.x);\n    vec4 v = vec4(0.0);\n" + cases + "    color = gl_FragCoord.y < 1.0 ? v : vec4(0.0);\n}\n";
+    }
+
+    /** The packs that test the standard uniforms: every one written out for comparison, and the view-space distance rebuilt from depth. */
+    public static void writeUniformPacks(final Path folder) throws IOException {
+        irisPack(folder, "IrisUniforms", chain("composite", uniformDump(), "final", FINAL_COPY), null);
+        irisPack(folder, "IrisViewDepth", chain("composite", viewDepthComposite(1), "final", FINAL_COPY), null);
+        // Terrain drawn by the pack's own gbuffers_terrain, into three buffers: color, the quad's normal as the program saw it (vaNormal),
+        // and the light (vaUV2). The final image shows the three side by side, and a composite rebuilds the wall's distance from depth.
+        Map<String, String> terrain = new java.util.LinkedHashMap<>();
+        terrain.put("gbuffers_terrain.vsh", "#version 330 core\n\nin vec3 vaPosition;\nin vec4 vaColor;\nin vec2 vaUV0;\nin ivec2 vaUV2;\nin vec3 vaNormal;\nin vec2 mc_Entity;\n"
+                + "uniform mat4 modelViewMatrix;\nuniform mat4 projectionMatrix;\nuniform vec3 chunkOffset;\n\nout vec2 uv;\nout vec4 tint;\nout vec2 light;\nout vec3 facing;\n\n"
+                + "void main() {\n    gl_Position = projectionMatrix * modelViewMatrix * vec4(vaPosition + chunkOffset, 1.0);\n    uv = vaUV0;\n    tint = vaColor;\n    light = vec2(vaUV2) / 240.0;\n    facing = vaNormal;\n}\n");
+        terrain.put("gbuffers_terrain.fsh", "#version 330 core\n\nuniform sampler2D gtexture;\nuniform float alphaTestRef;\n\nin vec2 uv;\nin vec4 tint;\nin vec2 light;\nin vec3 facing;\n\n"
+                + "/* RENDERTARGETS: 0,1,2 */\nlayout(location = 0) out vec4 outColor;\nlayout(location = 1) out vec4 outNormal;\nlayout(location = 2) out vec4 outLight;\n\n"
+                + "void main() {\n    vec4 albedo = texture(gtexture, uv) * tint;\n    if (albedo.a < alphaTestRef) discard;\n    outColor = vec4(1.0, 0.0, 1.0, albedo.a);\n"
+                + "    outNormal = vec4(facing * 0.5 + 0.5, 1.0);\n    outLight = vec4(light, 0.0, 1.0);\n}\n");
+        terrain.put("composite.vsh", FULLSCREEN_VSH);
+        terrain.put("composite.fsh", viewDepthComposite(3));
+        terrain.put("final.vsh", FULLSCREEN_VSH);
+        terrain.put("final.fsh", program("colortex0, colortex1, colortex2", null,
+                "vec2 uv = vec2(fract(texcoord.x * 3.0), texcoord.y);\n    color = texcoord.x < 1.0 / 3.0 ? texture(colortex0, uv) : texcoord.x < 2.0 / 3.0 ? texture(colortex1, uv) : texture(colortex2, uv);"));
+        Map<String, String> placed = new java.util.LinkedHashMap<>();
+        for (Map.Entry<String, String> file : terrain.entrySet()) placed.put("world0/" + file.getKey(), file.getValue());
+        writeStandard(folder.resolve("IrisTerrain.zip"), placed);
+    }
+
+    /** A composite that rebuilds each pixel's view-space distance from depth into the given buffer (RGBA32F): along the view axis from depthtex1, along the ray, and from depthtex0. */
+    private static String viewDepthComposite(final int buffer) {
+        return "#version 330\n\nuniform sampler2D depthtex0;\nuniform sampler2D depthtex1;\nuniform mat4 gbufferProjectionInverse;\n\nconst int colortex" + buffer + "Format = RGBA32F;\nin vec2 texcoord;\n"
+                + "/* RENDERTARGETS: " + buffer + " */\nlayout(location = 0) out vec4 color;\n\n"
+                + "void main() {\n    // The middle row of the picture, whatever column this pixel is in the top row of the output (row 0 is the bottom of the screen).\n"
+                + "    ivec2 at = ivec2(int(gl_FragCoord.x), textureSize(depthtex1, 0).y / 2);\n    vec2 uv = (vec2(at) + 0.5) / vec2(textureSize(depthtex1, 0));\n"
+                + "    vec4 a = gbufferProjectionInverse * vec4(uv * 2.0 - 1.0, texelFetch(depthtex1, at, 0).r * 2.0 - 1.0, 1.0);\n"
+                + "    vec4 b = gbufferProjectionInverse * vec4(uv * 2.0 - 1.0, texelFetch(depthtex0, at, 0).r * 2.0 - 1.0, 1.0);\n"
+                + "    color = vec4(-a.z / a.w, length(a.xyz / a.w), -b.z / b.w, 1.0);\n}\n";
     }
 
     private static void add(final ZipOutputStream zos, final String name, final String text) throws IOException {

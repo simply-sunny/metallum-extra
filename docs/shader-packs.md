@@ -220,8 +220,3 @@ These exist so the built-in pack could be moved onto this pipeline without being
 - `entityColor`, `entityId`, `blockEntityId`, `block.properties`, custom uniforms, `fogStart`/`fogEnd`, compute shaders, and the compatibility profile
   are not provided; geometry shaders are refused.
 - The shadow map reaches 8 blocks further than `shadowDistance`, to let the terrain in it be reused; `shadowDistance` is where a pack should fade.
-
-## The test packs
-
-The packs in `src/test/java/com/metallumextra/TestPacks.java` are small examples of each rule above, and `src/test/iris-pipeline/run.sh`,
-`src/test/pack-regression/run.sh` and `src/test/baseline/run.sh` run them in the game.

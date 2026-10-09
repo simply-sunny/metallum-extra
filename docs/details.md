@@ -242,8 +242,6 @@ Metal pipelines are not cached (they belong to the running GPU).
 
 **Making a pack:** see [shader-packs.md](shader-packs.md).
 
-**Tests.** `gradlew packTest` (also part of `check`) tests loading, validation and the cache without the game.
-`src/test/pack-regression/run.sh` plays RedToBlue and BlueToRed through the game and checks the pictures; see its README.
 
 ## Working on the shaders
 Start the dev client with `-Dmetallumextra.shaderDir=<path to src/main/resources/assets/metallum-extra/shaders>` to

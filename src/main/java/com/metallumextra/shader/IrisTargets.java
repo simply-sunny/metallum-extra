@@ -37,6 +37,12 @@ final class IrisTargets {
     private final Slot[] slots = new Slot[IrisPlan.COLOR_BUFFERS];
     private @Nullable TextureTarget depthWithoutTranslucent;
     private @Nullable TextureTarget depthAll;
+    private @Nullable TextureTarget shadow;
+    /** The terrain part of the shadow map, kept between frames; see {@link ShadowPass}. */
+    private @Nullable TextureTarget shadowCache;
+    /** One empty texel, read in place of the shadow map while the shadow map is the image being drawn into, and when there is none. */
+    private @Nullable TextureTarget emptyShadow;
+    private int shadowResolution;
     private @Nullable IrisPlan plan;
     private int width;
     private int height;
@@ -55,10 +61,17 @@ final class IrisTargets {
         height = Math.max(newHeight, 1);
         for (Map.Entry<Integer, IrisPlan.Buffer> entry : newPlan.buffers().entrySet()) {
             Slot slot = new Slot(entry.getValue());
-            slot.main = create("colortex" + entry.getKey(), slot.spec.format());
-            if (needsAlternate(newPlan, entry.getKey())) slot.alternate = create("colortex" + entry.getKey() + " alternate", slot.spec.format());
+            int w = slot.spec.widthOn(width), h = slot.spec.heightOn(height);
+            slot.main = create("colortex" + entry.getKey(), slot.spec.format(), w, h);
+            if (needsAlternate(newPlan, entry.getKey())) slot.alternate = create("colortex" + entry.getKey() + " alternate", slot.spec.format(), w, h);
             slots[entry.getKey()] = slot;
         }
+        shadowResolution = newPlan.hasShadow() ? newPlan.shadowResolution() : 0;
+        if (shadowResolution > 0) {
+            shadow = createShadow("shadow map", shadowResolution);
+            shadowCache = createShadow("shadow terrain", shadowResolution);
+        }
+        emptyShadow = createShadow("empty shadow map", 1);
         if (newPlan.usesDepth(1) || newPlan.usesDepth(2)) depthWithoutTranslucent = createDepth("depthtex1");
         if (newPlan.usesDepth(0)) depthAll = createDepth("depthtex0");
         MetallumExtra.LOGGER.info("[Metallum Extra] Shader pack buffers: {} color, {} depth, {} MB at {}x{}", entryCount(), (depthAll != null ? 1 : 0) + (depthWithoutTranslucent != null ? 1 : 0),
@@ -74,7 +87,7 @@ final class IrisTargets {
     private static boolean needsAlternate(final IrisPlan plan, final int buffer) {
         for (ProgramSet.Stage stage : ProgramSet.Stage.values()) {
             // The programs that draw the world write the main textures; nothing flips there.
-            if (stage == ProgramSet.Stage.GBUFFERS) continue;
+            if (stage == ProgramSet.Stage.GBUFFERS || stage == ProgramSet.Stage.SHADOW) continue;
             for (IrisPlan.Step step : plan.steps(stage)) {
                 for (int i = 0; i < step.writes().length; i++) {
                     if (step.writes()[i] == buffer && !step.inPlace()[i]) return true;
@@ -84,12 +97,22 @@ final class IrisTargets {
         return false;
     }
 
-    private TextureTarget create(final String name, final GpuFormat format) {
-        TextureTarget target = new TextureTarget("Metallum Extra " + name, width, height, false, format);
+    private TextureTarget create(final String name, final GpuFormat format, final int w, final int h) {
+        TextureTarget target = new TextureTarget("Metallum Extra " + name, w, h, false, format);
         textures++;
         created++;
-        bytes += (long) width * height * bytesPerPixel(format);
+        bytes += (long) w * h * bytesPerPixel(format);
         clear(target, new float[] {0, 0, 0, 0});
+        return target;
+    }
+
+    /** The shadow map: color for {@code shadowcolor0} and depth for {@code shadowtex0}, which is OpenGL depth (0 nearest the light) and starts empty (1). */
+    private TextureTarget createShadow(final String name, final int size) {
+        TextureTarget target = new TextureTarget("Metallum Extra " + name, size, size, true, GpuFormat.RGBA8_UNORM);
+        textures++;
+        created++;
+        bytes += (long) size * size * 8;
+        ShadowPass.clear(target, 1.0);
         return target;
     }
 
@@ -168,6 +191,31 @@ final class IrisTargets {
         return withTranslucent ? depthAll : depthWithoutTranslucent;
     }
 
+    @Nullable TextureTarget shadow() {
+        return shadow;
+    }
+
+    @Nullable TextureTarget shadowCache() {
+        return shadowCache;
+    }
+
+    TextureTarget emptyShadow() {
+        return emptyShadow;
+    }
+
+    int shadowResolution() {
+        return shadowResolution;
+    }
+
+    /** The size of the image a program draws when it writes buffer {@code index}. */
+    int widthOf(final int index) {
+        return slots[index].main.width;
+    }
+
+    int heightOf(final int index) {
+        return slots[index].main.height;
+    }
+
     int width() {
         return width;
     }
@@ -201,6 +249,13 @@ final class IrisTargets {
         if (depthWithoutTranslucent != null) depthWithoutTranslucent.destroyBuffers();
         depthAll = null;
         depthWithoutTranslucent = null;
+        for (TextureTarget target : new TextureTarget[] {shadow, shadowCache, emptyShadow}) {
+            if (target != null) target.destroyBuffers();
+        }
+        shadow = null;
+        shadowCache = null;
+        emptyShadow = null;
+        shadowResolution = 0;
         plan = null;
         textures = 0;
         bytes = 0;

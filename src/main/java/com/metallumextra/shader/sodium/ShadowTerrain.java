@@ -1,6 +1,8 @@
 package com.metallumextra.shader.sodium;
 
 import com.metallumextra.MetallumExtra;
+import com.metallumextra.shader.IrisPipeline;
+import com.metallumextra.shader.pack.IrisPlan;
 import com.metallumextra.mixin.shader.SodiumChunkRendererInvoker;
 import com.mojang.blaze3d.IndexType;
 import com.mojang.blaze3d.PrimitiveTopology;
@@ -57,6 +59,9 @@ public final class ShadowTerrain {
     private static final RenderPipeline SOLID = pipeline("shadow_terrain_solid", false);
     private static final RenderPipeline CUTOUT = pipeline("shadow_terrain_cutout", true);
 
+    /** The pipelines of a standard pack's shadow programs, by plan and layer; made when first needed, thrown away when the plan changes. */
+    private static final java.util.Map<String, RenderPipeline> IRIS = new java.util.HashMap<>();
+
     private static final Reference2ObjectOpenHashMap<RenderRegion, RegionList> LISTS = new Reference2ObjectOpenHashMap<>();
     private static final ObjectArrayList<RegionList> VISIBLE = new ObjectArrayList<>();
     private static @Nullable DrawContext drawContext;
@@ -92,6 +97,34 @@ public final class ShadowTerrain {
         return builder.build();
     }
 
+    /** The plan changed: the pipelines made for it are stale. */
+    public static void forgetPipelines() {
+        IRIS.clear();
+    }
+
+    /** The pipeline that draws a layer of terrain with the pack's shadow program, or null if the pack has none for it. */
+    private static @Nullable RenderPipeline irisPipeline(final boolean cutout) {
+        IrisPlan plan = IrisPipeline.currentPlan();
+        if (plan == null || plan.shadowTerrainStep(cutout ? IrisPlan.Layer.CUTOUT : IrisPlan.Layer.SOLID) == null) return null;
+        String name = "shadow_iris_" + IrisPipeline.generation() + "_" + (cutout ? "cutout" : "solid");
+        return IRIS.computeIfAbsent(name, n -> {
+            Identifier id = Identifier.fromNamespaceAndPath(MetallumExtra.MOD_ID, n);
+            RenderPipeline.Builder builder = RenderPipeline.builder()
+                    .withLocation(Identifier.fromNamespaceAndPath(MetallumExtra.MOD_ID, "pipeline/" + n))
+                    .withVertexShader(id)
+                    .withFragmentShader(id)
+                    .withCull(false)
+                    // OpenGL depth: the map is cleared to 1 and what is nearest the light wins.
+                    .withDepthStencilState(new DepthStencilState(com.mojang.blaze3d.platform.CompareOp.LESS_THAN_OR_EQUAL, true))
+                    .withColorTargetState(ColorTargetState.DEFAULT)
+                    .withPrimitiveTopology(PrimitiveTopology.QUADS)
+                    .withVertexBinding(0, CompactChunkVertex.VERTEX_FORMAT)
+                    .withBindGroupLayout(BLOCK_TEXTURE);
+            if (cutout) builder.withShaderDefine("ALPHA_CUTOUT", 0.5F);
+            return builder.build();
+        });
+    }
+
     /**
      * @param lightView camera-relative world space to light space (x and y across the map, z towards the light)
      * @param toLight   direction to the light, in world space
@@ -106,6 +139,7 @@ public final class ShadowTerrain {
 
         frame++;
         collect(sections, camera, lightView, range, depth);
+        if (Boolean.getBoolean("metallumextra.dbgShadow")) MetallumExtra.LOGGER.info("DBG shadow terrain: {} regions visible, range {} depth {}", VISIBLE.size(), range, depth);
         if (VISIBLE.isEmpty()) return;
 
         if (drawContext == null) {
@@ -125,8 +159,11 @@ public final class ShadowTerrain {
 
         try (RenderPass pass = RenderSystem.getDevice().createCommandEncoder().createRenderPass(() -> "Metallum Extra shadow terrain",
                 target.getColorTextureView(), Optional.empty(), target.getDepthTextureView(), OptionalDouble.empty())) {
-            draw(pass, DefaultTerrainRenderPasses.SOLID, SOLID, indices, cameraTransform, lightTransform);
-            draw(pass, DefaultTerrainRenderPasses.CUTOUT, CUTOUT, indices, cameraTransform, lightTransform);
+            boolean standard = IrisPipeline.inUse();
+            RenderPipeline solid = standard ? irisPipeline(false) : SOLID;
+            RenderPipeline cutout = standard ? irisPipeline(true) : CUTOUT;
+            if (solid != null) draw(pass, DefaultTerrainRenderPasses.SOLID, solid, indices, cameraTransform, lightTransform);
+            if (cutout != null) draw(pass, DefaultTerrainRenderPasses.CUTOUT, cutout, indices, cameraTransform, lightTransform);
         }
         drawContext.endDraw();
     }
@@ -149,7 +186,7 @@ public final class ShadowTerrain {
                 pass.setPipeline(pipeline);
                 drawContext.setContext(pass, pipeline);
                 pass.setIndexBuffer(indices.getBufferObject(), IndexType.INT);
-                if (pipeline == CUTOUT) {
+                if (pipeline != SOLID) {
                     pass.bindTexture("u_BlockTex", terrainPass.getAtlas(), RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST));
                 }
             }

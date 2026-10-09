@@ -70,10 +70,10 @@ public abstract class MetalCommandEncoderMixin implements MultiTarget.Encoder {
         FrameProfiler.gpuWaitEnd();
     }
 
-    /** Shaders: the pass that draws terrain with a standard pack's program gets that program's extra buffers as color targets. */
+    /** Shaders: while the world is drawn, a pass into the game's image gets the other buffers a standard pack's programs write as color targets. */
     @Inject(method = "createRenderPass", at = @At("HEAD"))
-    private void metallumExtra$terrainTargets(final RenderPassDescriptor descriptor, final CallbackInfoReturnable<RenderPassBackend> cir) {
-        com.metallumextra.shader.IrisPipeline.attachTerrainTargets(descriptor);
+    private void metallumExtra$worldTargets(final RenderPassDescriptor descriptor, final CallbackInfoReturnable<RenderPassBackend> cir) {
+        com.metallumextra.shader.IrisPipeline.attachWorldTargets(descriptor);
     }
 
     /**

@@ -51,7 +51,7 @@ public final class ShaderKeys {
             PackManager.rescan();
             PackManager.select(PackManager.activeId());
             Shaders.reload();
-            say(minecraft, Component.literal("[Metallum Extra] Shaders reloaded"));
+            say(minecraft, Component.literal("[Metallum Extra] Shaders reloaded."));
         }
     }
 

@@ -7,6 +7,7 @@ import com.metallumextra.MetallumExtra;
 import com.metallumextra.ShaderKeys;
 import com.metallumextra.ShaderOptionsScreen;
 import com.metallumextra.ShaderPackScreen;
+import com.metallumextra.shader.pack.BuiltinOptions;
 import com.metallumextra.shader.pack.PackManager;
 import com.metallumextra.shader.pack.TranslationCache;
 import net.minecraft.client.CameraType;
@@ -157,10 +158,11 @@ public final class DebugScript {
         info.append("dimension ").append(level.dimension().identifier()).append('\n');
         info.append("gameTime ").append(level.getGameTime()).append(" raining ").append(level.isRaining()).append('\n');
         info.append("pack ").append(PackManager.activeId()).append(" shaders ").append(c.shadersEnabled).append('\n');
-        info.append("quality ").append(c.shaderQuality()).append(" shadows ").append(c.shaderShadows).append(" bloom ").append(c.shaderBloom)
-                .append(" reflections ").append(c.shaderWaterReflections).append(" waving ").append(c.shaderWaving).append(" rays ").append(c.shaderSunRays)
-                .append(" ao ").append(c.shaderAmbientOcclusion).append(" colored ").append(c.shaderColoredLight).append(" edges ").append(c.shaderSmoothEdges).append('\n');
-        info.append("shadowResolution ").append(c.shadowResolution).append(" shadowDistance ").append(c.shadowDistance).append('\n');
+        info.append("quality ").append(c.shaderQuality());
+        for (var option : com.metallumextra.shader.pack.PackManager.active().options()) {
+            info.append(' ').append(option.id()).append(' ').append(option.values().get(com.metallumextra.shader.pack.PackOptions.get(com.metallumextra.shader.pack.PackManager.active().name(), option)));
+        }
+        info.append('\n');
         try {
             Files.writeString(png.resolveSibling(png.getFileName().toString().replace(".png", ".txt")), info.toString());
         } catch (IOException e) {
@@ -209,14 +211,14 @@ public final class DebugScript {
                 ExtraConfig config = ExtraConfig.get();
                 switch (parts[0]) {
                     case "shaders" -> config.shadersEnabled = on;
-                    case "shadows" -> config.shaderShadows = on;
-                    case "bloom" -> config.shaderBloom = on;
-                    case "reflections" -> config.shaderWaterReflections = on;
-                    case "waving" -> config.shaderWaving = on;
-                    case "rays" -> config.shaderSunRays = on;
-                    case "ao" -> config.shaderAmbientOcclusion = on;
-                    case "colored" -> config.shaderColoredLight = on;
-                    case "edges" -> config.shaderSmoothEdges = on;
+                    case "shadows" -> BuiltinOptions.set("SHADOWS", on);
+                    case "bloom" -> BuiltinOptions.set("BLOOM", on);
+                    case "reflections" -> BuiltinOptions.set("WATER_REFLECTIONS", on);
+                    case "waving" -> BuiltinOptions.set("WAVING", on);
+                    case "rays" -> BuiltinOptions.set("SUN_RAYS", on);
+                    case "ao" -> BuiltinOptions.set("AMBIENT_OCCLUSION", on);
+                    case "colored" -> BuiltinOptions.set("COLORED_LIGHT", on);
+                    case "edges" -> BuiltinOptions.set("SMOOTH_EDGES", on);
                     case "chat" -> config.shaderMessages = on;
                     case "quality" -> config.setShaderQuality(Quality.valueOf(parts[1].toUpperCase(java.util.Locale.ROOT)));
                     default -> MetallumExtra.LOGGER.warn("[Metallum Extra] debug script: unknown setting {}", parts[0]);

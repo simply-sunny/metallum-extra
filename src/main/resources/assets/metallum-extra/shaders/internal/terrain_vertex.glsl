@@ -1,6 +1,7 @@
 // Sodium's chunk mesh seen through the vertex inputs of Iris's programs that draw terrain (vaPosition, vaColor, ...).
 // Put into a program by IrisTerrain; the program's own declarations of these names are taken out.
 
+#ifndef MX_SHADOW
 layout(std140) uniform u_Globals {
     mat4 u_ProjectionMatrix;
     mat4 u_ModelViewMatrix;
@@ -12,6 +13,7 @@ layout(std140) uniform u_Globals {
     float u_FadePeriodInv;
     bool u_UseRGSS;
 };
+#endif
 
 layout(push_constant) uniform PC {
     vec3 u_RegionOffset;
@@ -41,10 +43,21 @@ vec4 mx_va_color() {
     return vec4(a_Color.rgb, 1.0);
 }
 
+// Sodium's mesh does not have the center of each quad's texture; it has which side of that center each vertex is on. So the
+// center given here is only good for telling which side a vertex is on: it is a hair away from the vertex, towards the center.
+vec2 mx_mid_tex_coord(vec2 uv) {
+    vec2 direction = vec2(a_TexCoord >> 15u) * 2.0 - 1.0;
+    return uv + direction * 0.0005;
+}
+
 vec2 mx_va_uv0() {
     vec2 coordinate = vec2(a_TexCoord & 0x7FFFu) / 32768.0;
     vec2 direction = vec2(a_TexCoord >> 15u) * 2.0 - 1.0;
+#ifdef MX_SHADOW
+    return coordinate;
+#else
     return coordinate + direction * u_TexCoordShrink;
+#endif
 }
 
 // The light map coordinate as the game has it: 0 to 240 for light levels 0 to 15 (the mesh adds 8).
@@ -68,8 +81,21 @@ vec3 mx_va_normal() {
 // y: 1 for fluids, -1 for everything else.
 vec2 mx_mc_entity() {
     uint type = uint(a_Color.a * 255.0 + 0.5);
+#ifdef MX_BLOCK_TYPES
+    return vec2(float(type), (type == 1u || type == 2u) ? 1.0 : -1.0);
+#else
     return vec2(-1.0, (type == 1u || type == 2u) ? 1.0 : -1.0);
+#endif
 }
+
+#ifndef MX_SHADOW
+// How far a newly built section has come in fading from the fog (0 just built, 1 done): Sodium's own fade-in.
+uniform isamplerBuffer u_SectionTimeInfo;
+float mx_chunk_fade() {
+    int loaded_at = texelFetch(u_SectionTimeInfo, int(u_RegionID * 256u + a_LightAndData.w)).r;
+    return loaded_at < 0 ? 1.0 : clamp(float(u_CurrentTime - loaded_at) * u_FadePeriodInv, 0.0, 1.0);
+}
+#endif
 
 #define vaPosition mx_va_position()
 #define vaColor mx_va_color()
@@ -77,6 +103,12 @@ vec2 mx_mc_entity() {
 #define vaUV2 mx_va_uv2()
 #define vaNormal mx_va_normal()
 #define mc_Entity mx_mc_entity()
+#define mc_midTexCoord mx_mid_tex_coord(mx_va_uv0())
+#ifndef MX_SHADOW
+#define mc_chunkFade mx_chunk_fade()
+#else
+#define mc_chunkFade 1.0
+#endif
 #define chunkOffset u_RegionOffset
 #define textureMatrix mat4(1.0)
 #ifdef ALPHA_CUTOUT

@@ -1,8 +1,8 @@
 package com.metallumextra.shader;
 
+import com.metallumextra.shader.pack.IrisUniforms;
 import com.mojang.blaze3d.pipeline.BindGroupLayout;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
-import com.mojang.blaze3d.pipeline.TextureTarget;
 import com.mojang.blaze3d.shaders.UniformType;
 import com.mojang.blaze3d.systems.RenderPassBackend;
 import com.mojang.blaze3d.systems.RenderSystem;
@@ -10,36 +10,35 @@ import com.mojang.blaze3d.textures.FilterMode;
 import com.mojang.blaze3d.textures.GpuSampler;
 import net.minecraft.resources.Identifier;
 
-import java.util.IdentityHashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
- * The uniform block and textures this mod's shaders read without any pipeline declaring them.
+ * The uniform block and textures a pack's programs read without any pipeline declaring them.
  * <p>
- * The pipelines being drawn belong to the game, to Sodium or to other mods, and their draw code binds only what
- * they declared. So the extra names are let through when a shader is compiled, and Metallum's render pass binds
- * them itself for any pipeline whose shaders turned out to use them.
+ * The pipelines being drawn belong to the game, to Sodium or to other mods, and their draw code binds only what they declared. So the extra names
+ * are let through when a shader is compiled, and Metallum's render pass binds them itself for any pipeline whose shaders turned out to use them.
+ * The names are the ones {@link IrisWorldAdapter#boundSamplers} puts in place of Iris's: a program reads {@code shadowtex0}, and the pipeline sees
+ * {@code MxShadowMap}.
  */
 public final class ShaderBindings {
     public static final String SHADOW_MAP = "MxShadowMap";
-    public static final String SCENE_COLOR = "MxSceneColor";
-    public static final String SCENE_DEPTH = "MxSceneDepth";
+    public static final String SHADOW_COLOR = "MxShadowColor";
+    public static final String COLOR0 = "MxColor0";
+    public static final String DEPTH0 = "MxDepth0";
+    public static final String DEPTH1 = "MxDepth1";
 
-    /** In mask order: bit 0 is the uniform block, then the textures. */
-    public static final String[] NAMES = {ShaderGlobals.NAME, SHADOW_MAP, SCENE_COLOR, SCENE_DEPTH, LightColorGrid.SAMPLER, com.metallumextra.shader.pack.IrisUniforms.BLOCK};
+    /** In mask order: bit 0 is the uniform block of the standard uniforms, the rest textures. */
+    public static final String[] NAMES = {IrisUniforms.BLOCK, SHADOW_MAP, LightColorGrid.SAMPLER, SHADOW_COLOR, COLOR0, DEPTH0, DEPTH1};
 
-    /** The same masks, by the game's own pipeline object, for when only that is at hand. */
-    private static final Map<RenderPipeline, Integer> MASKS = new IdentityHashMap<>();
-    private static final Identifier BLOB_SHADOW = Identifier.withDefaultNamespace("pipeline/entity_shadow");
-
-    private static final int GLOBALS = 1;
+    private static final int IRIS = 1;
     private static final int SHADOW = 1 << 1;
-    private static final int COLOR = 1 << 2;
-    private static final int DEPTH = 1 << 3;
-    private static final int LIGHT_COLORS = 1 << 4;
-    /** The block of standard Iris uniforms, for the programs of a standard pack. */
-    private static final int IRIS = 1 << 5;
+    private static final int LIGHT_COLORS = 1 << 2;
+    private static final int SHADOW_COLOR_BIT = 1 << 3;
+    private static final int COLOR0_BIT = 1 << 4;
+    private static final int DEPTH0_BIT = 1 << 5;
+    private static final int DEPTH1_BIT = 1 << 6;
+
+    private static final Identifier BLOB_SHADOW = Identifier.withDefaultNamespace("pipeline/entity_shadow");
 
     private ShaderBindings() {
     }
@@ -49,56 +48,41 @@ public final class ShaderBindings {
         int metallumExtra$shaderBindings();
     }
 
-    public static void record(final RenderPipeline pipeline, final int mask) {
-        MASKS.put(pipeline, mask);
-    }
-
-    public static void forget() {
-        MASKS.clear();
-    }
-
     /**
      * Whether a pass should drop its draws with this pipeline.
      * <p>
-     * While the shadow map is drawn, the game's own draw code runs a second time with its output pointed at the
-     * map. Only shaders that know about the shadow phase put their vertices where the light sees them; anything
-     * else (text, lines, beams) would scribble over the map from the camera's point of view.
-     * And once the sun casts real shadows, the round blob the game draws under each mob is left out.
+     * While the shadow map is drawn, the game's own draw code runs a second time with its output pointed at the map. Only what the pack has a shadow
+     * program for is kept: the copies {@link IrisWorld} made of the game's model pipelines, and the terrain's own. Anything else (text, lines, beams)
+     * would scribble over the map from the camera's point of view. And once the sun casts real shadows, the round blob the game draws under each mob
+     * is left out.
      */
     public static boolean skipsDraws(final RenderPipeline pipeline) {
         int phase = Shaders.phase();
         if (phase == Shaders.PHASE_SHADOW) {
-            return (MASKS.getOrDefault(pipeline, 0) & GLOBALS) == 0;
+            return !IrisWorld.isShadowVariant(pipeline) && !pipeline.getLocation().getPath().startsWith("pipeline/shadow_iris_");
         }
         return phase == Shaders.PHASE_WORLD && Shaders.castsShadows() && pipeline.getLocation().equals(BLOB_SHADOW);
     }
 
     public static void addUniforms(final List<BindGroupLayout.UniformDescription> uniforms) {
-        if (Shaders.active()) {
-            uniforms.add(new BindGroupLayout.UniformDescription(ShaderGlobals.NAME, UniformType.UNIFORM_BUFFER));
-            uniforms.add(new BindGroupLayout.UniformDescription(com.metallumextra.shader.pack.IrisUniforms.BLOCK, UniformType.UNIFORM_BUFFER));
-        }
+        if (Shaders.active()) uniforms.add(new BindGroupLayout.UniformDescription(IrisUniforms.BLOCK, UniformType.UNIFORM_BUFFER));
     }
 
     public static void addSamplers(final List<String> samplers) {
         if (!Shaders.active()) return;
-        for (int i = 1; i < NAMES.length - 1; i++) samplers.add(NAMES[i]);
+        for (int i = 1; i < NAMES.length; i++) samplers.add(NAMES[i]);
     }
 
     /** Called by the render pass when it switches to a pipeline that uses any of the extra names. */
     public static void bind(final RenderPassBackend pass, final int mask) {
-        ShaderTargets targets = Shaders.targets();
-        if ((mask & GLOBALS) != 0) pass.setUniform(ShaderGlobals.NAME, Shaders.globals().buffer());
-        if ((mask & IRIS) != 0) pass.setUniform(com.metallumextra.shader.pack.IrisUniforms.BLOCK, IrisPipeline.uniformBuffer());
-        if (targets.scene() == null) return;
+        if ((mask & IRIS) != 0) pass.setUniform(IrisUniforms.BLOCK, IrisPipeline.uniformBuffer());
         GpuSampler nearest = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST);
-        if ((mask & SHADOW) != 0) {
-            // A texture cannot be read while it is being drawn into.
-            TextureTarget shadow = Shaders.phase() == Shaders.PHASE_SHADOW ? targets.emptyShadow() : targets.shadow();
-            pass.bindTexture(SHADOW_MAP, shadow.getDepthTextureView(), nearest);
-        }
-        if ((mask & COLOR) != 0) pass.bindTexture(SCENE_COLOR, targets.scene().getColorTextureView(), RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR));
-        if ((mask & DEPTH) != 0) pass.bindTexture(SCENE_DEPTH, targets.scene().getDepthTextureView(), nearest);
-        if ((mask & LIGHT_COLORS) != 0) pass.bindTexture(LightColorGrid.SAMPLER, Shaders.lightColors().view(), RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR));
+        GpuSampler linear = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR);
+        if ((mask & SHADOW) != 0) pass.bindTexture(SHADOW_MAP, IrisPipeline.shadowDepth(), nearest);
+        if ((mask & SHADOW_COLOR_BIT) != 0) pass.bindTexture(SHADOW_COLOR, IrisPipeline.shadowColor(), linear);
+        if ((mask & COLOR0_BIT) != 0) pass.bindTexture(COLOR0, IrisPipeline.worldColor(), linear);
+        if ((mask & DEPTH0_BIT) != 0) pass.bindTexture(DEPTH0, IrisPipeline.worldDepth(), nearest);
+        if ((mask & DEPTH1_BIT) != 0) pass.bindTexture(DEPTH1, IrisPipeline.worldDepth(), nearest);
+        if ((mask & LIGHT_COLORS) != 0) pass.bindTexture(LightColorGrid.SAMPLER, Shaders.lightColors().view(), linear);
     }
 }

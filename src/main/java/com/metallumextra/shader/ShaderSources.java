@@ -2,6 +2,7 @@ package com.metallumextra.shader;
 
 import com.metallumextra.MetallumExtra;
 import com.metallumextra.shader.pack.BuiltinPack;
+import com.metallumextra.shader.pack.InternalShaders;
 import com.metallumextra.shader.pack.IrisPlan;
 import com.metallumextra.shader.pack.IrisUniforms;
 import com.metallumextra.shader.pack.PackException;
@@ -26,16 +27,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * is the built-in one (the jar) or a ZIP in the shaderpacks folder; see {@link PackManager}. Nothing is ever taken
  * from any pack but the one in use.
  * <p>
- * Two kinds of file live under a pack's {@code shaders/} folder (for the built-in pack,
- * {@code assets/metallum-extra/shaders/}):
- * <ul>
- * <li>{@code override/<namespace>/<path>.vsh|.fsh} replaces the shader another mod or the game registered under
- * {@code <namespace>:<path>} while shaders are on. The pipeline stays theirs; only its text changes.</li>
- * <li>{@code program/<path>.vsh|.fsh} is a shader of this mod's own pipelines, asked for as {@code metallum-extra:<path>}.</li>
- * </ul>
- * A line {@code #include "name.glsl"} is replaced by {@code lib/name.glsl} the first time a shader asks for
- * that file, and dropped after that, so library files can include what they need. Every file must start with its
- * {@code #version} line, since the game inserts a pipeline's defines right after the first line.
+ * Which of the pack's programs is asked for is worked out from the id: Sodium's terrain shader (in a pipeline Sodium builds with a made-up id,
+ * see {@link IrisPipeline#terrainShaderId}), the game's own pipelines for mobs, items, particles and clouds (see {@link IrisWorld}), this mod's own
+ * passes ({@code metallum-extra:standard/<generation>/<program>}) and the shadow map's. Each program is fitted to the pipeline it is for.
+ * A line {@code #include "name.glsl"} is replaced by the file it names, as in Iris. Every file must start with its {@code #version} line, since the
+ * game inserts a pipeline's defines right after the first line.
  */
 public final class ShaderSources {
     /** Development aid: every shader the game compiles (as other mods left it) is written to this folder. */
@@ -45,7 +41,6 @@ public final class ShaderSources {
     private record Lookup(ShaderPack pack, Map<String, Optional<String>> files) {
     }
 
-    private static final ShaderPack BUILTIN = new BuiltinPack();
     private static final Map<String, Optional<String>> INTERNAL = new ConcurrentHashMap<>();
 
     private static volatile Lookup lookup = new Lookup(new BuiltinPack(), new ConcurrentHashMap<>());
@@ -57,8 +52,9 @@ public final class ShaderSources {
     public static ShaderSource wrap(final ShaderSource original) {
         return (id, type) -> {
             String ours = Shaders.active() ? get(id, type) : null;
-            Identifier real = isTerrainProgram(id) ? Identifier.fromNamespaceAndPath("sodium", "blocks/block_layer_opaque") : id;
-            if (DUMP_DIR != null) dump(id, type, original.get(real, type));
+            Identifier world = IrisWorld.originalOf(id, type == ShaderType.VERTEX);
+            Identifier real = isTerrainProgram(id) ? Identifier.fromNamespaceAndPath("sodium", "blocks/block_layer_opaque") : world != null ? world : id;
+            if (DUMP_DIR != null) dump(id, type, ours != null ? ours : original.get(real, type));
             // A terrain pipeline made for a pack that has since gone (Sodium keeps them) compiles as Sodium's own shader until it is replaced.
             return ours != null ? ours : original.get(real, type);
         };
@@ -85,8 +81,57 @@ public final class ShaderSources {
             String text = readExpanded(current.pack, f);
             try {
                 if (text == null) return Optional.empty();
-                String adapted = IrisTerrain.adapt(IrisPlan.withoutBufferFormats(text), type == ShaderType.VERTEX);
-                return Optional.of(IrisUniforms.rewrite(adapted, step.uniforms()));
+                String adapted = IrisTerrain.adapt(IrisPlan.withoutBufferFormats(text), type == ShaderType.VERTEX, false, "true".equals(plan.programs().property("mx.blockTypes")));
+                if (type != ShaderType.VERTEX) adapted = IrisWorldAdapter.remapOutputs(adapted, step.writes());
+                return Optional.of(IrisUniforms.rewrite(adapted, IrisUniforms.declared(adapted)));
+            } catch (PackException e) {
+                throw new IllegalStateException(e.getMessage(), e);
+            }
+        }).orElseThrow();
+    }
+
+    /** A standard pack's program for one of the game's pipelines (see {@link IrisWorld}), fitted to that pipeline; null if the id is out of date. */
+    private static @Nullable String world(final Lookup current, final Identifier id, final ShaderType type) {
+        IrisWorld.Entry entry = IrisWorld.entry(id);
+        if (entry == null || entry.generation() != IrisPipeline.generation()) return null;
+        ProgramSet.Program program = entry.step().program();
+        String file = type == ShaderType.VERTEX ? program.vertex() : program.fragment();
+        if (file == null) return null;
+        return current.files.computeIfAbsent(id.getPath() + (type == ShaderType.VERTEX ? ".vsh" : ".fsh"), f -> {
+            String text = readExpanded(current.pack, file);
+            try {
+                if (text == null) return Optional.empty();
+                String source = IrisPlan.withoutBufferFormats(text);
+                String adapted = entry.kind() == IrisWorld.Kind.SKY ? IrisWorldAdapter.adaptSky(source, type == ShaderType.VERTEX)
+                        : IrisWorldAdapter.adapt(source, type == ShaderType.VERTEX, entry.format(), entry.kind() == IrisWorld.Kind.SHADOW);
+                if (type != ShaderType.VERTEX) adapted = IrisWorldAdapter.remapOutputs(adapted, entry.step().writes());
+                return Optional.of(IrisUniforms.rewrite(adapted, IrisUniforms.declared(adapted)));
+            } catch (PackException e) {
+                throw new IllegalStateException(e.getMessage(), e);
+            }
+        }).orElseThrow();
+    }
+
+    /**
+     * A standard pack's shadow program for a layer of terrain, fitted to the pipeline {@link com.metallumextra.shader.sodium.ShadowTerrain} draws it with;
+     * the id is {@code shadow_iris_<generation>_<solid|cutout>}. Out of date ids are refused like those of {@link #standard}.
+     */
+    private static String shadowTerrain(final Lookup current, final String path, final ShaderType type) {
+        String[] parts = path.substring("shadow_iris_".length()).split("_", 2);
+        IrisPlan plan = IrisPipeline.currentPlan();
+        if (plan == null || parts.length != 2 || Integer.parseInt(parts[0]) != IrisPipeline.generation()) {
+            throw new StalePipelineException("The shadow shader " + path + " belongs to a pack that is no longer in use");
+        }
+        IrisPlan.Step step = plan.shadowTerrainStep(parts[1].equals("cutout") ? IrisPlan.Layer.CUTOUT : IrisPlan.Layer.SOLID);
+        ProgramSet.Program program = step == null ? null : step.program();
+        String file = program == null ? null : type == ShaderType.VERTEX ? program.vertex() : program.fragment();
+        if (file == null) throw new IllegalStateException("Shader pack " + current.pack.name() + " has no shadow program for " + parts[1] + " terrain");
+        return current.files.computeIfAbsent(path + (type == ShaderType.VERTEX ? ".vsh" : ".fsh"), f -> {
+            String text = readExpanded(current.pack, file);
+            try {
+                if (text == null) return Optional.empty();
+                String adapted = IrisTerrain.adapt(IrisPlan.withoutBufferFormats(text), type == ShaderType.VERTEX, true);
+                return Optional.of(IrisUniforms.rewrite(adapted, IrisUniforms.declared(adapted)));
             } catch (PackException e) {
                 throw new IllegalStateException(e.getMessage(), e);
             }
@@ -96,26 +141,17 @@ public final class ShaderSources {
     public static @Nullable String get(final Identifier id, final ShaderType type) {
         PackManager.start();
         Lookup current = lookup;
-        if (isTerrainProgram(id)) return current.pack.standard() ? terrain(current, id, type) : null;
+        if (isTerrainProgram(id)) return terrain(current, id, type);
+        if (id.getNamespace().equals("minecraft") && id.getPath().startsWith("iris_")) return world(current, id, type);
         String extension = type == ShaderType.VERTEX ? ".vsh" : ".fsh";
         boolean ours = id.getNamespace().equals(MetallumExtra.MOD_ID);
         if (ours && id.getPath().startsWith("internal/")) {
             // The mod's own helper programs, which no pack provides or replaces.
-            return INTERNAL.computeIfAbsent(id.getPath() + extension, f -> Optional.ofNullable(readExpanded(BUILTIN, f))).orElseThrow(
+            return INTERNAL.computeIfAbsent(id.getPath() + extension, f -> Optional.ofNullable(InternalShaders.read(f.substring("internal/".length())))).orElseThrow(
                     () -> new IllegalStateException("Missing built-in shader " + id.getPath() + extension));
         }
-        if (ours && current.pack.standard()) {
-            return standard(current, id.getPath(), type);
-        }
-        String file = ours
-                ? "program/" + id.getPath() + extension
-                : "override/" + id.getNamespace() + "/" + id.getPath() + extension;
-        String text = current.files.computeIfAbsent(file, f -> Optional.ofNullable(readExpanded(current.pack, f))).orElse(null);
-        // A shader of this mod's own passes that the pack lacks cannot be borrowed from anywhere else.
-        if (text == null && ours) {
-            throw new IllegalStateException("Shader pack " + current.pack.name() + " has no " + file);
-        }
-        return text;
+        if (!ours) return null;
+        return id.getPath().startsWith("shadow_iris_") ? shadowTerrain(current, id.getPath(), type) : standard(current, id.getPath(), type);
     }
 
     /**

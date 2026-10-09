@@ -26,8 +26,8 @@
     "shader.LevelRendererShaderMixin",
     "shader.MetalCrossShaderCompilerShaderMixin",
     "shader.MetalDeviceShaderMixin",
-    "shader.MetalPipelineShadersMixin",
     "shader.MetalRenderPassShaderMixin",
+    "shader.RenderPassPipelineMixin",
     "shader.SkyRendererShaderMixin",
     "shader.SodiumBlockRendererShaderMixin",
     "shader.SodiumChunkRendererInvoker",
@@ -35,7 +35,6 @@
     "shader.SodiumFluidRendererShaderMixin",
     "shader.SodiumMeshBufferShaderMixin",
     "shader.SodiumSectionDataShaderMixin",
-    "shader.SodiumTerrainDrawMixin",
     "shader.SodiumTerrainPipelineMixin",
     "shader.SodiumTerrainPrograms",
     "shader.SodiumWorldRendererShaderMixin"

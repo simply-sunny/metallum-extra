@@ -1,6 +1,6 @@
 package com.metallumextra.shader;
 
-import com.metallumextra.ExtraConfig;
+import com.metallumextra.shader.pack.IrisPlan;
 import com.metallumextra.shader.sodium.ShadowTerrain;
 import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.vertex.PoseStack;
@@ -54,11 +54,14 @@ public final class ShadowPass {
 
     /** What the cached terrain was drawn with. */
     private static final Matrix4f LIGHT_VIEW = new Matrix4f();
-    private static final Matrix4f MAP_MATRIX = new Matrix4f();
     private static final Vector3f TO_LIGHT = new Vector3f();
     private static Vec3 camera = Vec3.ZERO;
     private static float range;
     private static float depth;
+
+    /** What a standard pack's shadow programs see: the light's view with the player's walk since the terrain was drawn, and the orthographic projection of the map. */
+    private static final Matrix4f SHADOW_VIEW = new Matrix4f();
+    private static final Matrix4f SHADOW_PROJECTION = new Matrix4f();
 
     private static final Vector3f NOW_TO_LIGHT = new Vector3f();
     private static boolean wanted;
@@ -93,21 +96,35 @@ public final class ShadowPass {
         return "shadow terrain drawn " + refreshes + ", reused " + reuses;
     }
 
+    /**
+     * The matrix a standard pack's programs read as {@code shadowModelView}: camera-relative world space (the camera of this frame, or with
+     * {@code atRefresh} the camera the cached terrain is drawn from, which is where the terrain's positions are relative to) to the light's view.
+     */
+    static Matrix4f shadowView(final boolean atRefresh) {
+        return atRefresh ? new Matrix4f(LIGHT_VIEW) : new Matrix4f(SHADOW_VIEW);
+    }
+
+    static Matrix4f shadowProjection() {
+        return new Matrix4f(SHADOW_PROJECTION);
+    }
+
     /** Works out this frame's shadow matrix. Sets the shadow strength to zero when no map will be drawn. */
     static void prepare(final CameraRenderState cameraState, final ShaderGlobals globals) {
-        wanted = ExtraConfig.get().shaderShadows && !IrisPipeline.inUse() && Shaders.celestialLight() && globals.lightDir.w > 0.0F;
+        IrisPlan plan = IrisPipeline.currentPlan();
+        wanted = plan != null && plan.hasShadow() && Shaders.celestialLight() && globals.lightDir.w > 0.0F;
         if (!wanted) {
-            globals.shadow.identity();
             globals.lightDir.w = 0.0F;
+            SHADOW_VIEW.identity();
+            SHADOW_PROJECTION.identity();
             cached = false;
             return;
         }
 
         Vec3 now = cameraState.pos;
         // The map reaches the shadow distance from the player wherever the player is within the margin of its center.
-        float wantedRange = ExtraConfig.get().shadowDistance * 16.0F + MARGIN;
+        float wantedRange = plan.shadowDistance() + MARGIN;
         NOW_TO_LIGHT.set(globals.lightDir.x, globals.lightDir.y, globals.lightDir.z).normalize();
-        int resolution = Shaders.targets().shadowResolution();
+        int resolution = plan.shadowResolution();
 
         refresh = NO_CACHE || !cached
                 || resolution != cachedResolution
@@ -127,37 +144,35 @@ public final class ShadowPass {
             // Light space: looking along the light, so z grows towards the light.
             LIGHT_VIEW.setLookAlong(-TO_LIGHT.x, -TO_LIGHT.y, -TO_LIGHT.z, NORTH.x, NORTH.y, NORTH.z);
 
-            // x and y: -1..1 across the map. z: 1 nearest the light, 0 furthest, like the game's own depth.
-            // The camera sits exactly in the middle, which is where the map's fish-eye bend is centered. (A flat
-            // shadow map is usually moved in whole texels to keep edges still; on a bent one that makes the picture
-            // shake instead, because the bend then wobbles around the camera and jumps back a texel at a time as the
-            // sun turns. Here the map does not move at all between refreshes.)
-            MAP_MATRIX.translation(0.0F, 0.0F, 0.5F)
-                    .scale(1.0F / range, 1.0F / range, 0.5F / depth)
-                    .mul(LIGHT_VIEW);
         }
 
         // Positions arrive relative to the player's camera now; the map is centered on where the camera was.
-        globals.shadow.set(MAP_MATRIX).translate((float) (now.x - camera.x), (float) (now.y - camera.y), (float) (now.z - camera.z));
+        SHADOW_VIEW.set(LIGHT_VIEW).translate((float) (now.x - camera.x), (float) (now.y - camera.y), (float) (now.z - camera.z));
+        SHADOW_PROJECTION.identity().ortho(-range, range, -range, range, -depth, depth);
     }
 
     /** @param features everything the game is about to draw this frame besides terrain: mobs, block entities, items */
     static void render(final FeatureRenderDispatcher.PreparedFrame features) {
         if (!wanted) return;
-        RenderTarget target = Shaders.targets().shadow();
+        RenderTarget target = IrisPipeline.targets().shadow();
+        RenderTarget cache = IrisPipeline.targets().shadowCache();
+        int size = IrisPipeline.targets().shadowResolution();
+        if (target == null || cache == null) return;
         Shaders.setPhase(Shaders.PHASE_SHADOW);
-        RenderTarget cache = Shaders.targets().shadowCache();
         if (refresh) {
-            clear(target);
+            clear(target, 1.0);
+            // The terrain's positions are relative to the camera it is drawn from, so its programs see the light's view as it is there.
+            IrisPipeline.writeShadowUniforms(true);
             ShadowTerrain.render(target, camera, LIGHT_VIEW, TO_LIGHT, range, depth);
-            copy(target, cache);
+            copy(target, cache, size);
             cached = true;
             refresh = false;
             refreshes++;
         } else {
-            copy(cache, target);
+            copy(cache, target, size);
             reuses++;
         }
+        IrisPipeline.writeShadowUniforms(false);
 
         // The game's own draw code for models, run once more with its output pointed at the shadow map. The
         // replaced model shaders place their vertices where the light sees them in this phase, and
@@ -176,8 +191,7 @@ public final class ShadowPass {
         Shaders.setPhase(Shaders.PHASE_WORLD);
     }
 
-    private static void copy(final RenderTarget from, final RenderTarget to) {
-        int size = Shaders.targets().shadowResolution();
+    private static void copy(final RenderTarget from, final RenderTarget to, final int size) {
         var encoder = RenderSystem.getDevice().createCommandEncoder();
         encoder.copyTextureToTexture(from.getColorTexture(), to.getColorTexture(), 0, 0, 0, 0, 0, size, size);
         encoder.copyTextureToTexture(from.getDepthTexture(), to.getDepthTexture(), 0, 0, 0, 0, 0, size, size);
@@ -216,9 +230,14 @@ public final class ShadowPass {
      * of someone else's pass.
      */
     static void clear(final RenderTarget shadow) {
+        clear(shadow, 0.0);
+    }
+
+    /** @param depth what the map's depth is set to: 0 for the built-in shaders' (the nearest to the light has the greatest), 1 for OpenGL's */
+    static void clear(final RenderTarget shadow, final double depth) {
         try (RenderPass pass = RenderSystem.getDevice().createCommandEncoder().createRenderPass(
                 () -> "Metallum Extra shadow clear", shadow.getColorTextureView(), Optional.of(CLEAR_COLOR),
-                shadow.getDepthTextureView(), OptionalDouble.of(0.0))) {
+                shadow.getDepthTextureView(), OptionalDouble.of(depth))) {
         }
     }
 

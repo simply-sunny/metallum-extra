@@ -1,0 +1,13 @@
+option.SHADOWS=Shadows
+option.PIXEL_LOCKED_SHADOWS=Pixel-locked shadows
+option.shadowPixelSize=Shadow pixel size
+option.shadowMapResolution=Shadow detail
+option.shadowDistance=Shadow distance
+option.sunPathRotation=Sun path tilt
+option.AMBIENT_OCCLUSION=Ambient occlusion
+option.SUN_RAYS=Sun rays
+option.BLOOM=Glow
+option.SMOOTH_EDGES=Smooth edges
+option.COLORED_LIGHT=Colored light
+option.WAVING=Waving plants and water
+option.WATER_REFLECTIONS=Water reflections

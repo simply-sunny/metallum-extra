@@ -56,7 +56,6 @@ public final class Shaders {
     };
 
     private static final ShaderGlobals GLOBALS = new ShaderGlobals();
-    private static final ShaderTargets TARGETS = new ShaderTargets();
     private static final LightColorGrid LIGHT_COLORS = new LightColorGrid();
 
     /** Read by chunk meshing threads too. */
@@ -95,10 +94,6 @@ public final class Shaders {
         return GLOBALS;
     }
 
-    public static ShaderTargets targets() {
-        return TARGETS;
-    }
-
     public static LightColorGrid lightColors() {
         return LIGHT_COLORS;
     }
@@ -109,12 +104,12 @@ public final class Shaders {
 
     /** Whether a shadow map is being drawn this frame. */
     public static boolean castsShadows() {
-        return active && !IrisPipeline.inUse() && GLOBALS.lightDir.w > 0.0F;
+        return active && GLOBALS.lightDir.w > 0.0F;
     }
 
     /** Whether the world is being drawn under an open sky, which the shader pipeline then draws itself. */
     public static boolean drawsSky() {
-        return active && phase == PHASE_WORLD && GLOBALS.skyHorizon.w == 0.0F && !IrisPipeline.inUse();
+        return active && phase == PHASE_WORLD && GLOBALS.skyHorizon.w == 0.0F && (!IrisPipeline.inUse() || IrisPipeline.drawsSky());
     }
 
     /** Development aid: wind and waves stand still, so pictures taken at different times can be compared. */
@@ -146,7 +141,6 @@ public final class Shaders {
         TranslationCache.logIfSettled();
         ShaderKeys.tick(Minecraft.getInstance());
         if (active) {
-            TARGETS.prepare(Minecraft.getInstance().gameRenderer.mainRenderTarget());
             LIGHT_COLORS.ensure();
         }
         DebugScript.tick();
@@ -159,14 +153,10 @@ public final class Shaders {
         phase = PHASE_NONE;
         drawingWorld = false;
         ShaderSources.clear();
-        ShaderBindings.forget();
         ShadowPass.invalidate();
         IrisPipeline.forget();
         RenderSystem.getDevice().clearPipelineCache();
-        if (value) {
-            GLOBALS.upload(PHASE_NONE);
-        } else {
-            TARGETS.close();
+        if (!value) {
             ShadowPass.close();
             LIGHT_COLORS.close();
         }
@@ -185,7 +175,6 @@ public final class Shaders {
         ShadowPass.invalidate();
         IrisPipeline.forget();
         ShaderSources.clear();
-        ShaderBindings.forget();
         RenderSystem.getDevice().clearPipelineCache();
     }
 
@@ -209,6 +198,8 @@ public final class Shaders {
     /** Just before the level is drawn. {@code projection} is the matrix the level is drawn with. */
     public static void beginWorld(final Matrix4fc projection) {
         if (!active) return;
+        // A standard pack's plan says what the frame needs (the shadow map's size and reach), so it is made before the frame is worked out.
+        IrisPipeline.ensurePlan();
         computeFrame(projection);
         drawingWorld = true;
         setPhase(PHASE_WORLD);
@@ -217,44 +208,19 @@ public final class Shaders {
     /** After the game has set up the frame's passes and before it runs them: no render pass is open. */
     public static void beforeWorldPasses(final FeatureRenderDispatcher.PreparedFrame features) {
         if (!active || !drawingWorld) return;
-        if (IrisPipeline.inUse()) {
-            IrisPipeline.beforeWorld();
-            return;
-        }
-        ShadowPass.render(features);
+        IrisPipeline.beforeWorld(features);
     }
 
     /** Just before translucent terrain: what has been drawn so far is what water reflects and refracts. */
     public static void beforeTranslucentTerrain() {
         if (!active || !drawingWorld || phase != PHASE_WORLD) return;
-        if (IrisPipeline.inUse()) {
-            IrisPipeline.beforeTranslucent();
-            return;
-        }
-        TARGETS.copyScene(Minecraft.getInstance().gameRenderer.mainRenderTarget());
+        IrisPipeline.beforeTranslucent();
     }
 
     /** The level has been drawn; the held item comes next. */
     public static void afterWorld() {
         if (!active || !drawingWorld) return;
-        ExtraConfig config = ExtraConfig.get();
-        RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
-        if (IrisPipeline.inUse()) {
-            IrisPipeline.afterWorld();
-            setPhase(PHASE_HAND);
-            return;
-        }
-        if (config.shaderAmbientOcclusion || (config.shaderSunRays && castsShadows())) {
-            // The copy made for water is taken again now, so the effects see the finished world, water included.
-            TARGETS.copyScene(main);
-            PostPass.render(main);
-        }
-        if (config.shaderBloom) {
-            BloomPass.render(main);
-        }
-        if (config.shaderSmoothEdges) {
-            EdgePass.render(main);
-        }
+        IrisPipeline.afterWorld();
         setPhase(PHASE_HAND);
     }
 
@@ -267,7 +233,6 @@ public final class Shaders {
 
     static void setPhase(final int value) {
         phase = value;
-        GLOBALS.upload(value);
     }
 
     private static void computeFrame(final Matrix4fc projection) {
@@ -284,6 +249,10 @@ public final class Shaders {
         g.view.invert(g.viewInverse);
         g.projection.set(projection);
         g.projection.invert(g.projectionInverse);
+
+        g.fog.set(camera.fogData.environmentalStart, camera.fogData.environmentalEnd, camera.fogData.renderDistanceStart, camera.fogData.renderDistanceEnd);
+        g.fogEnds.set(camera.fogData.skyEnd, camera.fogData.cloudEnd, 0.0F, 0.0F);
+        g.fogColor.set(camera.fogData.color);
 
         float rain = minecraft.level == null ? 0.0F : minecraft.level.getRainLevel(1.0F);
         celestialLight = sky.skybox == DimensionType.Skybox.OVERWORLD;
@@ -325,9 +294,9 @@ public final class Shaders {
         eyeSkyLightAt = now;
         float skyLightHere = minecraft.level == null ? 1.0F : minecraft.level.getBrightness(LightLayer.SKY, BlockPos.containing(camera.pos)) / 15.0F;
         eyeSkyLight += (skyLightHere - eyeSkyLight) * (1.0F - (float) Math.exp(-seconds * 4.0F));
-        g.params3.set(eyeSkyLight, config.shaderSmoothEdges ? 1.0F : 0.0F, 0.0F, 0.0F);
-        g.features.set(config.shaderSunRays ? 1.0F : 0.0F, config.shaderAmbientOcclusion ? 1.0F : 0.0F, config.shaderColoredLight ? 1.0F : 0.0F, DEBUG_VIEW);
-        if (config.shaderColoredLight && minecraft.level != null) {
+        boolean coloredLight = IrisPipeline.usesLightColors();
+        g.eyeSky = eyeSkyLight;
+        if (coloredLight && minecraft.level != null) {
             LIGHT_COLORS.tick(minecraft.level, camera.pos, g);
         }
 
@@ -392,25 +361,13 @@ public final class Shaders {
         g.minAmbient.z += floor + nightVision * lightmap.nightVisionColor.z();
         g.minAmbient.w = lightmap.darknessEffectScale;
 
-        Vec3 position = camera.pos;
-        g.cameraPos.set((float) wrap(position.x), (float) wrap(position.y), (float) wrap(position.z), FROZEN_TIME ? 0.0F : (float) ((System.nanoTime() / 1.0e9) % 3600.0));
-
-        ShaderTargets targets = TARGETS;
-        g.screen.set(targets.width(), targets.height(), 1.0F / targets.width(), 1.0F / targets.height());
-        // Glow is the only light of its own kind in a dimension without a sun, so it is let be a little stronger there.
-        float bloom = config.shaderBloom ? (celestialLight ? 1.0F : 1.5F) : 0.0F;
-        g.params.set(PHASE_WORLD, 1.0F, bloom, 1.0F / targets.shadowResolution());
-        g.params2.set(config.shadowDistance * 16.0F, config.shaderWaving ? 1.0F : 0.0F, config.shaderWaterReflections ? 1.0F : 0.0F,
-                camera.fogType == FogType.WATER ? 1.0F : 0.0F);
-
         ShadowPass.prepare(camera, g);
     }
 
     /** The tilt of the sun's path, in radians: a turn about the east-west axis. */
     public static float sunPathTilt() {
         // A standard pack says how its sun moves, in its programs; the setting is for the built-in shaders.
-        if (IrisPipeline.inUse()) return (float) Math.toRadians(IrisPipeline.sunPathRotation());
-        return (float) Math.toRadians(ExtraConfig.get().sunPathRotation);
+        return (float) Math.toRadians(IrisPipeline.sunPathRotation());
     }
 
     private static float smoothstep(final float from, final float to, final float value) {

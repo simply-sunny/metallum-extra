@@ -1,5 +1,7 @@
 package com.metallumextra;
 
+import com.metallumextra.shader.pack.BuiltinOptions;
+
 import com.metallumextra.shader.Shaders;
 
 import java.util.List;
@@ -32,6 +34,32 @@ public final class Settings {
     private Settings() {
     }
 
+    public enum ShadowPixelSize {
+        ONE(1), TWO(2), THREE(3), FOUR(4), SIX(6), EIGHT(8);
+
+        public final int pixels;
+
+        ShadowPixelSize(final int pixels) {
+            this.pixels = pixels;
+        }
+
+        static ShadowPixelSize of(final int pixels) {
+            for (ShadowPixelSize size : values()) {
+                if (size.pixels >= pixels) return size;
+            }
+            return EIGHT;
+        }
+    }
+
+    public static Choice<ShadowPixelSize> shadowPixelSize() {
+        ExtraConfig c = ExtraConfig.get();
+        return new Choice<>("shadow_pixel_size", "Shadow Pixel Size",
+                "Size of each shadow cell in shadow-map pixels: 1, 2, 3, 4, 6 or 8. Larger cells make the pixel pattern "
+                        + "more visible. Applies to the built-in shader while Pixel-locked Shadows is on; changes apply immediately.",
+                Impact.LOW, ShadowPixelSize.class, () -> ShadowPixelSize.of(Integer.parseInt(BuiltinOptions.value("shadowPixelSize"))),
+                value -> BuiltinOptions.setValue("shadowPixelSize", Integer.toString(value.pixels)), value -> value.pixels + (value.pixels == 1 ? " pixel" : " pixels"));
+    }
+
     /** The shader quality preset. */
     public static Choice<Quality> shaderQuality() {
         ExtraConfig c = ExtraConfig.get();
@@ -51,33 +79,37 @@ public final class Settings {
                 new Toggle("shader_shadows", "Shadows",
                         "The sun and moon cast shadows. This draws the nearby world a second time each frame, so "
                                 + "it is the most expensive shader setting. Only applies while Shaders is on.",
-                        Impact.HIGH, false, () -> c.shaderShadows, c::setShaderShadows),
+                        Impact.HIGH, false, () -> BuiltinOptions.on("SHADOWS"), value -> BuiltinOptions.set("SHADOWS", value)),
+                new Toggle("shader_pixel_locked_shadows", "Pixel-locked Shadows",
+                        "Snaps the built-in shader's shadow lookup to a pixel grid. Off uses regular filtered shadows. "
+                                + "Use Shadow Pixel Size to choose the cell size. Changes apply immediately.",
+                        Impact.LOW, false, () -> BuiltinOptions.on("PIXEL_LOCKED_SHADOWS"), value -> BuiltinOptions.set("PIXEL_LOCKED_SHADOWS", value)),
                 new Toggle("shader_bloom", "Glow",
                         "A soft glow around bright things such as the sun, lava and torches. Only applies while "
                                 + "Shaders is on.",
-                        Impact.LOW, false, () -> c.shaderBloom, c::setShaderBloom),
+                        Impact.LOW, false, () -> BuiltinOptions.on("BLOOM"), value -> BuiltinOptions.set("BLOOM", value)),
                 new Toggle("shader_reflections", "Water Reflections",
                         "Water reflects the land and sky around it. Only applies while Shaders is on.",
-                        Impact.MEDIUM, false, () -> c.shaderWaterReflections, c::setShaderWaterReflections),
+                        Impact.MEDIUM, false, () -> BuiltinOptions.on("WATER_REFLECTIONS"), value -> BuiltinOptions.set("WATER_REFLECTIONS", value)),
                 new Toggle("shader_waving", "Moving Water and Plants",
                         "Water ripples, and leaves and plants sway in the wind. Only applies while Shaders is on.",
-                        Impact.LOW, false, () -> c.shaderWaving, c::setShaderWaving),
+                        Impact.LOW, false, () -> BuiltinOptions.on("WAVING"), value -> BuiltinOptions.set("WAVING", value)),
                 new Toggle("shader_sun_rays", "Sun Rays",
                         "Shafts of sunlight through trees, cave openings and morning haze. Only applies while "
                                 + "Shaders and Shadows are on.",
-                        Impact.MEDIUM, false, () -> c.shaderSunRays, c::setShaderSunRays),
+                        Impact.MEDIUM, false, () -> BuiltinOptions.on("SUN_RAYS"), value -> BuiltinOptions.set("SUN_RAYS", value)),
                 new Toggle("shader_ambient_occlusion", "Ambient Occlusion",
                         "Corners, crevices and the ground under things are a little darker, which makes the world "
                                 + "look less flat. Only applies while Shaders is on.",
-                        Impact.MEDIUM, false, () -> c.shaderAmbientOcclusion, c::setShaderAmbientOcclusion),
+                        Impact.MEDIUM, false, () -> BuiltinOptions.on("AMBIENT_OCCLUSION"), value -> BuiltinOptions.set("AMBIENT_OCCLUSION", value)),
                 new Toggle("shader_colored_light", "Colored Light",
                         "Torches glow orange, soul fire blue, sea lanterns teal, amethyst purple, and so on, and they "
                                 + "color what they light. Only applies while Shaders is on.",
-                        Impact.LOW, false, () -> c.shaderColoredLight, c::setShaderColoredLight),
+                        Impact.LOW, false, () -> BuiltinOptions.on("COLORED_LIGHT"), value -> BuiltinOptions.set("COLORED_LIGHT", value)),
                 new Toggle("shader_smooth_edges", "Smooth Edges",
                         "Blends away the stair steps along the edges of blocks, leaves and far-off terrain. Only "
                                 + "applies while Shaders is on.",
-                        Impact.LOW, false, () -> c.shaderSmoothEdges, c::setShaderSmoothEdges));
+                        Impact.LOW, false, () -> BuiltinOptions.on("SMOOTH_EDGES"), value -> BuiltinOptions.set("SMOOTH_EDGES", value)));
     }
 
     /** What the shaders say in the chat. */

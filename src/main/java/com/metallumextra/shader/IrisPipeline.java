@@ -95,7 +95,7 @@ public final class IrisPipeline {
 
     /** Whether a standard pack is in use, whose programs run in place of the built-in effects. */
     public static boolean inUse() {
-        return Shaders.active() && PackManager.active().standard();
+        return Shaders.active();
     }
 
     /** The fog color of this frame, which buffer 0 is cleared to unless the pack says otherwise. */
@@ -131,6 +131,9 @@ public final class IrisPipeline {
                 generation++;
                 // Sodium keeps its terrain pipelines, which carry the plan's shader ids and buffers.
                 com.metallumextra.shader.sodium.SodiumTerrain.resetPipelines();
+                com.metallumextra.shader.sodium.ShadowTerrain.forgetPipelines();
+                ShadowPass.invalidate();
+                IrisWorld.forget();
                 planPack = pack;
                 planDimension = dimension;
                 if (REPORTED.add(pack.name() + "/" + dimension)) {
@@ -163,9 +166,14 @@ public final class IrisPipeline {
         return plan;
     }
 
-    // ---- terrain: Sodium draws it with the pack's program ----
+    // ---- the world: Sodium and the game draw it with the pack's programs ----
 
-    private static IrisPlan.@Nullable Layer terrainLayer;
+    private static boolean inStage;
+
+    /** Whether this class is running a stage right now, so the passes it makes are its own and get nothing added. */
+    static boolean inStage() {
+        return inStage;
+    }
 
     /**
      * The id of the shader for a layer of terrain, which Sodium builds its pipeline with in place of its own; null when the pack has no
@@ -178,34 +186,66 @@ public final class IrisPipeline {
         return step == null ? null : net.minecraft.resources.Identifier.fromNamespaceAndPath("sodium", "blocks/iris_" + generation + "_" + step.program().name());
     }
 
-    /** The formats of the buffers a layer's program writes besides the first (which is the game's own image); Sodium's pipeline declares them. */
-    public static List<GpuFormat> terrainExtraFormats(final IrisPlan.Layer layer) {
-        IrisPlan current = inUse() ? plan : null;
-        IrisPlan.Step step = current == null ? null : current.terrainStep(layer);
-        if (step == null) return List.of();
-        List<GpuFormat> formats = new java.util.ArrayList<>();
-        for (int i = 1; i < step.writes().length; i++) formats.add(current.buffers().get(step.writes()[i]).format());
-        return formats;
-    }
-
-    /** Sodium is about to draw a layer of terrain; the pass it makes gets the buffers the layer's program writes. */
-    public static void beginTerrain(final IrisPlan.Layer layer) {
-        terrainLayer = layer;
-    }
-
-    public static void endTerrain() {
-        terrainLayer = null;
-    }
-
-    /** Called for every render pass about to be made: the one for terrain drawn with a pack's program gets that program's extra buffers. */
-    public static void attachTerrainTargets(final RenderPassDescriptor descriptor) {
-        IrisPlan.Layer layer = terrainLayer;
-        if (layer == null || !inUse() || plan == null || descriptor.colorAttachments().size() != 1) return;
-        IrisPlan.Step step = plan.terrainStep(layer);
-        if (step == null || step.writes().length < 2 || TARGETS.width() == 0) return;
+    /**
+     * Called for every render pass about to be made. While the world is drawn, a pass into the game's own image gets the other buffers the
+     * pack's programs write, each in the attachment of its number (see {@link IrisWorld}); the pipelines used in it declare the same.
+     */
+    public static void attachWorldTargets(final RenderPassDescriptor descriptor) {
+        if (inStage || !inUse() || plan == null || plan.worldBuffers().isEmpty() || descriptor.colorAttachments().size() != 1) return;
+        int phase = Shaders.phase();
+        if (phase != Shaders.PHASE_WORLD && phase != Shaders.PHASE_HAND) return;
         RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
-        if (!ready(main)) return;
-        for (int i = 1; i < step.writes().length; i++) descriptor.withColorAttachment(TARGETS.read(step.writes()[i]));
+        if (TARGETS.width() == 0 || !ready(main) || descriptor.colorAttachments().get(0) == null
+                || descriptor.colorAttachments().get(0).textureView().texture() != main.getColorTexture()) return;
+        int last = java.util.Collections.max(plan.worldBuffers());
+        for (int slot = 1; slot <= last; slot++) {
+            if (plan.worldBuffers().contains(slot)) descriptor.withColorAttachment(TARGETS.read(slot));
+            else descriptor.withUnusedColorAttachment();
+        }
+    }
+
+    /** Whether a program of the pack in use reads the grid of block light colors. */
+    static boolean usesLightColors() {
+        return plan != null && plan.usesLightColors();
+    }
+
+    /** Whether the pack in use has a program for the sky, which then replaces the game's own sky disc. */
+    static boolean drawsSky() {
+        return plan != null && plan.worldStep(IrisPlan.Use.SKY) != null;
+    }
+
+    /** The buffers, for the shadow pass. */
+    static IrisTargets targets() {
+        return TARGETS;
+    }
+
+    /** Makes the plan for the pack in use now if there is none, so a frame's setup (the shadow matrices) can follow it. */
+    static void ensurePlan() {
+        if (inUse()) plan();
+    }
+
+    /** The shadow map's depth as a program reads it: an empty one while the map is being drawn, and when there is none. */
+    static com.mojang.blaze3d.textures.GpuTextureView shadowDepth() {
+        TextureTarget shadow = Shaders.phase() == Shaders.PHASE_SHADOW ? null : TARGETS.shadow();
+        TextureTarget use = shadow != null ? shadow : TARGETS.emptyShadow();
+        return use != null ? use.getDepthTextureView() : Minecraft.getInstance().gameRenderer.mainRenderTarget().getDepthTextureView();
+    }
+
+    static com.mojang.blaze3d.textures.GpuTextureView shadowColor() {
+        TextureTarget shadow = Shaders.phase() == Shaders.PHASE_SHADOW ? null : TARGETS.shadow();
+        TextureTarget use = shadow != null ? shadow : TARGETS.emptyShadow();
+        return use != null ? use.getColorTextureView() : Minecraft.getInstance().gameRenderer.mainRenderTarget().getColorTextureView();
+    }
+
+    /** The world as it was before the translucent things (water, glass) were drawn: what their programs read as {@code colortex0}. */
+    static com.mojang.blaze3d.textures.GpuTextureView worldColor() {
+        return TARGETS.hasBuffer(0) ? TARGETS.read(0) : Minecraft.getInstance().gameRenderer.mainRenderTarget().getColorTextureView();
+    }
+
+    /** The depth of the world before the translucent things were drawn: {@code depthtex0} and {@code depthtex1} of their programs. */
+    static com.mojang.blaze3d.textures.GpuTextureView worldDepth() {
+        TextureTarget target = TARGETS.depthTarget(false);
+        return target != null ? target.getDepthTextureView() : Minecraft.getInstance().gameRenderer.mainRenderTarget().getDepthTextureView();
     }
 
     /** The generation of the plan that is current; the shader ids of its programs carry it. */
@@ -223,8 +263,10 @@ public final class IrisPipeline {
     public static void forget() {
         plan = null;
         planPack = null;
-        terrainLayer = null;
+        IrisWorld.forget();
         com.metallumextra.shader.sodium.SodiumTerrain.resetPipelines();
+        com.metallumextra.shader.sodium.ShadowTerrain.forgetPipelines();
+        ShadowPass.invalidate();
         PIPELINES.clear();
         BLITS.clear();
         TARGETS.release();
@@ -237,8 +279,12 @@ public final class IrisPipeline {
 
     // ---- the stages ----
 
-    /** Start of the world's drawing: the buffers are made ready and cleared, then the begin and prepare programs run. */
-    static void beforeWorld() {
+    /**
+     * Start of the world's drawing: the buffers are made ready and cleared, the begin programs run, the shadow map is drawn, then the
+     * prepare programs run. The shadow map is drawn outside {@link #guarded}: it draws the game's own models, whose pipelines are swapped
+     * for the pack's copies only while this class is not in the middle of a stage.
+     */
+    static void beforeWorld(final net.minecraft.client.renderer.feature.FeatureRenderDispatcher.PreparedFrame features) {
         guarded(() -> {
             IrisPlan current = plan();
             if (current == null) return;
@@ -252,7 +298,20 @@ public final class IrisPipeline {
             TARGETS.clearForFrame(fog);
             captureUniforms(current, main);
             run(current.steps(ProgramSet.Stage.BEGIN), main);
-            run(current.steps(ProgramSet.Stage.PREPARE), main);
+        });
+        IrisPlan current = plan;
+        if (current != null && current.hasShadow() && TARGETS.width() > 0) {
+            try {
+                ShadowPass.render(features);
+            } catch (RuntimeException e) {
+                Shaders.setPhase(Shaders.PHASE_WORLD);
+                handleFailure(e);
+            }
+        }
+        guarded(() -> {
+            IrisPlan again = plan;
+            if (again == null) return;
+            run(again.steps(ProgramSet.Stage.PREPARE), Minecraft.getInstance().gameRenderer.mainRenderTarget());
         });
     }
 
@@ -266,8 +325,11 @@ public final class IrisPipeline {
             if (!ready(main)) return;
             snapshotDepth(main, false);
             if (current.usesDepth(1) || current.usesDepth(2)) copies++;
-            if (deferred.isEmpty()) return;
+            // The programs that draw translucent things read the world behind them as colortex0 (water refracts it).
+            boolean read = current.translucentReadsColor();
+            if (deferred.isEmpty() && !read) return;
             worldIntoColor0(main);
+            if (deferred.isEmpty()) return;
             run(deferred, main);
             colorZeroIntoWorld(main);
         });
@@ -281,7 +343,8 @@ public final class IrisPipeline {
             if (current == null || !current.afterWorld() || !ready(main)) return;
             snapshotDepth(main, true);
             if (current.usesDepth(0)) copies++;
-            if (current.steps(ProgramSet.Stage.DEFERRED).isEmpty() || !worldCopied) worldIntoColor0(main);
+            // Translucent things were drawn into the game's image after the deferred programs: it, not buffer 0, is the finished world.
+            worldIntoColor0(main);
             run(current.steps(ProgramSet.Stage.COMPOSITE), main);
             IrisPlan.Step last = current.finalStep();
             if (last != null) {
@@ -309,8 +372,10 @@ public final class IrisPipeline {
         boolean isFinal = program.stage() == ProgramSet.Stage.FINAL;
         RenderPipeline pipeline = PIPELINES.computeIfAbsent(program.name(), name -> build(step));
 
+        int areaWidth = isFinal ? TARGETS.width() : TARGETS.widthOf(step.writes()[0]);
+        int areaHeight = isFinal ? TARGETS.height() : TARGETS.heightOf(step.writes()[0]);
         RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "Metallum Extra " + program.name())
-                .withRenderArea(new RenderPass.RenderArea(0, 0, TARGETS.width(), TARGETS.height()));
+                .withRenderArea(new RenderPass.RenderArea(0, 0, areaWidth, areaHeight));
         if (isFinal) {
             descriptor.withColorAttachment(main.getColorTextureView());
         } else {
@@ -322,6 +387,8 @@ public final class IrisPipeline {
             GpuSampler nearest = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST);
             for (IrisPlan.Input input : step.inputs()) {
                 if (input.colorBuffer() >= 0) pass.bindTexture(input.name(), TARGETS.read(input.colorBuffer()), linear);
+                else if (input.colorBuffer() == IrisPlan.SHADOW_DEPTH) pass.bindTexture(input.name(), shadowDepth(), nearest);
+                else if (input.colorBuffer() == IrisPlan.SHADOW_COLOR) pass.bindTexture(input.name(), shadowColor(), linear);
                 else pass.bindTexture(input.name(), TARGETS.depth(input.depthTexture() == 0 ? 0 : 1), nearest);
             }
             pass.draw(3, 1, 0, 0);
@@ -386,16 +453,63 @@ public final class IrisPipeline {
                     case POWDER_SNOW -> 3;
                     default -> 0;
                 });
-        uniformValues = UNIFORMS.frame(inputs);
+        uniformValues = new HashMap<>(UNIFORMS.frame(inputs));
+        addShadowAndExtensions(uniformValues, false);
         if (traceFrames > 0) {
             MetallumExtra.LOGGER.info("[Metallum Extra] iris frame {} game projection: m00 {} m11 {} m22 {} m32 {} m23 {} m33 {} m20 {} m21 {} far {}", frame, GAME_PROJECTION.m00(), GAME_PROJECTION.m11(),
                     GAME_PROJECTION.m22(), GAME_PROJECTION.m32(), GAME_PROJECTION.m23(), GAME_PROJECTION.m33(), GAME_PROJECTION.m20(), GAME_PROJECTION.m21(), far);
         }
+        writeUniforms();
+    }
+
+    private static void writeUniforms() {
         IrisUniforms.Layout layout = IrisUniforms.layout();
         java.nio.ByteBuffer data = java.nio.ByteBuffer.allocateDirect(layout.size()).order(java.nio.ByteOrder.nativeOrder());
         IrisUniformValues.write(layout, uniformValues, data);
         data.position(0).limit(layout.size());
         RenderSystem.getDevice().createCommandEncoder().writeToBuffer(uniformBuffer().slice(), data);
+    }
+
+    /**
+     * The values of the shadow map's matrices and of the built-in shader's lighting model (the {@code Mx} uniforms, which are not Iris's),
+     * written into the frame's values. Called with no render pass open.
+     *
+     * @param atRefresh the light's view as the cached terrain is drawn from, not as the player sees it now
+     */
+    private static void addShadowAndExtensions(final Map<String, double[]> values, final boolean atRefresh) {
+        org.joml.Matrix4f view = ShadowPass.shadowView(atRefresh);
+        org.joml.Matrix4f projection = ShadowPass.shadowProjection();
+        IrisUniformValues.put(values, "shadowModelView", view);
+        IrisUniformValues.put(values, "shadowModelViewInverse", new org.joml.Matrix4f(view).invert());
+        IrisUniformValues.put(values, "shadowProjection", projection);
+        IrisUniformValues.put(values, "shadowProjectionInverse", new org.joml.Matrix4f(projection).invert());
+        ShaderGlobals g = Shaders.globals();
+        values.put("MxLightDir", vec4(g.lightDir));
+        values.put("MxLightColor", vec4(g.lightColor));
+        values.put("MxSunDir", vec4(g.sunDir));
+        values.put("MxMoonDir", vec4(g.moonDir));
+        values.put("MxSkyAmbient", vec4(g.skyAmbient));
+        values.put("MxBlockLight", vec4(g.blockLight));
+        values.put("MxMinAmbient", vec4(g.minAmbient));
+        values.put("MxSkyZenith", vec4(g.skyZenith));
+        values.put("MxSkyHorizon", vec4(g.skyHorizon));
+        values.put("MxSunsetColor", vec4(g.sunsetColor));
+        values.put("MxLightGrid", vec4(g.lightGrid));
+        values.put("MxEyeSky", new double[] {g.eyeSky});
+        values.put("MxFlags", new double[] {Shaders.celestialLight() ? 1.0 : 0.0, Shaders.celestialLight() ? 1.0 : 1.5, 0.0, 0.0});
+        values.put("MxFog", vec4(g.fog));
+        values.put("MxFogEnds", vec4(g.fogEnds));
+        values.put("MxFogColor", vec4(g.fogColor));
+    }
+
+    private static double[] vec4(final org.joml.Vector4f v) {
+        return new double[] {v.x, v.y, v.z, v.w};
+    }
+
+    /** The shadow pass's own values of the block: see {@link #addShadowAndExtensions}. */
+    static void writeShadowUniforms(final boolean atRefresh) {
+        addShadowAndExtensions(uniformValues, atRefresh);
+        writeUniforms();
     }
 
     /**
@@ -505,8 +619,8 @@ public final class IrisPipeline {
      * values that do not fit in 8 bits. The row is copied to a buffer the CPU can read; the log line comes when the copy is done.
      */
     private static void traceFloats(final int number, final String program, final int index, final TextureTarget target, final GpuFormat format) {
-        int width = TARGETS.width();
-        int height = TARGETS.height();
+        int width = target.width;
+        int height = target.height;
         int pixel = IrisTargets.bytesPerPixel(format);
         GpuBuffer buffer = RenderSystem.getDevice().createBuffer(() -> "Metallum Extra trace", GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, (long) width * height * pixel);
         RenderSystem.getDevice().createCommandEncoder().copyTextureToBuffer(target.getColorTexture(), buffer, 0, () -> {
@@ -539,17 +653,24 @@ public final class IrisPipeline {
     /** A pack that breaks while it runs is put aside, and the one before it (or the built-in shaders) takes over. */
     private static void guarded(final Runnable body) {
         try {
+            inStage = true;
             body.run();
         } catch (RuntimeException e) {
-            // A pipeline of the pack that has just been put aside: its frame is dropped, and the pack now in use is innocent.
-            for (Throwable cause = e; cause != null; cause = cause.getCause() == cause ? null : cause.getCause()) {
-                if (cause instanceof StalePipelineException) {
-                    forget();
-                    return;
-                }
-            }
-            if (!PackManager.fail(e)) throw e;
+            handleFailure(e);
+        } finally {
+            inStage = false;
         }
+    }
+
+    private static void handleFailure(final RuntimeException e) {
+        // A pipeline of the pack that has just been put aside: its frame is dropped, and the pack now in use is innocent.
+        for (Throwable cause = e; cause != null; cause = cause.getCause() == cause ? null : cause.getCause()) {
+            if (cause instanceof StalePipelineException) {
+                forget();
+                return;
+            }
+        }
+        if (!PackManager.fail(e)) throw e;
     }
 
     /**

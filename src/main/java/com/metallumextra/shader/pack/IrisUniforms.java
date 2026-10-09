@@ -50,6 +50,14 @@ public final class IrisUniforms {
             new Uniform("nightVision", "float"), new Uniform("blindness", "float"), new Uniform("darknessFactor", "float"),
             new Uniform("frameCounter", "int"), new Uniform("worldTime", "int"), new Uniform("worldDay", "int"),
             new Uniform("moonPhase", "int"), new Uniform("isEyeInWater", "int"),
+            new Uniform("shadowModelView", "mat4"), new Uniform("shadowModelViewInverse", "mat4"),
+            new Uniform("shadowProjection", "mat4"), new Uniform("shadowProjectionInverse", "mat4"),
+            // Not Iris: the lighting model of the built-in shader pack (see ShaderGlobals). A pack that reads these runs here only.
+            new Uniform("MxLightDir", "vec4"), new Uniform("MxLightColor", "vec4"), new Uniform("MxSunDir", "vec4"), new Uniform("MxMoonDir", "vec4"),
+            new Uniform("MxSkyAmbient", "vec4"), new Uniform("MxBlockLight", "vec4"), new Uniform("MxMinAmbient", "vec4"),
+            new Uniform("MxSkyZenith", "vec4"), new Uniform("MxSkyHorizon", "vec4"), new Uniform("MxSunsetColor", "vec4"),
+            new Uniform("MxLightGrid", "vec4"), new Uniform("MxEyeSky", "float"),
+            new Uniform("MxFlags", "vec4"), new Uniform("MxFog", "vec4"), new Uniform("MxFogEnds", "vec4"), new Uniform("MxFogColor", "vec4"),
             new Uniform("modelViewMatrix", "mat4", true), new Uniform("modelViewMatrixInverse", "mat4", true),
             new Uniform("projectionMatrix", "mat4", true), new Uniform("projectionMatrixInverse", "mat4", true),
             new Uniform("normalMatrix", "mat3", true));
@@ -61,9 +69,6 @@ public final class IrisUniforms {
 
     static {
         for (Uniform uniform : ALL) BY_NAME.put(uniform.name, uniform);
-        for (String name : List.of("shadowModelView", "shadowModelViewInverse", "shadowProjection", "shadowProjectionInverse")) {
-            LATER.put(name, "the shadow stage, which is not run yet");
-        }
         for (String name : List.of("entityId", "blockEntityId", "entityColor", "blendFunc", "renderStage", "currentRenderedItemId")) {
             LATER.put(name, "the gbuffers programs, which are not run yet");
         }
@@ -91,7 +96,7 @@ public final class IrisUniforms {
         Matcher match = LOOSE.matcher(source);
         while (match.find()) {
             String type = match.group(2);
-            if (type.startsWith("sampler") || type.startsWith("image")) continue;
+            if (type.matches("[iu]?sampler.*|image.*")) continue;
             for (String name : names(match.group(3))) {
                 lookup(type, name);
                 if (!TERRAIN_MACROS.contains(name)) found.add(name);
@@ -138,7 +143,7 @@ public final class IrisUniforms {
         StringBuilder out = new StringBuilder();
         while (match.find()) {
             String type = match.group(2);
-            if (type.startsWith("sampler") || type.startsWith("image")) {
+            if (type.matches("[iu]?sampler.*|image.*")) {
                 match.appendReplacement(out, Matcher.quoteReplacement(match.group()));
                 continue;
             }

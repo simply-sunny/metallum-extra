@@ -13,7 +13,7 @@ What it draws:
 - **Sun and moon light with shadows.** Terrain, mobs, block entities, dropped items and the player (in first
   person too) all cast and receive shadows. Light is warm and low at sunrise and sunset, white at noon, dim and
   blue under the moon. The sun, moon and shadows follow the game's own sun, which passes straight overhead at
-  noon, so at midday shadows sit under their objects. `shaders.sunPathRotation` tilts the sun's path towards the
+  noon, so at midday shadows sit under their objects. The pack option **Sun path tilt** (`sunPathRotation`) tilts the sun's path towards the
   south (shader packs commonly use 35–40°) if you prefer long shadows all day; the drawn sun and moon follow it.
 - **Sky and fog.** The sky is one smooth gradient with a glow around the sun and a band of color at dusk and dawn.
   Distant terrain fades into that same sky, so there is no visible fog wall. The game's sun, moon and stars are
@@ -40,10 +40,10 @@ What it draws:
 A **Shader Quality** preset (on the Shader Options screen) (Low, Medium, High, Ultra; Medium by default) sets the expensive parts: shadow
 sharpness and distance, reflections, ambient occlusion and sun rays. Each part also has its own switch (Shadows,
 Glow, Water Reflections, Moving Water and Plants, Sun Rays, Ambient Occlusion, Colored Light, Smooth Edges), and all of them
-change while the game is running; changing one makes the preset read Custom. On an M4 Max in a forest scene:
-about 255 FPS with shaders off, 160 on Medium, 125 on High. Three more settings are in the config file:
-`shaders.shadowResolution` (1024, 2048 or 4096), `shaders.shadowDistance` (in chunks) and
-`shaders.sunPathRotation` (degrees).
+change while the game is running (the shaders are compiled again, which takes a moment); changing one makes the preset read Custom.
+They are the options of the built-in shader pack, kept in `config/metallum-extra-packs.properties` with every pack's. On an M4 Max in a forest scene:
+about 255 FPS with shaders off, 160 on Medium, 125 on High (measured before the shader pack was moved onto the Iris pipeline). Shadow detail,
+shadow distance (in blocks) and the sun's tilt are more options of the pack, under Shader Options.
 
 How it works: the game and Sodium keep drawing with their own pipelines, but the text of their shaders is replaced
 with Metallum Extra's. The extra data those shaders need (sun direction, shadow map, a copy of the scene for
@@ -170,15 +170,7 @@ The same settings appear in two places, with the same names:
 |---|---|
 | Shaders | `shaders.enabled` (off by default) |
 | Shader pack | `shaders.pack` (a ZIP's file name, or `builtin`) |
-| Shadows | `shaders.shadows` |
-| Glow | `shaders.bloom` |
-| Water Reflections | `shaders.waterReflections` |
-| Moving Water and Plants | `shaders.waving` |
-| Sun Rays | `shaders.sunRays` |
-| Ambient Occlusion | `shaders.ambientOcclusion` |
-| Colored Light | `shaders.coloredLight` |
-| Smooth Edges | `shaders.smoothEdges` |
-| Shader Quality | (writes the keys above plus `shaders.shadowResolution` and `shaders.shadowDistance`) |
+| Shadows, Glow, Water Reflections, Moving Water and Plants, Sun Rays, Ambient Occlusion, Colored Light, Smooth Edges, Shader Quality | options of the built-in pack (`config/metallum-extra-packs.properties`) |
 | Unlocked Frame Rate | `fix.nonBlockingPresent` |
 | Smooth Chunk Crossing | `fix.fastSectionRecenter` |
 | Smooth Memory Cleanup | `fix.spreadSodiumCleanup` |
@@ -219,7 +211,7 @@ Open the shader menu from **Video Settings → Shaders** (a link under Metallum 
 Menu → Metallum Extra → Shaders..., or with the **I** key. The menu has OFF and the packs in a list, **Shaders Folder**,
 **Done** (which reads **Apply** while a choice is not yet applied) and **Shader Options...** (quality and each effect;
 these settings are no longer on the Metallum Extra page). Escape closes the menu and drops what was not applied. **Drag a pack's ZIP onto the menu** to copy it into
-`shaderpacks/` and list it (only ZIPs with a `pack.json`; an existing file is never overwritten).
+`shaderpacks/` and list it (only ZIPs that are shader packs; an existing file is never overwritten).
 
 There is no separate on/off setting any more: OFF in the list is off. Three keys are in Controls under Miscellaneous:
 **Reload Current Shaders** (R; does nothing while shaders are off), **Toggle Shaders** (K) and **Open Shaders Menu** (I).
@@ -228,20 +220,11 @@ Reload and toggle say what they did in the chat, as Iris does ("Toggled shaders 
 The `shaderpacks/` folder of the game instance is read every time the menu opens.
 OFF switches shaders off without forgetting the pack (`shaders.pack`).
 
-A pack is an ordinary ZIP; its name without `.zip` is its name in the menu:
-```
-Example.zip
-├── pack.json          {"format": 1}
-└── shaders/
-    ├── override/      minecraft/core/..., sodium/blocks/...   (replace the game's and Sodium's shaders)
-    ├── program/       fullscreen.vsh, edges.fsh, ...          (this mod's own passes)
-    └── lib/           anything the shaders #include "..."
-```
-- **Complete and independent.** A pack must hold every file in `PackManager.REQUIRED` (the same files as the built-in
-  `assets/metallum-extra/shaders/`) and every `#include` must resolve inside the same ZIP. Nothing is ever taken from
-  the built-in shaders or another pack; an incomplete pack is listed in red with the reason and cannot be chosen.
-  ZIPs without a `pack.json` (Iris/OptiFine packs) are ignored. Two ZIPs with the same name, or one named like the
-  built-in pack, are refused.
+A pack is an ordinary ZIP with a `shaders/` folder in the Iris layout; its name without `.zip` is its name in the menu. The mod's own
+shaders are such a pack too (**Metallically Beautiful**, in the jar).
+- **Complete and independent.** Every program needs both its `.vsh` and `.fsh`, and every `#include` must resolve inside the same ZIP. Nothing is
+  ever taken from the built-in shaders or another pack; a pack that cannot be used is listed in red with the reason. ZIPs in this mod's earlier
+  layout (with a `pack.json`) are listed that way too. Two ZIPs with the same name, or one named like the built-in pack, are refused.
 - **Switching** happens at the start of a frame; compiled pipelines are thrown away and rebuilt from the new pack.
   The ZIP is read into memory when the menu opens, so editing the file does not disturb a pack in use; press Apply
   again to read a changed ZIP.

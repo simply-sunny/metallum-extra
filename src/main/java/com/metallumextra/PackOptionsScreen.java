@@ -17,7 +17,7 @@ import net.minecraft.network.chat.Component;
 import java.util.List;
 
 /**
- * The settings a shader pack offers itself (its {@code options} in {@code pack.json}). Each is saved as it is changed;
+ * The settings a shader pack offers itself (found in its shader files; see {@code StandardOptions}). Each is saved as it is changed;
  * the shaders are compiled again with the new values when the screen is left, so a run of changes costs one reload.
  */
 public final class PackOptionsScreen extends Screen {

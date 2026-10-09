@@ -1,7 +1,7 @@
 package com.metallumextra.mixin.shader;
 
 import com.metallumextra.shader.Shaders;
-import com.metallumextra.shader.SkyPass;
+import com.metallumextra.shader.IrisWorld;
 import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.math.Axis;
@@ -30,7 +30,7 @@ public abstract class SkyRendererShaderMixin {
     @Inject(method = "renderSkyDisc", at = @At("HEAD"), cancellable = true)
     private void metallumExtra$ownSky(final int skyColor, final CallbackInfo ci) {
         if (Shaders.drawsSky()) {
-            SkyPass.render(this.renderTarget);
+            IrisWorld.drawSky(this.renderTarget);
             ci.cancel();
         }
     }

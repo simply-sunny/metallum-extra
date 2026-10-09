@@ -172,7 +172,7 @@ public final class IrisUniformValues {
         return new double[] {v.x, v.y, v.z};
     }
 
-    private static void put(final Map<String, double[]> values, final String name, final Matrix4f matrix) {
+    static void put(final Map<String, double[]> values, final String name, final Matrix4f matrix) {
         double[] out = new double[16];
         float[] floats = new float[16];
         matrix.get(floats);

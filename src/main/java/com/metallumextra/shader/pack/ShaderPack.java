@@ -7,8 +7,8 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * A complete set of shader files. Paths are relative to the pack's {@code shaders/} folder: {@code program/edges.fsh},
- * {@code override/minecraft/core/block.vsh}, {@code lib/lighting.glsl}.
+ * A complete set of shader files in the Iris layout. Paths are relative to the pack's {@code shaders/} folder:
+ * {@code world0/final.fsh}, {@code shaders.properties}, {@code lib/lighting.glsl}.
  * <p>
  * A pack never falls back to another one: what it does not contain is missing.
  */
@@ -19,28 +19,18 @@ public interface ShaderPack {
     /** What the player sees in the menu. */
     String name();
 
-    /**
-     * Whether the pack follows the Iris/OptiFine layout ({@code shaders/world0/final.fsh}, {@code shaders.properties}, ...)
-     * and not this mod's earlier one ({@code pack.json} with {@code program/} and {@code override/}).
-     */
-    default boolean standard() {
-        return false;
-    }
-
     /** Every file of the pack, by path, for discovering programs. */
-    default Set<String> files() {
-        return Set.of();
-    }
+    Set<String> files();
 
-    /** The settings this pack offers, in menu order. Most packs have none. */
+    /** The settings this pack offers (see {@link StandardOptions}), in the order they are found. Most packs have a few. */
     default List<PackOption> options() {
         return List.of();
     }
 
     /**
-     * The file with every {@code #include "name.glsl"} replaced by {@code lib/name.glsl} from this same pack. A library
-     * file goes in once per shader, however many of the files it includes ask for it. The pack's options, as the player
-     * set them, follow the file's first line (its {@code #version}) as {@code #define OPTION_<ID> <index>}.
+     * The file with every {@code #include "name.glsl"} replaced by the file it names, which counts from the {@code shaders/} folder when the name
+     * starts with {@code /} and from the folder of the file that includes it otherwise, as in Iris. A file goes in once per shader, however many
+     * of the files it includes ask for it. The pack's options, as the player set them, are written into the text.
      *
      * @throws IllegalStateException if the file or something it includes is not in the pack
      */
@@ -50,23 +40,10 @@ public interface ShaderPack {
         StringBuilder out = new StringBuilder(text.length() + 4096);
         expand(text, path, out, new HashSet<>());
         List<PackOption> options = options();
-        if (!options.isEmpty()) {
-            StringBuilder defines = new StringBuilder();
-            for (PackOption option : options) {
-                defines.append("#define ").append(option.define()).append(' ').append(PackOptions.get(name(), option)).append('\n');
-            }
-            out.insert(out.indexOf("\n") + 1, defines);
-        }
-        return out.toString();
+        return options.isEmpty() ? out.toString() : StandardOptions.apply(out.toString(), name(), options);
     }
 
-    /**
-     * Where an {@code #include} points. In a standard pack a name starting with {@code /} counts from the {@code shaders/}
-     * folder and any other from the folder of the file that includes it, as in Iris; in this mod's earlier layout every
-     * name is a file in {@code lib/}.
-     */
     private String includePath(final String from, final String name) {
-        if (!standard()) return "lib/" + name;
         java.util.ArrayDeque<String> parts = new java.util.ArrayDeque<>();
         if (!name.startsWith("/")) {
             String[] folder = from.split("/");

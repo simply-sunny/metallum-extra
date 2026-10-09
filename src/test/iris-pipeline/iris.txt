@@ -157,16 +157,54 @@ cache
 wait 2500
 shot IrisBroken_after
 # --- terrain drawn by the pack's gbuffers_terrain
-cmd tp @a 0.5 202 -9 0 0
+cmd tp @a 0.5 201.2 -9 0 0
 wait 300
 pack IrisTerrain.zip
 wait 6000
 screen close
-cmd tp @a 0.5 202 -9 0 0
+cmd tp @a 0.5 201.2 -9 0 0
 wait 1500
 trace 3
 wait 2500
 shot IrisTerrain
+# --- the game's own pipelines (mobs, items, blocks, particles, rain) drawn with the pack's programs
+cmd tp @a 0.5 202 -9 0 0
+cmd summon minecraft:cow -2 200 -6 {NoAI:1b,NoGravity:1b,Silent:1b}
+cmd summon minecraft:creeper 2 200 -6 {NoAI:1b,NoGravity:1b,Silent:1b}
+cmd summon minecraft:armor_stand -4 200 -5 {NoGravity:1b,ShowArms:1b}
+cmd summon minecraft:item -1 200 -5 {Item:{id:"minecraft:diamond_block",count:1},NoGravity:1b,Age:-32768s}
+cmd summon minecraft:falling_block 4 201 -6 {BlockState:{Name:"minecraft:sand"},NoGravity:1b,Time:1,DropItem:0b}
+cmd setblock -6 200 -6 minecraft:chest
+cmd weather rain 100000
+pack IrisWorld.zip
+wait 6000
+screen close
+cmd tp @a 0.5 202 -9 0 0
+wait 7000
+cmd particle minecraft:flame -1 201 -6 0.6 0.6 0.6 0.02 80 force
+cmd particle minecraft:cloud 1 201 -6 0.6 0.6 0.6 0.02 80 force
+wait 120
+shot IrisWorld
+hud on
+screen inventory
+wait 1500
+shot IrisWorld_gui
+screen close
+hud off
+cmd weather clear
+cmd kill @e[type=!player]
+cmd setblock -6 200 -6 minecraft:air
+# --- the shadow map: terrain tests itself against it
+cmd tp @a 0.5 202 -9 0 0
+wait 300
+pack IrisShadow.zip
+wait 6000
+screen close
+# Looking down at the ground in front of the wall: the wall's shadow lies near it, the sun reaches the ground further off.
+cmd tp @a 0.5 202 -9 0 40
+wait 2500
+shot IrisShadow
+cache
 # --- the standard uniforms: every one written out for comparison, and the distance to the wall rebuilt from depth
 cmd tp @a 0.5 202 -9 0 0
 wait 300

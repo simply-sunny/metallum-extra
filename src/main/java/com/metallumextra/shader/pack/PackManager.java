@@ -29,36 +29,6 @@ import java.util.stream.Stream;
 public final class PackManager {
     public static final String BUILTIN_ID = "builtin";
 
-    /**
-     * The shaders the pipeline asks for, which every pack must contain: this mod's own passes ({@code program/}) and
-     * the replacements for the game's and Sodium's shaders ({@code override/}). Anything these {@code #include} comes
-     * from {@code lib/} in the same pack.
-     */
-    public static final List<String> REQUIRED = List.of(
-            "program/fullscreen.vsh",
-            "program/edges.fsh",
-            "program/sky.fsh",
-            "program/effects.fsh",
-            "program/effects_blur.fsh",
-            "program/effects_composite.fsh",
-            "program/bloom_prefilter.fsh",
-            "program/bloom_downsample.fsh",
-            "program/bloom_upsample.fsh",
-            "program/bloom_composite.fsh",
-            "program/shadow_terrain.vsh",
-            "program/shadow_terrain.fsh",
-            "override/sodium/blocks/block_layer_opaque.vsh",
-            "override/sodium/blocks/block_layer_opaque.fsh",
-            "override/minecraft/core/block.vsh",
-            "override/minecraft/core/block.fsh",
-            "override/minecraft/core/item.vsh",
-            "override/minecraft/core/item.fsh",
-            "override/minecraft/core/entity.vsh",
-            "override/minecraft/core/entity.fsh",
-            "override/minecraft/core/particle.vsh",
-            "override/minecraft/core/particle.fsh",
-            "override/minecraft/core/rendertype_clouds.vsh",
-            "override/minecraft/core/rendertype_clouds.fsh");
 
     /**
      * One line of the menu. {@code pack} is null when the ZIP cannot be used at all; {@code error} is set then, and
@@ -105,7 +75,7 @@ public final class PackManager {
     }
 
     /**
-     * What a folder holds: the built-in pack, then every ZIP in it that has a {@code pack.json}, in name order.
+     * What a folder holds: the built-in pack, then every ZIP in it that is a shader pack, in name order.
      * ZIPs without one (shader packs for other mods) are not ours and are left out. A ZIP that has one but cannot be
      * used is listed with the reason. Two ZIPs that are the same pack by name are both refused.
      */
@@ -164,25 +134,7 @@ public final class PackManager {
      * @throws PackException naming what is missing
      */
     public static void validate(final ShaderPack pack) throws PackException {
-        if (pack.standard()) {
-            ProgramSet.validate(pack);
-            return;
-        }
-        List<String> missing = new ArrayList<>();
-        for (String path : REQUIRED) {
-            if (pack.read(path) == null) missing.add(path);
-        }
-        if (!missing.isEmpty()) {
-            String shown = String.join(", ", missing.subList(0, Math.min(3, missing.size())));
-            throw new PackException("Missing " + shown + (missing.size() > 3 ? " and " + (missing.size() - 3) + " more" : ""));
-        }
-        for (String path : REQUIRED) {
-            try {
-                pack.load(path);
-            } catch (IllegalStateException e) {
-                throw new PackException(e.getMessage(), e);
-            }
-        }
+        ProgramSet.validate(pack);
     }
 
     private static String stem(final Path zip) {

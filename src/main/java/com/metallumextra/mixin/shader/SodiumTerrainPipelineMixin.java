@@ -4,9 +4,8 @@ import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.llamalad7.mixinextras.sugar.Local;
 import com.metallumextra.shader.IrisPipeline;
+import com.metallumextra.shader.IrisWorld;
 import com.metallumextra.shader.pack.IrisPlan;
-import com.mojang.blaze3d.GpuFormat;
-import com.mojang.blaze3d.pipeline.ColorTargetState;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
 import net.caffeinemc.mods.sodium.client.render.chunk.terrain.DefaultTerrainRenderPasses;
 import net.caffeinemc.mods.sodium.client.render.chunk.terrain.TerrainRenderPass;
@@ -15,8 +14,6 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.injection.At;
 
-import java.util.List;
-import java.util.Optional;
 
 /**
  * Shaders: while a standard pack is in use, Sodium's pipeline for a layer of terrain is made with the shader of the pack's program for
@@ -50,12 +47,8 @@ public abstract class SodiumTerrainPipelineMixin {
             target = "Lcom/mojang/blaze3d/pipeline/RenderPipeline$Builder;build()Lcom/mojang/blaze3d/pipeline/RenderPipeline;"))
     private RenderPipeline metallumExtra$build(final RenderPipeline.Builder builder, final Operation<RenderPipeline> original, @Local(argsOnly = true) final TerrainRenderPass pass) {
         IrisPlan.Layer layer = metallumExtra$layer(pass);
-        if (IrisPipeline.terrainShaderId(layer) != null) {
-            List<GpuFormat> extra = IrisPipeline.terrainExtraFormats(layer);
-            for (int i = 0; i < extra.size(); i++) {
-                builder.withColorTargetState(i + 1, new ColorTargetState(Optional.empty(), extra.get(i), ColorTargetState.WRITE_ALL));
-            }
-        }
+        IrisPlan plan = IrisPipeline.currentPlan();
+        if (plan != null && IrisPipeline.terrainShaderId(layer) != null) IrisWorld.declareExtras(builder, plan, plan.terrainStep(layer));
         return original.call(builder);
     }
 }

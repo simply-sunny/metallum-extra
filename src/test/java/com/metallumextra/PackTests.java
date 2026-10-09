@@ -4,10 +4,14 @@ import com.metallumextra.shader.pack.BuiltinPack;
 import com.metallumextra.shader.pack.IrisPlan;
 import com.metallumextra.shader.pack.IrisUniforms;
 import com.metallumextra.shader.IrisTerrain;
+import com.metallumextra.shader.IrisWorldAdapter;
+import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.metallumextra.shader.pack.PackException;
 import com.metallumextra.shader.pack.PackManager;
 import com.metallumextra.shader.pack.PackOption;
 import com.metallumextra.shader.pack.PackOptions;
+import com.metallumextra.shader.pack.StandardOptions;
+import com.metallumextra.shader.pack.OptionExpression;
 import com.metallumextra.shader.pack.ProgramSet;
 import com.metallumextra.shader.pack.ShaderPack;
 import com.metallumextra.shader.pack.TranslationCache;
@@ -62,6 +66,8 @@ public final class PackTests {
             irisPlans(work.resolve("plans"));
             irisUniforms();
             irisTerrain(work.resolve("terrain"));
+            irisWorld(work.resolve("world"));
+            standardOptions(work.resolve("standardOptions"));
             discovery(work.resolve("discovery"));
             translationCache(work.resolve("cache"));
         } finally {
@@ -318,7 +324,7 @@ public final class PackTests {
             if (row == null) continue;
             int pixel = 0;
             for (IrisUniforms.Uniform uniform : IrisUniforms.ALL) {
-                if (uniform.gbuffers()) continue;
+                if (uniform.gbuffers() || TestPacks.skippedInDump(uniform.name())) continue;
                 double[] expected = entry.getValue().get(uniform.name());
                 int width = uniform.type().equals("mat4") ? 4 : 1;
                 for (int p = 0; p < width; p++, pixel++) {
@@ -402,6 +408,26 @@ public final class PackTests {
             }
         }
         check("IrisTerrain: the geometry the pack's vertex shader made is where it belongs: the wall is 5.5 from the camera in depth (first pixel " + terrainSeen + ")", terrainRows >= 2 && terrainDistance);
+
+        // The game's own pipelines drawn with the pack's programs: each kind of thing the color of the program that drew it, in both buffers.
+        java.awt.image.BufferedImage world = picture(folder, "IrisWorld");
+        double green = share(world, 0, 255, 0, 0.0, 0.49), greenId = share(world, 0, 255, 0, 0.51, 1.0);
+        double blue = share(world, 0, 0, 255, 0.0, 0.49), blueId = share(world, 0, 0, 255, 0.51, 1.0);
+        double yellow = share(world, 255, 255, 0, 0.0, 0.49), yellowId = share(world, 255, 255, 0, 0.51, 1.0);
+        double cyan = share(world, 0, 255, 255, 0.0, 0.49), cyanId = share(world, 0, 255, 255, 0.51, 1.0);
+        double magentaWorld = share(world, 255, 0, 255, 0.0, 0.49), magentaId = share(world, 255, 0, 255, 0.51, 1.0);
+        check(String.format("IrisWorld: terrain is drawn by gbuffers_terrain (magenta %.1f%% of colortex0, %.1f%% of colortex1)", magentaWorld * 100, magentaId * 100), magentaWorld > 0.5 && Math.abs(magentaWorld - magentaId) < 0.02);
+        check(String.format("IrisWorld: mobs, items and block entities are drawn by gbuffers_entities (green %.2f%% of colortex0, %.2f%% of colortex1)", green * 100, greenId * 100), green > 0.01 && Math.abs(green - greenId) < green * 0.1);
+        check(String.format("IrisWorld: the falling block is drawn by gbuffers_block (blue %.3f%% of colortex0, %.3f%% of colortex1)", blue * 100, blueId * 100), blue > 0.0005 && Math.abs(blue - blueId) < blue * 0.2);   // the rain covers it differently in the two (it is blended in one)
+        check(String.format("IrisWorld: particles are drawn by gbuffers_particles (yellow %.3f%% of colortex0, %.3f%% of colortex1)", yellow * 100, yellowId * 100), yellow > 0.0005 && Math.abs(yellow - yellowId) < yellow * 0.1);
+        check(String.format("IrisWorld: rain is drawn by gbuffers_weather (cyan %.3f%% of colortex0, %.3f%% of colortex1)", cyan * 100, cyanId * 100), cyan > 0.0002 && Math.abs(cyan - cyanId) < cyan * 0.1);
+        check("IrisWorld: the programs do not draw each other's things: no green on the wall's rows far from the mobs", share(world, 0, 255, 0, 0.0, 0.05) < 0.002);
+
+        // The shadow map: the pack's shadow program drew it, and terrain tests itself against it.
+        java.awt.image.BufferedImage shadow = picture(folder, "IrisShadow");
+        double lit = share(shadow, 0, 255, 0, 0.0, 0.49), dark = share(shadow, 255, 0, 0, 0.0, 0.49), mapBlue = share(shadow, 0, 0, 255, 0.51, 1.0);
+        check(String.format("IrisShadow: terrain in the sun is green (%.1f%%) and terrain in the shade red (%.1f%%)", lit * 100, dark * 100), lit > 0.02 && dark > 0.1);
+        check(String.format("IrisShadow: the shadow program's color is in shadowcolor0 where terrain is (blue %.1f%%)", mapBlue * 100), mapBlue > 0.2);
 
         // A pack that does not compile is put aside; the one before it takes over.
         check("IrisBroken: it was reported broken and put aside", lines.stream().anyMatch(l -> l.contains("IrisBroken.zip is broken")));
@@ -555,120 +581,101 @@ public final class PackTests {
         return (double) hits / total;
     }
 
-    // ---- Phase 1 and 2: the format, validation, reading ----
+    // ---- the format, validation, reading ----
 
     private static void loading(final Path dir) throws Exception {
         Map<String, String> builtin = TestPacks.builtinFiles();
 
-        // The required list is the shader programs and overrides the jar holds; libraries are not listed.
-        Set<String> entryPoints = new TreeSet<>();
-        for (String file : builtin.keySet()) {
-            if (file.startsWith("program/") || file.startsWith("override/")) entryPoints.add(file);
+        // The built-in pack is an ordinary pack in the Iris layout, and a valid one in every dimension.
+        BuiltinPack jar = new BuiltinPack();
+        validates("built-in pack is valid", jar);
+        check("the built-in pack has its files", jar.files().equals(builtin.keySet()) && jar.files().contains("shaders.properties") && jar.files().contains("final.fsh"));
+        for (String dimension : ProgramSet.DIMENSIONS) {
+            IrisPlan plan = IrisPlan.build(jar, dimension);
+            check("the built-in pack plans in " + dimension + " (" + plan.stepCount() + " programs, " + plan.buffers().size() + " buffers)", plan.stepCount() >= 20 && plan.hasShadow() && plan.usesLightColors());
         }
-        check("required list matches the built-in programs and overrides", entryPoints.equals(new TreeSet<>(PackManager.REQUIRED)));
-
-        // The built-in pack is itself a valid pack.
-        validates("built-in pack is valid", new BuiltinPack());
+        IrisPlan plan = IrisPlan.build(jar, "world0");
+        check("it draws terrain, water, mobs, moving blocks, glowing mob parts, particles, rain, clouds and the sky itself",
+                plan.terrainStep(IrisPlan.Layer.SOLID) != null && plan.terrainStep(IrisPlan.Layer.TRANSLUCENT).program().name().equals("gbuffers_water")
+                        && plan.worldStep(IrisPlan.Use.ENTITY) != null && plan.worldStep(IrisPlan.Use.BLOCK) != null && plan.worldStep(IrisPlan.Use.EYES) != null
+                        && plan.worldStep(IrisPlan.Use.PARTICLES) != null && plan.worldStep(IrisPlan.Use.WEATHER) != null && plan.worldStep(IrisPlan.Use.CLOUDS) != null
+                        && plan.worldStep(IrisPlan.Use.SKY) != null);
+        check("and leaves the hand to the game's own shaders", plan.worldStep(IrisPlan.Use.HAND) == null);
+        check("the bloom levels have buffers of their own sizes", plan.buffers().get(6).widthOn(1000) == 500 && plan.buffers().get(10).widthOn(1000) == 31 && plan.buffers().get(0).fullSize());
+        check("the shadow map is as the options say", plan.shadowResolution() == 2048 && plan.shadowDistance() == 96.0F);
 
         // Reading from the built-in pack and from an identical ZIP gives identical text.
         Path copy = dir.resolve("Copy.zip");
         TestPacks.writeBuiltinCopy(copy);
         ZipPack zip = ZipPack.open(copy);
         check("ZIP name is the file name without .zip", zip.name().equals("Copy"));
-        check("program/edges.fsh reads the same from the jar and an identical ZIP", zip.read("program/edges.fsh").equals(new BuiltinPack().read("program/edges.fsh")));
         boolean same = true;
-        for (String file : builtin.keySet()) {
-            same &= builtin.get(file).equals(zip.read(file));
-        }
+        for (String file : builtin.keySet()) same &= builtin.get(file).equals(zip.read(file));
         check("every file reads the same from the jar and an identical ZIP", same);
-        boolean sameLoaded = true;
-        for (String file : PackManager.REQUIRED) {
-            sameLoaded &= new BuiltinPack().load(file).equals(zip.load(file));
-        }
-        check("every required shader loads (with includes) the same from the jar and an identical ZIP", sameLoaded);
+        check("a program loads (with includes) the same from the jar and an identical ZIP", jar.load("gbuffers_terrain.fsh").replace(BuiltinPack.NAME, "Copy").equals(zip.load("gbuffers_terrain.fsh")));
         validates("identical ZIP is valid", zip);
+        check("the options are found in the pack's files", jar.options().stream().map(PackOption::id).toList().containsAll(List.of("SHADOWS", "BLOOM", "WAVING", "shadowMapResolution", "shadowDistance")));
 
         // Two packs with a different version of one shader give each their own.
         TestPacks.writeColorPacks(dir);
         ZipPack redToBlue = ZipPack.open(dir.resolve("RedToBlue.zip"));
         ZipPack blueToRed = ZipPack.open(dir.resolve("BlueToRed.zip"));
-        check("RedToBlue gives its own edges.fsh", redToBlue.load("program/edges.fsh").contains("vec3(0.0, 0.0, color.r)"));
-        check("BlueToRed gives its own edges.fsh", blueToRed.load("program/edges.fsh").contains("vec3(color.b, 0.0, 0.0)"));
-        check("the two packs differ only in program/edges.fsh", differOnlyIn(redToBlue, blueToRed, "program/edges.fsh", builtin.keySet()));
+        check("RedToBlue gives its own final.fsh", redToBlue.load("final.fsh").contains("vec3(0.0, 0.0, color.r)"));
+        check("BlueToRed gives its own final.fsh", blueToRed.load("final.fsh").contains("vec3(color.b, 0.0, 0.0)"));
+        check("the two packs differ only in final.fsh", differOnlyIn(redToBlue, blueToRed, "final.fsh", builtin.keySet()));
         validates("RedToBlue is valid", redToBlue);
         validates("BlueToRed is valid", blueToRed);
 
-        // A required shader removed: rejected, and not borrowed from the built-in pack.
+        // A program with one of its two files: rejected, and not borrowed from the built-in pack.
         Map<String, String> missing = TestPacks.builtinFiles();
-        missing.remove("program/edges.fsh");
-        Path noEdges = dir.resolve("NoEdges.zip");
-        TestPacks.write(noEdges, "{\"format\": 1}", missing);
-        ZipPack noEdgesPack = ZipPack.open(noEdges);
-        check("a pack without program/edges.fsh does not have it", noEdgesPack.read("program/edges.fsh") == null);
-        rejects("a pack without a required shader is rejected", noEdgesPack, "program/edges.fsh");
+        missing.remove("final.vsh");
+        Path noFinal = dir.resolve("NoFinal.zip");
+        TestPacks.write(noFinal, null, missing);
+        ZipPack noFinalPack = ZipPack.open(noFinal);
+        check("a pack without final.vsh does not have it", noFinalPack.read("final.vsh") == null);
+        rejects("a pack with half a program is rejected", noFinalPack, "final.vsh");
 
         // An include that is not in the same ZIP: rejected.
         Map<String, String> noLibrary = TestPacks.builtinFiles();
         noLibrary.remove("lib/lighting.glsl");
         Path noLib = dir.resolve("NoLib.zip");
-        TestPacks.write(noLib, "{\"format\": 1}", noLibrary);
+        TestPacks.write(noLib, null, noLibrary);
         rejects("a pack missing a library file its shaders include is rejected", ZipPack.open(noLib), "lighting.glsl");
 
         // A pack may arrange lib/ as it likes, as long as the includes resolve.
         Map<String, String> renamed = TestPacks.builtinFiles();
         String lighting = renamed.remove("lib/lighting.glsl");
+        lighting = lighting.replace("#include \"color.glsl\"", "#include \"/lib/color.glsl\"").replace("#include \"noise.glsl\"", "#include \"/lib/noise.glsl\"").replace("#include \"light_colors.glsl\"", "#include \"/lib/light_colors.glsl\"");
         renamed.put("lib/deeper/folders/lighting.glsl", lighting);
         for (Map.Entry<String, String> file : new java.util.HashMap<>(renamed).entrySet()) {
             renamed.put(file.getKey(), file.getValue().replace("#include \"lighting.glsl\"", "#include \"deeper/folders/lighting.glsl\""));
         }
         Path moved = dir.resolve("Moved.zip");
-        TestPacks.write(moved, "{\"format\": 1}", renamed);
+        TestPacks.write(moved, null, renamed);
         validates("a pack that keeps its library in other folders is valid", ZipPack.open(moved));
 
-        // pack.json.
-        expectOpenFails("format 2 is not supported", dir.resolve("Future.zip"), "{\"format\": 2}", "not supported");
-        expectOpenFails("pack.json that is not JSON", dir.resolve("Garbage.zip"), "this is not json", "JSON");
-        expectOpenFails("pack.json without a format", dir.resolve("NoFormat.zip"), "{}", "format");
-        expectOpenFails("pack.json with a text format", dir.resolve("TextFormat.zip"), "{\"format\": \"1\"}", "format");
-        validates("extra fields in pack.json are ignored", openWithJson(dir.resolve("Extra.zip"), "{\"format\": 1, \"author\": \"x\"}"));
+        // A pack in the mod's earlier layout is listed, with the reason it cannot be used.
+        Path old = dir.resolve("Old.zip");
+        TestPacks.write(old, "{\"format\": 1}", Map.of("program/edges.fsh", "#version 330\n"));
+        check("a ZIP with a pack.json is still recognized as a pack", ZipPack.isPack(old));
+        try {
+            ZipPack.open(old);
+            check("but it cannot be opened", false);
+        } catch (PackException e) {
+            check("but it cannot be opened: " + e.getMessage(), e.getMessage().contains("earlier pack layout"));
+        }
     }
 
-    private static final String OPTIONS_JSON = "{\"format\": 1, \"options\": ["
-            + "{\"id\": \"QUALITY\", \"name\": \"Quality\", \"values\": [\"Low\", \"Medium\", \"High\", \"Ultra\"], \"default\": \"High\"},"
-            + "{\"id\": \"BLOOM\", \"type\": \"toggle\", \"default\": true},"
-            + "{\"id\": \"GRAIN\", \"type\": \"toggle\"}]}";
-
     private static void options(final Path dir) throws Exception {
-        ZipPack pack = openWithJson(dir.resolve("WithOptions.zip"), OPTIONS_JSON);
-        var options = pack.options();
-        check("three options are read", options.size() == 3);
-        check("a choice keeps its values and default", options.get(0).values().equals(java.util.List.of("Low", "Medium", "High", "Ultra")) && options.get(0).defaultIndex() == 2);
-        check("a toggle is Off/On and defaults on when asked", options.get(1).toggle() && options.get(1).defaultIndex() == 1 && options.get(1).values().equals(java.util.List.of("Off", "On")));
-        check("a toggle is off by default otherwise", options.get(2).defaultIndex() == 0 && options.get(2).label().equals("GRAIN"));
-        check("a pack without options has none", openWithJson(dir.resolve("Plain.zip"), "{\"format\": 1}").options().isEmpty());
-        validates("a pack with options is valid", pack);
-
-        String edges = pack.load("program/edges.fsh");
-        String[] lines = edges.split("\n");
-        check("defines come right after the #version line", lines[0].startsWith("#version") && lines[1].equals("#define OPTION_QUALITY 2") && lines[2].equals("#define OPTION_BLOOM 1") && lines[3].equals("#define OPTION_GRAIN 0"));
-        check("a pack without options gets no defines", !openWithJson(dir.resolve("Plain.zip"), "{\"format\": 1}").load("program/edges.fsh").contains("OPTION_"));
-
-        PackOptions.set("WithOptions", options.get(0), 3);
-        PackOptions.set("WithOptions", options.get(2), 1);
-        String changed = pack.load("program/edges.fsh");
-        check("a chosen value reaches the shader", changed.contains("#define OPTION_QUALITY 3\n") && changed.contains("#define OPTION_GRAIN 1\n"));
-        check("options are kept per pack", PackOptions.get("Other", options.get(0)) == 2);
-        check("the choice is saved by label, so a reordered pack keeps it", options.get(0).indexOf("Ultra") == 3 && new PackOption("QUALITY", "Quality", java.util.List.of("Ultra", "Low"), 1, false).indexOf("Ultra") == 0);
-        check("a value the pack no longer has falls back to the default", new PackOption("QUALITY", "Quality", java.util.List.of("Low", "High"), 1, false).indexOf("Ultra") == 1);
-        PackOptions.reset("WithOptions", options);
-        check("reset brings the defaults back", pack.load("program/edges.fsh").contains("#define OPTION_QUALITY 2\n"));
-
-        expectOpenFails("an option id in lower case is refused", dir.resolve("B1.zip"), "{\"format\":1,\"options\":[{\"id\":\"quality\",\"type\":\"toggle\"}]}", "id");
-        expectOpenFails("a repeated id is refused", dir.resolve("B2.zip"), "{\"format\":1,\"options\":[{\"id\":\"A\",\"type\":\"toggle\"},{\"id\":\"A\",\"type\":\"toggle\"}]}", "twice");
-        expectOpenFails("a choice with one value is refused", dir.resolve("B3.zip"), "{\"format\":1,\"options\":[{\"id\":\"A\",\"values\":[\"x\"]}]}", "values");
-        expectOpenFails("a default that is not a value is refused", dir.resolve("B4.zip"), "{\"format\":1,\"options\":[{\"id\":\"A\",\"values\":[\"x\",\"y\"],\"default\":\"z\"}]}", "default");
-        expectOpenFails("an unknown type is refused", dir.resolve("B5.zip"), "{\"format\":1,\"options\":[{\"id\":\"A\",\"type\":\"slider\"}]}", "type");
-        expectOpenFails("options that are not a list are refused", dir.resolve("B6.zip"), "{\"format\":1,\"options\":{}}", "list");
+        PackOption quality = new PackOption("QUALITY", "Quality", List.of("Low", "Medium", "High", "Ultra"), 2, false);
+        check("a choice keeps its values and default", quality.values().equals(List.of("Low", "Medium", "High", "Ultra")) && quality.defaultIndex() == 2);
+        PackOptions.set("WithOptions", quality, 3);
+        check("a chosen value is kept", PackOptions.get("WithOptions", quality) == 3);
+        check("options are kept per pack", PackOptions.get("Other", quality) == 2);
+        check("the choice is saved by label, so a reordered pack keeps it", quality.indexOf("Ultra") == 3 && new PackOption("QUALITY", "Quality", List.of("Ultra", "Low"), 1, false).indexOf("Ultra") == 0);
+        check("a value the pack no longer has falls back to the default", new PackOption("QUALITY", "Quality", List.of("Low", "High"), 1, false).indexOf("Ultra") == 1);
+        PackOptions.reset("WithOptions", List.of(quality));
+        check("reset brings the defaults back", PackOptions.get("WithOptions", quality) == 2);
     }
 
     private static ZipPack openStandard(final Path zip, final Map<String, String> files) throws IOException, PackException {
@@ -688,8 +695,7 @@ public final class PackTests {
         TestPacks.writeStandardPack(dir.resolve("SolidBlue.zip"), "fragColor = vec4(0.0, 0.0, 1.0, 1.0);");
         check("a ZIP with shaders/ and no pack.json is a pack", ZipPack.isPack(dir.resolve("SolidBlue.zip")));
         ZipPack blue = ZipPack.open(dir.resolve("SolidBlue.zip"));
-        check("it is a standard pack, named after the file", blue.standard() && blue.name().equals("SolidBlue"));
-        check("an older pack is not a standard one", !openWithJson(dir.resolve("Old.zip"), "{\"format\": 1}").standard());
+        check("it is named after the file", blue.name().equals("SolidBlue"));
         validates("a pack with only world0/final is valid", blue);
 
         ProgramSet overworld = ProgramSet.discover(blue, "world0");
@@ -710,13 +716,13 @@ public final class PackTests {
 
         // Programs this version does not run are listed, not an error, as long as something runs.
         Map<String, String> more = finalFiles();
-        more.put("world0/gbuffers_entities.fsh", "#version 330\n");
-        more.put("world0/gbuffers_entities.vsh", "#version 330\n");
-        more.put("world0/shadow.vsh", "#version 330\n");
+        more.put("world0/gbuffers_skytextured.fsh", "#version 330\n");
+        more.put("world0/gbuffers_skytextured.vsh", "#version 330\n");
+        more.put("world0/shadow_water.vsh", "#version 330\n");
         more.put("lib/common.glsl", "// not a program\n");
         ZipPack extra = openStandard(dir.resolve("More.zip"), more);
         validates("programs that are not run yet do not stop a pack that has final", extra);
-        check("they are listed", ProgramSet.discover(extra, "world0").unsupported().equals(java.util.List.of("gbuffers_entities", "shadow")));
+        check("they are listed", ProgramSet.discover(extra, "world0").unsupported().equals(java.util.List.of("gbuffers_skytextured", "shadow_water")));
         check("library files are not programs", ProgramSet.discover(extra, "world0").unsupported().stream().noneMatch(n -> n.contains("common")));
 
         // Switching a program off.
@@ -729,15 +735,15 @@ public final class PackTests {
 
         // Packs that cannot be used say why.
         Map<String, String> onlyComposite = new java.util.LinkedHashMap<>();
-        onlyComposite.put("world0/gbuffers_entities.fsh", "#version 330\n");
-        onlyComposite.put("world0/gbuffers_entities.vsh", "#version 330\n");
-        rejects("a pack with no program this version runs is rejected, naming what it has", openStandard(dir.resolve("OnlyComposite.zip"), onlyComposite), "gbuffers_entities");
+        onlyComposite.put("world0/gbuffers_skytextured.fsh", "#version 330\n");
+        onlyComposite.put("world0/gbuffers_skytextured.vsh", "#version 330\n");
+        rejects("a pack with no program this version runs is rejected, naming what it has", openStandard(dir.resolve("OnlyComposite.zip"), onlyComposite), "gbuffers_skytextured");
         Map<String, String> halfway = finalFiles();
         halfway.remove("world0/final.vsh");
         rejects("a program with one of its two files is rejected", openStandard(dir.resolve("Half.zip"), halfway), "needs both");
         Map<String, String> sampler = finalFiles();
-        sampler.put("world0/final.fsh", "#version 330\nuniform sampler2D colortex0;\nuniform sampler2D shadowtex0;\nvoid main() {}\n");
-        rejects("a program reading a texture that does not exist yet is rejected", openStandard(dir.resolve("Sampler.zip"), sampler), "shadowtex0");
+        sampler.put("world0/final.fsh", "#version 330\nuniform sampler2D colortex0;\nuniform sampler2D noisetex;\nvoid main() {}\n");
+        rejects("a program reading a texture that does not exist yet is rejected", openStandard(dir.resolve("Sampler.zip"), sampler), "noisetex");
         try {
             TestPacks.writeStandard(dir.resolve("Empty.zip"), Map.of());
             ZipPack.open(dir.resolve("Empty.zip"));
@@ -775,7 +781,7 @@ public final class PackTests {
         // Discovery lists them next to the older packs.
         java.util.List<PackManager.Entry> entries = PackManager.scan(dir);
         check("standard packs are listed", entry(entries, "SolidBlue.zip") != null && entry(entries, "SolidBlue.zip").selectable());
-        check("an unusable standard pack is listed with the reason", entry(entries, "OnlyComposite.zip") != null && !entry(entries, "OnlyComposite.zip").selectable() && entry(entries, "OnlyComposite.zip").error().contains("gbuffers_entities"));
+        check("an unusable standard pack is listed with the reason", entry(entries, "OnlyComposite.zip") != null && !entry(entries, "OnlyComposite.zip").selectable() && entry(entries, "OnlyComposite.zip").error().contains("gbuffers_skytextured"));
     }
 
     // ---- the plan of a standard pack: stages, buffers, flips ----
@@ -878,9 +884,9 @@ public final class PackTests {
         Map<String, String> notYet = new java.util.LinkedHashMap<>();
         notYet.put("composite", one);
         notYet.put("shadowcomp", one);
-        notYet.put("gbuffers_entities", one);
+        notYet.put("gbuffers_skytextured", one);
         IrisPlan not = planOf(dir, "NotYet", notYet, null);
-        check("shadowcomp and gbuffers programs are reported, not run", not.notes().stream().anyMatch(n -> n.contains("shadowcomp")) && not.notes().stream().anyMatch(n -> n.contains("gbuffers_entities")) && not.stepCount() == 1);
+        check("shadowcomp and gbuffers programs are reported, not run", not.notes().stream().anyMatch(n -> n.contains("shadowcomp")) && not.notes().stream().anyMatch(n -> n.contains("gbuffers_skytextured")) && not.stepCount() == 1);
         Map<String, String> gs = new java.util.LinkedHashMap<>();
         gs.put("composite.vsh", VERTEX);
         gs.put("composite.fsh", one);
@@ -994,6 +1000,166 @@ public final class PackTests {
         check("an unused sampler is not declared", !IrisTerrain.adapt("#version 330 core\nvoid main() { }\n", false).contains("u_BlockTex"));
     }
 
+    // ---- entities, items, particles ... ----
+
+    private static final String WORLD_VERTEX = "#version 330 core\nin vec3 vaPosition;\nin vec2 vaUV0;\nuniform mat4 modelViewMatrix;\nuniform mat4 projectionMatrix;\nout vec2 uv;\n"
+            + "void main() { gl_Position = projectionMatrix * modelViewMatrix * vec4(vaPosition, 1.0); uv = vaUV0; }\n";
+
+    private static RenderPipeline pipeline(final String name, final String shader, final String... flags) {
+        RenderPipeline.Builder builder = RenderPipeline.builder().withLocation(net.minecraft.resources.Identifier.fromNamespaceAndPath("minecraft", "pipeline/" + name))
+                .withVertexShader(net.minecraft.resources.Identifier.fromNamespaceAndPath("minecraft", shader))
+                .withFragmentShader(net.minecraft.resources.Identifier.fromNamespaceAndPath("minecraft", shader))
+                .withPrimitiveTopology(com.mojang.blaze3d.PrimitiveTopology.TRIANGLES)
+                .withColorTargetState(com.mojang.blaze3d.pipeline.ColorTargetState.DEFAULT);
+        for (String flag : flags) builder.withShaderDefine(flag);
+        return builder.build();
+    }
+
+    private static String useOf(final RenderPipeline pipeline) {
+        IrisPlan.Use use = com.metallumextra.shader.IrisWorld.classify(pipeline);
+        return use == null ? "none" : use.name();
+    }
+
+    /** The options a standard pack puts in its shader files, and the conditions of shaders.properties that read them. */
+    private static void standardOptions(final Path dir) throws Exception {
+        Map<String, String> files = new java.util.LinkedHashMap<>();
+        files.put("lib/options.glsl", "#define QUALITY 2 // [1 2 3]\n#define BLOOM\n//#define SHARP\n#define NOTHING_HERE 4\nconst int shadowMapResolution = 2048; // [1024 2048 4096]\n#ifndef OPTIONS_GLSL\n#define OPTIONS_GLSL\n#endif\n");
+        files.put("lang/en_us.lang", "option.QUALITY=Quality\noption.BLOOM=Glow\n");
+        List<PackOption> found = StandardOptions.discover(files);
+        List<String> ids = found.stream().map(PackOption::id).toList();
+        check("options are found in the shader files: values with a list, constants with a list, toggles on and off, and nothing else (" + ids + ")",
+                ids.equals(List.of("QUALITY", "shadowMapResolution", "BLOOM", "SHARP")));
+        PackOption quality = found.get(0), bloom = found.get(2), sharp = found.get(3);
+        check("a value is the default listed, a toggle is on when its line is not commented out", quality.defaultIndex() == 1 && quality.values().equals(List.of("1", "2", "3"))
+                && bloom.toggle() && bloom.defaultIndex() == 1 && sharp.toggle() && sharp.defaultIndex() == 0);
+        check("labels come from the language file", quality.label().equals("Quality") && bloom.label().equals("Glow") && sharp.label().equals("SHARP"));
+        PackOptions.set("OptionsPack", quality, 2);
+        PackOptions.set("OptionsPack", bloom, 0);
+        PackOptions.set("OptionsPack", sharp, 1);
+        PackOptions.set("OptionsPack", found.get(1), 2);
+        String applied = StandardOptions.apply(files.get("lib/options.glsl"), "OptionsPack", found);
+        check("what was chosen is written into the lines: " + applied.replace('\n', '|'), applied.contains("#define QUALITY 3 //") && applied.contains("//#define BLOOM") && applied.contains("\n#define SHARP")
+                && applied.contains("const int shadowMapResolution = 4096;") && applied.contains("#define NOTHING_HERE 4"));
+        Map<String, String> values = StandardOptions.values("OptionsPack", found);
+        check("the values for conditions: toggles are true or false", values.get("BLOOM").equals("false") && values.get("SHARP").equals("true") && values.get("QUALITY").equals("3"));
+        PackOptions.reset("OptionsPack", found);
+        for (Object[] row : new Object[][] {
+                {"BLOOM", true}, {"!BLOOM", false}, {"BLOOM && QUALITY >= 2", true}, {"BLOOM && QUALITY > 2", false}, {"SHARP || QUALITY == 2", true},
+                {"(SHARP || BLOOM) && !(QUALITY < 2)", true}, {"MISSING", false}, {"true", true}, {"false", false}, {"QUALITY != 2", false}}) {
+            boolean result = OptionExpression.evaluate((String) row[0], StandardOptions.values("OptionsPack", found));
+            check("condition '" + row[0] + "' is " + row[1], result == (Boolean) row[1]);
+        }
+        for (String bad : new String[] {"BLOOM &&", "(BLOOM", "BLOOM ?? 1"}) {
+            try {
+                OptionExpression.evaluate(bad, Map.of());
+                check("a condition that cannot be read is refused: " + bad, false);
+            } catch (PackException e) {
+                check("a condition that cannot be read is refused: " + bad + " (" + e.getMessage() + ")", true);
+            }
+        }
+
+        // What the preprocessor would leave: a sampler behind a switch that is off is not asked for.
+        String conditional = "#version 330\n#ifdef BLOOM\nuniform sampler2D colortex1;\n#else\nuniform sampler2D colortex2;\n#endif\n#ifdef EMISSIVE\nuniform sampler2D colortex3;\n#endif\n"
+                + "//#define SHARP\n#ifdef SHARP\nuniform sampler2D colortex4;\n#endif\n#if QUALITY >= 3\nuniform sampler2D colortex5;\n#endif\n";
+        String kept = com.metallumextra.shader.pack.GlslConditions.strip("#define BLOOM\n#define QUALITY 2\n" + conditional, Set.of("BLOOM", "SHARP"));
+        List<String> asked = ProgramSet.samplers(kept);
+        check("a condition is decided from the file: BLOOM is on, SHARP is off, QUALITY is 2, and EMISSIVE (the game's) is left open: " + asked,
+                asked.equals(List.of("colortex1", "colortex3")) && kept.split("\n", -1).length == ("#define BLOOM\n#define QUALITY 2\n" + conditional).split("\n", -1).length);
+
+        // Programs switched by an option, and buffers of their own size.
+        Map<String, String> pack = new java.util.LinkedHashMap<>();
+        pack.put("world0/final.vsh", "#version 330\nvoid main() {}\n");
+        pack.put("world0/final.fsh", "#version 330\nuniform sampler2D colortex0;\nout vec4 c;\nvoid main() { c = vec4(1.0); }\n");
+        pack.put("world0/composite.vsh", "#version 330\nvoid main() {}\n");
+        pack.put("world0/composite.fsh", "#version 330\n#define GLOW // used\nuniform sampler2D colortex0;\n/* RENDERTARGETS: 4 */\nlayout(location = 0) out vec4 c;\nvoid main() { c = vec4(1.0); }\n");
+        pack.put("shaders.properties", "program.composite.enabled=GLOW\nsize.buffer.colortex4=0.5 0.5\n");
+        ZipPack options = openStandard(dir.resolve("Glow.zip"), pack);
+        check("a program is on while its option is", ProgramSet.discover(options, "world0").find("composite") != null);
+        PackOption glow = options.options().stream().filter(o -> o.id().equals("GLOW")).findFirst().orElseThrow();
+        PackOptions.set("Glow", glow, 0);
+        check("and off when the option is switched off", ProgramSet.discover(options, "world0").find("composite") == null);
+        PackOptions.reset("Glow", options.options());
+        IrisPlan sized = IrisPlan.build(options, "world0");
+        check("a buffer can be a share of the screen's size", sized.buffers().get(4).scaleX() == 0.5F && sized.buffers().get(4).widthOn(1000) == 500 && sized.buffers().get(4).heightOn(601) == 300);
+        check("the world's image stays full size", sized.buffers().get(0).fullSize());
+    }
+
+    private static void irisWorld(final Path dir) throws Exception {
+        Files.createDirectories(dir);
+        // What each of the game's pipelines draws.
+        check("mobs and armor are entities, their translucent kin entities_translucent", useOf(pipeline("entity_solid", "core/entity")).equals("ENTITY") && useOf(pipeline("armor_cutout_no_cull", "core/entity")).equals("ENTITY")
+                && useOf(pipeline("entity_translucent", "core/entity")).equals("ENTITY_TRANSLUCENT") && useOf(pipeline("armor_translucent", "core/entity")).equals("ENTITY_TRANSLUCENT"));
+        check("items are drawn with the entity program too", useOf(pipeline("item_cutout", "core/item")).equals("ENTITY") && useOf(pipeline("item_translucent", "core/item")).equals("ENTITY_TRANSLUCENT"));
+        check("blocks the game draws one at a time are block, translucent ones block_translucent", useOf(pipeline("solid_block", "core/block")).equals("BLOCK") && useOf(pipeline("cutout_block", "core/block")).equals("BLOCK")
+                && useOf(pipeline("translucent_block", "core/block")).equals("BLOCK_TRANSLUCENT"));
+        check("particles, translucent particles and weather", useOf(pipeline("opaque_particle", "core/particle")).equals("PARTICLES") && useOf(pipeline("translucent_particle", "core/particle")).equals("PARTICLES_TRANSLUCENT")
+                && useOf(pipeline("weather_depth_write", "core/particle")).equals("WEATHER") && useOf(pipeline("weather_no_depth_write", "core/particle")).equals("WEATHER"));
+        check("the sky, text, lines and the interface are left to the game's own shaders", useOf(pipeline("sky", "core/sky")).equals("none") && useOf(pipeline("text", "core/text")).equals("none")
+                && useOf(pipeline("lines", "core/rendertype_lines")).equals("none") && useOf(pipeline("gui", "core/gui")).equals("none"));
+        check("glowing entity layers are eyes, clouds are clouds", useOf(pipeline("eyes", "core/entity", "EMISSIVE")).equals("EYES") && useOf(pipeline("clouds", "core/rendertype_clouds")).equals("CLOUDS"));
+
+        // Which program draws each kind: the first in Iris's chain.
+        Map<String, String> all = new java.util.LinkedHashMap<>();
+        for (String name : List.of("gbuffers_entities", "gbuffers_entities_translucent", "gbuffers_block", "gbuffers_particles", "gbuffers_weather", "gbuffers_textured_lit", "gbuffers_terrain")) {
+            all.put(name + ".vsh", WORLD_VERTEX.replace("#version 330 core", "#version 330 core\n"));
+            all.put(name + ".fsh", "#version 330 core\nuniform sampler2D gtexture;\nin vec2 uv;\nlayout(location = 0) out vec4 c;\nvoid main() { c = texture(gtexture, uv); }\n");
+        }
+        // gbuffers_terrain's vertex shader is checked as terrain's, which has no overlay; these only use inputs both have.
+        IrisPlan every = IrisPlan.build(openStandard(dir.resolve("Every.zip"), all), null);
+        check("entities, their translucent kin, blocks, particles and weather each get their own program", every.worldStep(IrisPlan.Use.ENTITY).program().name().equals("gbuffers_entities")
+                && every.worldStep(IrisPlan.Use.ENTITY_TRANSLUCENT).program().name().equals("gbuffers_entities_translucent") && every.worldStep(IrisPlan.Use.BLOCK).program().name().equals("gbuffers_block")
+                && every.worldStep(IrisPlan.Use.PARTICLES).program().name().equals("gbuffers_particles") && every.worldStep(IrisPlan.Use.WEATHER).program().name().equals("gbuffers_weather"));
+        check("translucent blocks fall back to block, translucent particles to textured_lit when particles has no translucent kin... here to particles",
+                every.worldStep(IrisPlan.Use.BLOCK_TRANSLUCENT).program().name().equals("gbuffers_block") && every.worldStep(IrisPlan.Use.PARTICLES_TRANSLUCENT).program().name().equals("gbuffers_particles"));
+        Map<String, String> litOnly = new java.util.LinkedHashMap<>();
+        litOnly.put("gbuffers_textured_lit.vsh", all.get("gbuffers_textured_lit.vsh"));
+        litOnly.put("gbuffers_textured_lit.fsh", all.get("gbuffers_textured_lit.fsh"));
+        IrisPlan lit = IrisPlan.build(openStandard(dir.resolve("LitOnly.zip"), litOnly), null);
+        check("with only gbuffers_textured_lit it draws entities, particles and weather, and terrain too", lit.worldStep(IrisPlan.Use.ENTITY).program().name().equals("gbuffers_textured_lit")
+                && lit.worldStep(IrisPlan.Use.WEATHER).program().name().equals("gbuffers_textured_lit") && lit.terrainStep(IrisPlan.Layer.SOLID).program().name().equals("gbuffers_textured_lit"));
+        check("a pack without any of them draws nothing itself", IrisPlan.build(openStandard(dir.resolve("None.zip"), Map.of("final.vsh", VERTEX, "final.fsh", fragment("uniform sampler2D colortex0;\nout vec4 c;"))), null).worldStep(IrisPlan.Use.ENTITY) == null);
+
+        // What each kind of program may read.
+        Map<String, String> blockId = new java.util.LinkedHashMap<>(litOnly);
+        blockId.put("gbuffers_entities.vsh", WORLD_VERTEX.replace("in vec2 vaUV0;", "in vec2 vaUV0;\nin vec2 mc_Entity;"));
+        blockId.put("gbuffers_entities.fsh", litOnly.get("gbuffers_textured_lit.fsh"));
+        check("the block id may be read by any program (it is -1 outside terrain)", IrisPlan.build(openStandard(dir.resolve("BlockId.zip"), blockId), null).worldStep(IrisPlan.Use.ENTITY) != null);
+        Map<String, String> overlay = terrainFiles("gbuffers_terrain");
+        overlay.put("gbuffers_terrain.vsh", TERRAIN_VERTEX.replace("in vec2 vaUV0;", "in vec2 vaUV0;\nin ivec2 vaUV1;"));
+        terrainFails("the overlay is not for terrain", dir, "Overlay", overlay, "vaUV1");
+        Map<String, String> entityOverlay = new java.util.LinkedHashMap<>(litOnly);
+        entityOverlay.put("gbuffers_entities.vsh", WORLD_VERTEX.replace("in vec2 vaUV0;", "in vec2 vaUV0;\nin ivec2 vaUV1;"));
+        entityOverlay.put("gbuffers_entities.fsh", litOnly.get("gbuffers_textured_lit.fsh"));
+        check("entities may read the overlay", IrisPlan.build(openStandard(dir.resolve("EntityOverlay.zip"), entityOverlay), null).worldStep(IrisPlan.Use.ENTITY) != null);
+        Map<String, String> far = terrainFiles("gbuffers_entities");
+        far.put("gbuffers_entities.fsh", TERRAIN_FRAGMENT.replace("RENDERTARGETS: 0,1", "RENDERTARGETS: 0,9"));
+        terrainFails("the programs that draw the world cannot write past colortex7", dir, "Far", far, "colortex7");
+        Map<String, String> worldBuffers = terrainFiles("gbuffers_terrain", "gbuffers_entities");
+        worldBuffers.put("gbuffers_entities.fsh", TERRAIN_FRAGMENT.replace("RENDERTARGETS: 0,1", "RENDERTARGETS: 0,3"));
+        IrisPlan buffers = terrainPlan(dir, "WorldBuffers", worldBuffers);
+        check("the buffers any program drawing the world writes are the ones every pass has: here 1 (terrain) and 3 (entities)", buffers.worldBuffers().equals(java.util.Set.of(1, 3)));
+
+        // Fitting a program to a pipeline.
+        IrisWorldAdapter.Format entity = new IrisWorldAdapter.Format(true, true, true, true, true, false, true, true, false, false);
+        String vertex = IrisWorldAdapter.adapt("#version 330 core\nin vec3 vaPosition;\nin ivec2 vaUV1;\nuniform mat4 modelViewMatrix;\nuniform mat4 projectionMatrix;\nuniform mat3 normalMatrix;\nuniform vec3 chunkOffset;\nvoid main() { }\n", true, entity);
+        check("the vertex stage loses its declarations and gets the game's inputs and blocks, with Iris's names defined over them",
+                !vertex.contains("in vec3 vaPosition;") && !vertex.contains("uniform mat4 modelViewMatrix;") && !vertex.contains("uniform mat3 normalMatrix;") && vertex.contains("in vec3 Position;") && vertex.contains("in ivec2 UV1;")
+                        && vertex.contains("#define vaPosition Position") && vertex.contains("#define vaColor (Color * ColorModulator)") && vertex.contains("#define modelViewMatrix ModelViewMat") && vertex.contains("#define chunkOffset vec3(0.0)")
+                        && vertex.contains("uniform DynamicTransforms") && vertex.indexOf("#version") < vertex.indexOf("Position;"));
+        IrisWorldAdapter.Format particle = new IrisWorldAdapter.Format(true, true, false, true, false, false, true, true, false, false);
+        String particleVertex = IrisWorldAdapter.adapt("#version 330 core\nvoid main() { }\n", true, particle);
+        check("what a pipeline lacks gets a plain default: no normal faces up, no overlay is none, no color is the modulator", particleVertex.contains("#define vaNormal vec3(0.0, 1.0, 0.0)") && particleVertex.contains("#define vaUV1 ivec2(0, 10)")
+                && !particleVertex.contains("in vec3 Normal;") && !particleVertex.contains("in ivec2 UV1;"));
+        String block = IrisWorldAdapter.adapt("#version 330 core\nvoid main() { }\n", true, new IrisWorldAdapter.Format(true, true, false, true, false, true, true, true, false, false));
+        check("the blocks the game draws one at a time are offset by the game's ModelOffset", block.contains("#define vaPosition (Position + ModelOffset)"));
+        String fragmentText = IrisWorldAdapter.adapt("#version 330 core\nuniform sampler2D gtexture;\nuniform sampler2D lightmap;\nuniform float alphaTestRef;\nvoid main() { }\n", false, entity);
+        check("the fragment stage reads the game's samplers: the entity's texture is Sampler0, the light map Sampler2", fragmentText.contains("#define gtexture Sampler0") && fragmentText.contains("#define lightmap Sampler2")
+                && fragmentText.contains("#define alphaTestRef ALPHA_CUTOUT") && !fragmentText.contains("in vec3 Position;") && !fragmentText.contains("uniform float alphaTestRef;"));
+        String remapped = IrisWorldAdapter.remapOutputs("layout(location = 0) out vec4 a;\nlayout(location = 1) out vec4 b;\n  out vec4 outColor2;\nlayout(location = 3) out vec4 d;\n", new int[] {0, 3, 5, 6});
+        check("outputs move to the attachment of their buffer: 0, 1, 2, 3 become 0, 3, 5, 6", remapped.contains("layout(location = 0) out vec4 a;") && remapped.contains("layout(location = 3) out vec4 b;")
+                && remapped.contains("layout(location = 5) out vec4 outColor2;") && remapped.contains("layout(location = 6) out vec4 d;"));
+    }
+
     // ---- the standard uniforms ----
 
     private static org.joml.Matrix4f matrix(final Map<String, double[]> values, final String name) {
@@ -1044,7 +1210,7 @@ public final class PackTests {
         check("a program without standard uniforms is left as it is", IrisUniforms.rewrite("#version 330\nvoid main() {}\n", List.of()).equals("#version 330\nvoid main() {}\n"));
         check("the terrain's own uniforms (chunkOffset ...) are not in the block", IrisUniforms.declared("#version 330\nuniform vec3 chunkOffset;\nuniform float alphaTestRef;\n").isEmpty());
         for (String[] bad : new String[][] {
-                {"uniform mat4 shadowModelView;", "shadow stage"}, {"uniform int entityId;", "gbuffers"}, {"uniform float myOwnThing;", "custom uniforms"},
+                {"uniform mat4 shadowModelViewMissing;", "custom uniforms"}, {"uniform int entityId;", "gbuffers"}, {"uniform float myOwnThing;", "custom uniforms"},
                 {"uniform vec3 frameTimeCounter;", "declared vec3"}, {"uniform float cameraPosition[2];", "arrays"}}) {
             try {
                 IrisUniforms.declared("#version 330\n" + bad[0] + "\n");
@@ -1160,10 +1326,10 @@ public final class PackTests {
     private static void discovery(final Path folder) throws Exception {
         TestPacks.writeColorPacks(folder);
         Map<String, String> missing = TestPacks.builtinFiles();
-        missing.remove("program/sky.fsh");
-        TestPacks.write(folder.resolve("Incomplete.zip"), "{\"format\": 1}", missing);
+        missing.remove("final.fsh");
+        TestPacks.write(folder.resolve("Incomplete.zip"), null, missing);
         // A shader pack in the Iris layout that this version cannot run: listed, with the reason.
-        TestPacks.write(folder.resolve("SomeIrisPack.zip"), null, Map.of("world0/gbuffers_entities.fsh", "void main() {}", "world0/gbuffers_entities.vsh", "void main() {}"));
+        TestPacks.write(folder.resolve("SomeIrisPack.zip"), null, Map.of("world0/gbuffers_skytextured.fsh", "void main() {}", "world0/gbuffers_skytextured.vsh", "void main() {}"));
         Files.writeString(folder.resolve("notes.txt"), "not a zip");
         // The built-in pack's name, taken by a ZIP.
         TestPacks.writeBuiltinCopy(folder.resolve(BuiltinPack.NAME + ".zip"));
@@ -1179,7 +1345,7 @@ public final class PackTests {
         check("order is by name", ids.indexOf("BlueToRed.zip") < ids.indexOf("RedToBlue.zip"));
 
         PackManager.Entry incomplete = entry(entries, "Incomplete.zip");
-        check("an incomplete pack is listed with an error and cannot be chosen", incomplete != null && !incomplete.selectable() && incomplete.error().contains("program/sky.fsh"));
+        check("an incomplete pack is listed with an error and cannot be chosen", incomplete != null && !incomplete.selectable() && incomplete.error().contains("final.vsh"));
         PackManager.Entry clash = entry(entries, BuiltinPack.NAME + ".zip");
         check("a ZIP named like the built-in pack is refused, not silently chosen", clash != null && !clash.selectable() && clash.error().contains("same name"));
         check("the built-in pack is untouched by the clash", entry(entries, PackManager.BUILTIN_ID).selectable());

@@ -29,7 +29,9 @@ public final class ProgramSet {
     public enum Stage {
         BEGIN, SHADOWCOMP, PREPARE, DEFERRED, COMPOSITE, FINAL,
         /** The programs that draw the world's geometry; the game draws with them, they are not run as full-screen passes. */
-        GBUFFERS;
+        GBUFFERS,
+        /** The programs that draw the world from the light's point of view into the shadow map. */
+        SHADOW;
 
         /** Whether this version runs the stage's programs; the others are found and reported. */
         public boolean supported() {
@@ -43,7 +45,7 @@ public final class ProgramSet {
     private static final Pattern NUMBERED = Pattern.compile("(begin|shadowcomp|prepare|deferred|composite)([1-9]\\d?)?");
     /** The gbuffers programs that can draw something this version draws with them: terrain, entities and items, moving blocks, particles, weather, and the programs Iris falls back to. */
     private static final Pattern TERRAIN_PROGRAM = Pattern.compile("gbuffers_(terrain|terrain_solid|terrain_cutout|water|textured_lit|textured|basic"
-            + "|entities|entities_translucent|block|block_translucent|particles|particles_translucent|weather)");
+            + "|entities|entities_translucent|block|block_translucent|particles|particles_translucent|weather|hand|hand_water|spidereyes|clouds|skybasic)|shadow|shadow_solid|shadow_cutout|shadow_entities|shadow_block");
     private static final Pattern FILE = Pattern.compile("(?:(world-?\\d+)/)?([a-z][a-z0-9_]*)\\.(vsh|fsh|gsh|csh|tcs|tes)");
     /** Every other name Iris defines, which this version finds and reports without running. */
     private static final Pattern OTHER = Pattern.compile("setup[1-9]?\\d?|shadow|shadow_[a-z]+|dh_shadow|(?:dh_)?gbuffers_[a-z_]+|(?:begin|shadowcomp|prepare|deferred|composite)[1-9]?\\d?_[a-z]");
@@ -60,12 +62,18 @@ public final class ProgramSet {
     private final List<Program> programs;
     private final List<String> unsupported;
     private final Properties properties;
+    /** What each option of the pack is set to, for the conditions in {@code properties}. */
+    private final java.util.Map<String, String> optionValues;
+    private final List<PackOption> options;
 
-    private ProgramSet(final String dimension, final List<Program> programs, final List<String> unsupported, final Properties properties) {
+    private ProgramSet(final String dimension, final List<Program> programs, final List<String> unsupported, final Properties properties,
+                       final java.util.Map<String, String> optionValues, final List<PackOption> options) {
         this.dimension = dimension;
         this.programs = programs;
         this.unsupported = unsupported;
         this.properties = properties;
+        this.optionValues = optionValues;
+        this.options = options;
     }
 
     /** The folder for a dimension, or null for one that has none (it then uses the shared files only). */
@@ -115,12 +123,14 @@ public final class ProgramSet {
         }
         programs.sort(java.util.Comparator.comparing(Program::stage).thenComparingInt(Program::number));
         unsupported.sort(String::compareTo);
-        return new ProgramSet(dimension == null ? "" : dimension, List.copyOf(programs), List.copyOf(unsupported), properties(pack));
+        return new ProgramSet(dimension == null ? "" : dimension, List.copyOf(programs), List.copyOf(unsupported), properties(pack),
+                StandardOptions.values(pack.name(), pack.options()), pack.options());
     }
 
     private static Stage stageOf(final String name) {
         if (name.equals("final")) return Stage.FINAL;
         if (name.startsWith("gbuffers_")) return Stage.GBUFFERS;
+        if (name.equals("shadow") || name.startsWith("shadow_")) return Stage.SHADOW;
         Matcher match = NUMBERED.matcher(name);
         match.matches();
         return Stage.valueOf(match.group(1).toUpperCase(java.util.Locale.ROOT));
@@ -146,6 +156,17 @@ public final class ProgramSet {
             MetallumExtra.LOGGER.warn("[Metallum Extra] Shader pack {}: shaders.properties could not be read: {}", pack.name(), e.getMessage());
         }
         return result;
+    }
+
+    /** The options of the pack, which the conditions in its files may be on. */
+    public List<PackOption> options() {
+        return options;
+    }
+
+    /** A value of {@code shaders.properties}, or null. */
+    public @Nullable String property(final String key) {
+        String value = properties.getProperty(key);
+        return value == null ? null : value.strip();
     }
 
     /** The programs of the pack that can be run here, in the order they run in, with their files present and not switched off. */
@@ -179,13 +200,19 @@ public final class ProgramSet {
     }
 
     /**
-     * {@code program.<name>.enabled=false} in {@code shaders.properties} switches a program off. Only the plain values
-     * {@code true} and {@code false} are understood so far; anything else leaves the program on.
+     * {@code program.<name>.enabled=<condition>} in {@code shaders.properties} switches a program off when the condition is false: {@code true},
+     * {@code false}, or a test of the pack's options (see {@link OptionExpression}). A condition that cannot be read leaves the program on.
      */
     private boolean enabled(final String name) {
         String value = properties.getProperty("program." + (dimension.isEmpty() ? "" : dimension + "/") + name + ".enabled");
         if (value == null) value = properties.getProperty("program." + name + ".enabled");
-        return value == null || !value.strip().equalsIgnoreCase("false");
+        if (value == null) return true;
+        try {
+            return OptionExpression.evaluate(value.strip(), optionValues);
+        } catch (PackException e) {
+            MetallumExtra.LOGGER.warn("[Metallum Extra] program {} is left on: {}", name, e.getMessage());
+            return true;
+        }
     }
 
     /** The names of the {@code sampler2D} uniforms a shader declares. */

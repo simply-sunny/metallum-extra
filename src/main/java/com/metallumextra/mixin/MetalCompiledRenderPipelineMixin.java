@@ -73,7 +73,6 @@ public abstract class MetalCompiledRenderPipelineMixin implements MultiTarget.Pi
         this.metallumExtra$templates = MetallumExtraTargets.take(pipeline);
         this.metallumExtra$samplerSlots = MetallumExtraBridge.samplerSlots(this);
         this.metallumExtra$shaderBindings = MetallumExtraBridge.resourceMask(this, ShaderBindings.NAMES);
-        ShaderBindings.record(pipeline, this.metallumExtra$shaderBindings);
     }
 
     @Override

@@ -34,6 +34,7 @@ public final class ShaderOptionsScreen extends Screen {
         grid.defaultCellSetting().padding(3);
         GridLayout.RowHelper cells = grid.createRowHelper(2);
         cells.addChild(ExtraConfigScreen.choice(Settings.shaderQuality()));
+        cells.addChild(ExtraConfigScreen.choice(Settings.shadowPixelSize()));
         for (Settings.Toggle toggle : Settings.shaders()) {
             cells.addChild(ExtraConfigScreen.button(toggle));
         }

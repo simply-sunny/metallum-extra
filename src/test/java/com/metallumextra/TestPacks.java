@@ -15,10 +15,10 @@ import java.util.zip.ZipOutputStream;
 
 /**
  * Builds the test shader packs from the built-in shader files. Each is complete and stands alone; only the finished
- * world image's last pass ({@code program/edges.fsh}) differs.
+ * world image's last program ({@code final.fsh}) differs.
  */
 public final class TestPacks {
-    public static final Path BUILTIN_SHADERS = Path.of("src/main/resources/assets/metallum-extra/shaders");
+    public static final Path BUILTIN_SHADERS = Path.of("src/main/resources/assets/metallum-extra/pack/shaders");
 
     /** Red areas of the picture become blue. */
     private static final String RED_TO_BLUE = recolor("color.r > 0.5 && color.r > color.g * 1.5 && color.r > color.b * 1.5", "vec3(0.0, 0.0, color.r)");
@@ -28,17 +28,18 @@ public final class TestPacks {
     private TestPacks() {
     }
 
+    /** A final program that recolors, in place of the built-in pack's (which smooths edges). */
     private static String recolor(final String condition, final String replacement) {
         return """
                 #version 330
 
-                uniform sampler2D InSampler;
+                uniform sampler2D colortex0;
 
-                in vec2 texCoord;
-                out vec4 fragColor;
+                in vec2 texcoord;
+                layout(location = 0) out vec4 fragColor;
 
                 void main() {
-                    vec4 color = texture(InSampler, texCoord);
+                    vec4 color = texture(colortex0, texcoord);
 
                     if (%s) {
                         color.rgb = %s;
@@ -72,34 +73,36 @@ public final class TestPacks {
     }
 
     public static void writeBuiltinCopy(final Path zip) throws IOException {
-        write(zip, "{\"format\": 1}", builtinFiles());
+        write(zip, null, builtinFiles());
     }
 
-    /** Writes RedToBlue.zip, BlueToRed.zip and two broken packs into the folder. */
+    /** Writes the recoloring packs, the packs of the tests and two broken packs into the folder. */
     public static void writeColorPacks(final Path folder) throws IOException {
         Map<String, String> red = builtinFiles();
-        red.put("program/edges.fsh", RED_TO_BLUE);
-        write(folder.resolve("RedToBlue.zip"), "{\"format\": 1}", red);
+        red.put("final.fsh", RED_TO_BLUE);
+        write(folder.resolve("RedToBlue.zip"), null, red);
         Map<String, String> blue = builtinFiles();
-        blue.put("program/edges.fsh", BLUE_TO_RED);
-        write(folder.resolve("BlueToRed.zip"), "{\"format\": 1}", blue);
-        // A pack with an option: red becomes blue only while SWAP is On.
+        blue.put("final.fsh", BLUE_TO_RED);
+        write(folder.resolve("BlueToRed.zip"), null, blue);
+        // A pack with an option: red becomes blue only while SWAP is on.
         Map<String, String> optional = builtinFiles();
-        optional.put("program/edges.fsh", RED_TO_BLUE.replace("if (color.r", "if (OPTION_SWAP == 1 && color.r"));
-        write(folder.resolve("WithOption.zip"), "{\"format\": 1, \"options\": [{\"id\": \"SWAP\", \"name\": \"Swap\", \"type\": \"toggle\"}]}", optional);
+        optional.put("final.fsh", RED_TO_BLUE.replace("uniform sampler2D colortex0;", "uniform sampler2D colortex0;\n\n//#define SWAP").replace("if (color.r", "#ifdef SWAP\n    if (color.r").replace("    fragColor = color;", "    fragColor = color;\n#endif"));
+        write(folder.resolve("WithOption.zip"), null, optional);
         // Packs in the Iris layout: the whole image one color, and red and blue swapped.
         writeStandardPack(folder.resolve("SolidBlue.zip"), "fragColor = vec4(0.0, 0.0, 1.0, 1.0);");
         writeStandardPack(folder.resolve("SolidRed.zip"), "fragColor = vec4(1.0, 0.0, 0.0, 1.0);");
         writeStandardPack(folder.resolve("SwapRedBlue.zip"), "fragColor = vec4(color.bgr, 1.0);");
         writeIrisPacks(folder);
         writeUniformPacks(folder);
+        writeWorldPack(folder);
+        writeShadowPack(folder);
         // Packs that must not take the game down: one whose GLSL has a mistake, and one that lacks a shader.
         Map<String, String> syntax = builtinFiles();
-        syntax.put("program/edges.fsh", "#version 330\n\nuniform sampler2D InSampler;\nin vec2 texCoord;\nout vec4 fragColor;\n\nvoid main() {\n    fragColor = texture(InSampler, texCoord)\n}\n");
-        write(folder.resolve("SyntaxError.zip"), "{\"format\": 1}", syntax);
+        syntax.put("final.fsh", "#version 330\n\nuniform sampler2D colortex0;\nin vec2 texcoord;\nout vec4 fragColor;\n\nvoid main() {\n    fragColor = texture(colortex0, texcoord)\n}\n");
+        write(folder.resolve("SyntaxError.zip"), null, syntax);
         Map<String, String> incomplete = builtinFiles();
-        incomplete.remove("program/sky.fsh");
-        write(folder.resolve("Incomplete.zip"), "{\"format\": 1}", incomplete);
+        incomplete.remove("final.fsh");
+        write(folder.resolve("Incomplete.zip"), null, incomplete);
     }
 
     /** The vertex shader of a full-screen program: one triangle that covers the screen. */
@@ -232,12 +235,17 @@ public final class TestPacks {
      * Writes every standard uniform into the top row of colortex1 (RGBA32F), in the order of {@link IrisUniforms#ALL}: a matrix takes
      * four pixels (its columns), anything else one. The test reads the row back and compares it with what the game computed.
      */
+    /** The dump writes one pixel per uniform into a row of 64; the shadow matrices and the built-in shader's own uniforms have a test of their own. */
+    static boolean skippedInDump(final String name) {
+        return name.startsWith("Mx") || name.startsWith("shadowModelView") || name.startsWith("shadowProjection");
+    }
+
     private static String uniformDump() {
         StringBuilder declarations = new StringBuilder();
         StringBuilder cases = new StringBuilder();
         int pixel = 0;
         for (IrisUniforms.Uniform uniform : IrisUniforms.ALL) {
-            if (uniform.gbuffers()) continue;
+            if (uniform.gbuffers() || skippedInDump(uniform.name())) continue;
             declarations.append("uniform ").append(uniform.type()).append(' ').append(uniform.name()).append(";\n");
             switch (uniform.type()) {
                 case "mat4" -> {
@@ -285,6 +293,60 @@ public final class TestPacks {
                 + "    vec4 a = gbufferProjectionInverse * vec4(uv * 2.0 - 1.0, texelFetch(depthtex1, at, 0).r * 2.0 - 1.0, 1.0);\n"
                 + "    vec4 b = gbufferProjectionInverse * vec4(uv * 2.0 - 1.0, texelFetch(depthtex0, at, 0).r * 2.0 - 1.0, 1.0);\n"
                 + "    color = vec4(-a.z / a.w, length(a.xyz / a.w), -b.z / b.w, 1.0);\n}\n";
+    }
+
+    /** A program that draws the world and paints everything it draws one color, into colortex0 and colortex1 (so the color says which program drew it). */
+    private static Map<String, String> worldProgram(final String name, final String color) {
+        Map<String, String> files = new java.util.LinkedHashMap<>();
+        files.put("world0/" + name + ".vsh", "#version 330 core\n\nin vec3 vaPosition;\nin vec2 vaUV0;\nuniform mat4 modelViewMatrix;\nuniform mat4 projectionMatrix;\nuniform vec3 chunkOffset;\n\nout vec2 uv;\n\n"
+                + "void main() {\n    gl_Position = projectionMatrix * modelViewMatrix * vec4(vaPosition + chunkOffset, 1.0);\n    uv = vaUV0;\n}\n");
+        files.put("world0/" + name + ".fsh", "#version 330 core\n\nuniform sampler2D gtexture;\nuniform float alphaTestRef;\n\nin vec2 uv;\n\n/* RENDERTARGETS: 0,1 */\n"
+                + "layout(location = 0) out vec4 outColor;\nlayout(location = 1) out vec4 outId;\n\nvoid main() {\n    vec4 albedo = texture(gtexture, uv);\n    if (albedo.a < max(alphaTestRef, 0.1)) discard;\n"
+                + "    outColor = vec4(" + color + ", 1.0);\n    outId = vec4(" + color + ", 1.0);\n}\n");
+        return files;
+    }
+
+    /**
+     * Terrain magenta, entities and items green, blocks the game draws one at a time blue, particles yellow, rain and snow cyan; and a final image with
+     * colortex0 on the left and colortex1 on the right. The game's own sky and anything else the pack has no program for is left as it is in colortex0
+     * and white (colortex1's clear color) in colortex1.
+     */
+    public static void writeWorldPack(final Path folder) throws IOException {
+        Map<String, String> files = new java.util.LinkedHashMap<>();
+        files.putAll(worldProgram("gbuffers_terrain", "1.0, 0.0, 1.0"));
+        files.putAll(worldProgram("gbuffers_entities", "0.0, 1.0, 0.0"));
+        files.putAll(worldProgram("gbuffers_block", "0.0, 0.0, 1.0"));
+        files.putAll(worldProgram("gbuffers_particles", "1.0, 1.0, 0.0"));
+        files.putAll(worldProgram("gbuffers_weather", "0.0, 1.0, 1.0"));
+        files.put("world0/final.vsh", FULLSCREEN_VSH);
+        files.put("world0/final.fsh", program("colortex0, colortex1", null,
+                "vec2 uv = vec2(fract(texcoord.x * 2.0), texcoord.y);\n    color = texcoord.x < 0.5 ? texture(colortex0, uv) : texture(colortex1, uv);"));
+        writeStandard(folder.resolve("IrisWorld.zip"), files);
+    }
+
+    /**
+     * Terrain tests itself against the shadow map: green where the sun reaches it and red where something is in the way, in colortex0; colortex1
+     * holds what the shadow map's color buffer has at the same place (blue wherever the shadow program drew). The final image shows the two side by side.
+     */
+    public static void writeShadowPack(final Path folder) throws IOException {
+        Map<String, String> files = new java.util.LinkedHashMap<>();
+        files.put("world0/shadow.vsh", "#version 330 core\n\nin vec3 vaPosition;\nin vec2 vaUV0;\nuniform mat4 modelViewMatrix;\nuniform mat4 projectionMatrix;\nuniform vec3 chunkOffset;\n\nout vec2 uv;\n\n"
+                + "void main() {\n    gl_Position = projectionMatrix * modelViewMatrix * vec4(vaPosition + chunkOffset, 1.0);\n    uv = vaUV0;\n}\n");
+        files.put("world0/shadow.fsh", "#version 330 core\n\nuniform sampler2D gtexture;\n\nin vec2 uv;\n\nlayout(location = 0) out vec4 shadowColor;\n\n"
+                + "const int shadowMapResolution = 2048;\nconst float shadowDistance = 96.0;\nconst float sunPathRotation = 15.0;\n\n"
+                + "void main() {\n    if (texture(gtexture, uv).a < 0.1) discard;\n    shadowColor = vec4(0.0, 0.0, 1.0, 1.0);\n}\n");
+        files.put("world0/gbuffers_terrain.vsh", "#version 330 core\n\nin vec3 vaPosition;\nin vec2 vaUV0;\nuniform mat4 modelViewMatrix;\nuniform mat4 projectionMatrix;\nuniform vec3 chunkOffset;\n\n"
+                + "out vec2 uv;\nout vec3 position;\n\nvoid main() {\n    position = vaPosition + chunkOffset;\n    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);\n    uv = vaUV0;\n}\n");
+        files.put("world0/gbuffers_terrain.fsh", "#version 330 core\n\nuniform sampler2D gtexture;\nuniform sampler2D shadowtex0;\nuniform sampler2D shadowcolor0;\n"
+                + "uniform mat4 shadowModelView;\nuniform mat4 shadowProjection;\nuniform float alphaTestRef;\n\nin vec2 uv;\nin vec3 position;\n\n/* RENDERTARGETS: 0,1 */\n"
+                + "layout(location = 0) out vec4 outColor;\nlayout(location = 1) out vec4 outShadowColor;\n\n"
+                + "void main() {\n    if (texture(gtexture, uv).a < max(alphaTestRef, 0.1)) discard;\n    vec4 clip = shadowProjection * shadowModelView * vec4(position, 1.0);\n"
+                + "    vec3 ndc = clip.xyz / clip.w;\n    vec2 at = ndc.xy * 0.5 + 0.5;\n    float depth = ndc.z * 0.5 + 0.5;\n    float stored = texture(shadowtex0, at).r;\n"
+                + "    outColor = depth - 0.003 <= stored ? vec4(0.0, 1.0, 0.0, 1.0) : vec4(1.0, 0.0, 0.0, 1.0);\n    outShadowColor = texture(shadowcolor0, at);\n}\n");
+        files.put("world0/final.vsh", FULLSCREEN_VSH);
+        files.put("world0/final.fsh", program("colortex0, colortex1", null,
+                "vec2 uv = vec2(fract(texcoord.x * 2.0), texcoord.y);\n    color = texcoord.x < 0.5 ? texture(colortex0, uv) : texture(colortex1, uv);"));
+        writeStandard(folder.resolve("IrisShadow.zip"), files);
     }
 
     private static void add(final ZipOutputStream zos, final String name, final String text) throws IOException {

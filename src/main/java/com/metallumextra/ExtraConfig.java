@@ -45,32 +45,10 @@ public final class ExtraConfig {
     public volatile boolean shineSupport;
     /** The built-in shader pipeline: own lighting, shadows, sky, water and bloom. Needs Sodium. */
     public volatile boolean shadersEnabled;
-    /** Shadows cast by the sun and moon. */
-    public volatile boolean shaderShadows;
-    /** Glow around bright things. */
-    public volatile boolean shaderBloom;
-    /** Water reflects the world around it. */
-    public volatile boolean shaderWaterReflections;
-    /** Water, leaves and plants move. */
-    public volatile boolean shaderWaving;
-    /** Shafts of sunlight through trees, openings and haze. */
-    public volatile boolean shaderSunRays;
-    /** Corners and crevices are darker. */
-    public volatile boolean shaderAmbientOcclusion;
-    /** Each kind of light-giving block has its own color. */
-    public volatile boolean shaderColoredLight;
-    /** Stair-stepped edges are smoothed. */
-    public volatile boolean shaderSmoothEdges;
     /** A line in the chat when shaders are reloaded with the key. */
     public volatile boolean shaderMessages;
     /** The shader pack in use: the file name of a ZIP in the shaderpacks folder, or {@code builtin}. Kept while shaders are off. */
     public volatile String shaderPack;
-    /** Width and height of the shadow map in pixels. File only. */
-    public volatile int shadowResolution;
-    /** How far from the player shadows are drawn, in chunks. File only. */
-    public volatile int shadowDistance;
-    /** How many degrees the sun's path is tilted towards the south, so it never stands straight overhead. File only. */
-    public volatile int sunPathRotation;
 
     private Path file;
 
@@ -89,44 +67,20 @@ public final class ExtraConfig {
         this.manyTextures = bool(p, "compat.manyTextures", true);
         this.shineSupport = bool(p, "compat.shine", true);
         this.shadersEnabled = bool(p, "shaders.enabled", false);
-        this.shaderShadows = bool(p, "shaders.shadows", true);
-        this.shaderBloom = bool(p, "shaders.bloom", true);
-        this.shaderWaterReflections = bool(p, "shaders.waterReflections", true);
-        this.shaderWaving = bool(p, "shaders.waving", true);
-        this.shaderSunRays = bool(p, "shaders.sunRays", false);
-        this.shaderAmbientOcclusion = bool(p, "shaders.ambientOcclusion", true);
-        this.shaderColoredLight = bool(p, "shaders.coloredLight", true);
-        this.shaderSmoothEdges = bool(p, "shaders.smoothEdges", true);
         this.shaderMessages = bool(p, "shaders.messages", true);
         String pack = p.getProperty("shaders.pack", "builtin").strip();
         this.shaderPack = pack.isEmpty() ? "builtin" : pack;
-        this.shadowResolution = clampShadowResolution((int) dbl(p, "shaders.shadowResolution", 2048));
-        this.shadowDistance = Math.clamp((int) dbl(p, "shaders.shadowDistance", 6), 2, 32);
-        this.sunPathRotation = Math.clamp((int) dbl(p, "shaders.sunPathRotation", 0), -60, 60);
-    }
-
-    private static int clampShadowResolution(final int value) {
-        return value <= 1024 ? 1024 : value <= 2048 ? 2048 : 4096;
     }
 
     /** Which preset the shader settings add up to; see {@link Quality}. */
     public Quality shaderQuality() {
-        return Quality.of(this);
+        return Quality.of();
     }
 
-    /** Writes a preset's values into the individual shader settings. Custom changes nothing. */
+    /** Writes a preset's values into the pack's options. Custom changes nothing. */
     public void setShaderQuality(final Quality quality) {
         if (quality == Quality.CUSTOM) return;
-        this.shaderShadows = true;
-        this.shaderBloom = true;
-        this.shaderWaving = true;
-        this.shaderColoredLight = true;
-        this.shadowResolution = quality.shadowResolution;
-        this.shadowDistance = quality.shadowDistance;
-        this.shaderWaterReflections = quality.reflections;
-        this.shaderSunRays = quality.sunRays;
-        this.shaderAmbientOcclusion = quality.ambientOcclusion;
-        save(file);
+        quality.apply();
         MetallumExtra.LOGGER.info("[Metallum Extra] shader quality={}", quality.label);
     }
 
@@ -135,41 +89,6 @@ public final class ExtraConfig {
         this.shadersEnabled = value;
         save(file);
         MetallumExtra.LOGGER.info("[Metallum Extra] shadersEnabled={}", value);
-    }
-
-    public void setShaderShadows(final boolean value) {
-        this.shaderShadows = value;
-        save(file);
-    }
-
-    public void setShaderBloom(final boolean value) {
-        this.shaderBloom = value;
-        save(file);
-    }
-
-    public void setShaderWaterReflections(final boolean value) {
-        this.shaderWaterReflections = value;
-        save(file);
-    }
-
-    public void setShaderWaving(final boolean value) {
-        this.shaderWaving = value;
-        save(file);
-    }
-
-    public void setShaderSunRays(final boolean value) {
-        this.shaderSunRays = value;
-        save(file);
-    }
-
-    public void setShaderAmbientOcclusion(final boolean value) {
-        this.shaderAmbientOcclusion = value;
-        save(file);
-    }
-
-    public void setShaderColoredLight(final boolean value) {
-        this.shaderColoredLight = value;
-        save(file);
     }
 
     public void setShaderMessages(final boolean value) {
@@ -181,11 +100,6 @@ public final class ExtraConfig {
         this.shaderPack = value;
         save(file);
         MetallumExtra.LOGGER.info("[Metallum Extra] shaderPack={}", value);
-    }
-
-    public void setShaderSmoothEdges(final boolean value) {
-        this.shaderSmoothEdges = value;
-        save(file);
     }
 
     /** Live toggles (from the in-game screen): take effect immediately and are written back to the file. */
@@ -274,30 +188,15 @@ public final class ExtraConfig {
 
                 # --- Shaders (switch live; need Sodium) ---
                 # Metallum Extra's own lighting: sun and moon light with shadows, a new sky, lit water with
-                # reflections, sun rays, and glow around bright things. Off by default. The Quality setting in
-                # game (Low, Medium, High, Ultra) writes the values below; Medium is the default.
+                # reflections, sun rays, and glow around bright things. Off by default. What the shaders show
+                # (shadows, glow, reflections ...) are the shader pack's own options: change them in game under
+                # Shader Options, where the Quality setting (Low, Medium, High, Ultra) sets them together.
                 shaders.enabled=%s
                 # The shader pack in use: the file name of a ZIP in the shaderpacks folder, or builtin. Choose
                 # one in game under Shader Packs. Switching shaders off does not forget it.
                 shaders.pack=%s
-                shaders.shadows=%s
-                shaders.bloom=%s
-                shaders.waterReflections=%s
-                shaders.waving=%s
-                shaders.sunRays=%s
-                shaders.ambientOcclusion=%s
-                shaders.coloredLight=%s
-                shaders.smoothEdges=%s
                 # Say "Shaders reloaded" in the chat when the reload key is pressed.
                 shaders.messages=%s
-                # Shadow sharpness: 1024, 2048 or 4096. Higher is sharper and slower.
-                shaders.shadowResolution=%d
-                # How far from you shadows are drawn, in chunks (2-32). Further is slower and blurrier.
-                shaders.shadowDistance=%d
-                # 0 keeps the game's own sun, which passes straight overhead at noon (so at midday shadows sit
-                # under their objects). Many shader packs tilt the sun's path towards the south instead, so that
-                # shadows stay long all day; set this to the tilt in degrees (-60 to 60, e.g. 35) for that look.
-                shaders.sunPathRotation=%d
 
                 # --- Fixes ---
                 # Fill CPU-visible buffers directly when they are created, instead of
@@ -337,7 +236,7 @@ public final class ExtraConfig {
                 # is out of bounds"). This renumbers the samplers of such shaders. Others are untouched.
                 compat.manyTextures=%s
                 """.formatted(profilerEnabled, hitchMinMs, hitchMultiplier, summarySeconds, maxHitchLogsPerSummary,
-                shadersEnabled, shaderPack.replace("\\", "\\\\"), shaderShadows, shaderBloom, shaderWaterReflections, shaderWaving, shaderSunRays, shaderAmbientOcclusion, shaderColoredLight, shaderSmoothEdges, shaderMessages, shadowResolution, shadowDistance, sunPathRotation, directBufferUpload, nonBlockingPresent, fastSectionRecenter, spreadSodiumCleanup,
+                shadersEnabled, shaderPack.replace("\\", "\\\\"), shaderMessages, directBufferUpload, nonBlockingPresent, fastSectionRecenter, spreadSodiumCleanup,
                 distantHorizonsSupport, shineSupport, multipleRenderTargets, manyTextures);
         try {
             Files.createDirectories(file.getParent());

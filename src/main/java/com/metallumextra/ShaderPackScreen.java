@@ -43,7 +43,7 @@ public final class ShaderPackScreen extends Screen {
     private static final int ERROR = 0xFFFF5555;
 
     /** What the hint under the list says shaders do to your game, one after the other. */
-    private static final String[] HINT_VERBS = {"beautify", "prettify", "glamorize", "embellish", "enhance", "transform", "elevate", "dazzle"};
+    private static final String[] HINT_VERBS = {"beautify", "prettify", "glamorize", "enhance", "transform", "elevate", "dazzle"};
 
     private final @Nullable Screen parent;
 
@@ -226,7 +226,7 @@ public final class ShaderPackScreen extends Screen {
 
     /**
      * Shader packs dropped onto the window are copied into the shaderpacks folder and listed straight away. Only ZIPs
-     * that have a {@code pack.json} are taken, and a file is never overwritten.
+     * that are shader packs are taken, and a file is never overwritten.
      */
     @Override
     public void onFilesDrop(final List<Path> files) {

@@ -52,6 +52,8 @@ import java.util.List;
  * packs               logs the packs found and the one in use
  * cache               logs the translation cache counters (MSL cache hits and translations)
  * reload             reads the shader files again
+ * trace 3           logs every program a standard shader pack runs for 3 frames, with the pixels each wrote
+ * resize 800x450    sets the window size
  * perf 10000 name   measures frame times for that long (median and 95th percentile, logged and added to perf.txt)
  * screen inventory   opens the inventory
  * quit               closes the game
@@ -278,6 +280,19 @@ public final class DebugScript {
                 perfEnd = System.nanoTime() + milliseconds * 1_000_000L;
                 pause(milliseconds + 100);
             }
+            case "trace" -> {
+                // trace <frames>: logs every program the shader pack runs, and what it drew, for that many frames.
+                IrisPipeline.trace(Integer.parseInt(rest));
+                pause(100);
+            }
+            case "resize" -> {
+                // resize <width>x<height>: sets the window's size and logs the buffer sizes a moment later.
+                String[] size = rest.split("x");
+                org.lwjgl.glfw.GLFW.glfwSetWindowSize(minecraft.getWindow().handle(), Integer.parseInt(size[0]), Integer.parseInt(size[1]));
+                pause(1500);
+                var main = minecraft.gameRenderer.mainRenderTarget();
+                MetallumExtra.LOGGER.info("[Metallum Extra] debug script: window is now {}x{}", main.width, main.height);
+            }
             case "packs" -> {
                 PackManager.rescan();
                 for (PackManager.Entry entry : PackManager.entries()) {
@@ -285,7 +300,7 @@ public final class DebugScript {
                 }
                 MetallumExtra.LOGGER.info("[Metallum Extra] debug script: in use {}", PackManager.activeId());
             }
-            case "cache" -> MetallumExtra.LOGGER.info("[Metallum Extra] debug script: {}; {}", TranslationCache.summary(), ShadowPass.summary());
+            case "cache" -> MetallumExtra.LOGGER.info("[Metallum Extra] debug script: {}; {}", TranslationCache.summary(), ShadowPass.summary() + "; " + IrisPipeline.summary());
             case "pos" -> MetallumExtra.LOGGER.info("[Metallum Extra] debug script: player at {} looking {} / {}", minecraft.player.position(), minecraft.player.getYRot(), minecraft.player.getXRot());
             case "view" -> minecraft.options.setCameraType(rest.equals("back") ? CameraType.THIRD_PERSON_BACK : rest.equals("front") ? CameraType.THIRD_PERSON_FRONT : CameraType.FIRST_PERSON);
             case "hud" -> {

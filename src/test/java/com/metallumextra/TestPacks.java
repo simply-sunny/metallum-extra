@@ -89,6 +89,7 @@ public final class TestPacks {
         writeStandardPack(folder.resolve("SolidBlue.zip"), "fragColor = vec4(0.0, 0.0, 1.0, 1.0);");
         writeStandardPack(folder.resolve("SolidRed.zip"), "fragColor = vec4(1.0, 0.0, 0.0, 1.0);");
         writeStandardPack(folder.resolve("SwapRedBlue.zip"), "fragColor = vec4(color.bgr, 1.0);");
+        writeIrisPacks(folder);
         // Packs that must not take the game down: one whose GLSL has a mistake, and one that lacks a shader.
         Map<String, String> syntax = builtinFiles();
         syntax.put("program/edges.fsh", "#version 330\n\nuniform sampler2D InSampler;\nin vec2 texCoord;\nout vec4 fragColor;\n\nvoid main() {\n    fragColor = texture(InSampler, texCoord)\n}\n");
@@ -128,6 +129,100 @@ public final class TestPacks {
     /** A ZIP with only a {@code shaders/} folder of these files. */
     public static void writeStandard(final Path zip, final Map<String, String> files) throws IOException {
         write(zip, null, files);
+    }
+
+    // ---- packs for the multi-pass pipeline: solid colors and exact arithmetic, so every result is predictable ----
+
+    /** A composite-style fragment program: the samplers it reads, the buffers it writes, and a body that sets {@code color} and {@code color1}. */
+    private static String program(final String samplers, final String targets, final String body) {
+        StringBuilder out = new StringBuilder("#version 330\n\n");
+        for (String sampler : samplers.isEmpty() ? new String[0] : samplers.split(",")) out.append("uniform sampler2D ").append(sampler.strip()).append(";\n");
+        out.append("\nin vec2 texcoord;\n");
+        if (targets != null) out.append("/* RENDERTARGETS: ").append(targets).append(" */\n");
+        int outputs = targets == null ? 1 : targets.split(",").length;
+        for (int i = 0; i < outputs; i++) out.append("layout(location = ").append(i).append(") out vec4 ").append(i == 0 ? "color" : "color" + i).append(";\n");
+        out.append("\nvoid main() {\n    ").append(body).append("\n}\n");
+        return out.toString();
+    }
+
+    private static final String COPY = "color = texture(colortex0, texcoord);";
+
+    /** A pack in the Iris layout whose programs are these (name without extension to fragment source), each with the full-screen vertex shader. */
+    private static void irisPack(final Path folder, final String name, final Map<String, String> programs, final String properties) throws IOException {
+        Map<String, String> files = new java.util.LinkedHashMap<>();
+        for (Map.Entry<String, String> program : programs.entrySet()) {
+            files.put("world0/" + program.getKey() + ".vsh", FULLSCREEN_VSH);
+            files.put("world0/" + program.getKey() + ".fsh", program.getValue());
+        }
+        if (properties != null) files.put("shaders.properties", properties);
+        writeStandard(folder.resolve(name + ".zip"), files);
+    }
+
+    private static Map<String, String> chain(final String... entries) {
+        Map<String, String> result = new java.util.LinkedHashMap<>();
+        for (int i = 0; i < entries.length; i += 2) result.put(entries[i], entries[i + 1]);
+        return result;
+    }
+
+    private static final String RED = "color = vec4(1.0, 0.0, 0.0, 1.0);";
+    private static final String FINAL_COPY = program("colortex0", null, COPY);
+
+    /** The packs the pipeline test (src/test/iris-pipeline) plays; each name says what it checks. */
+    public static void writeIrisPacks(final Path folder) throws IOException {
+        irisPack(folder, "IrisSingle", chain("composite", program("", "0", RED), "final", FINAL_COPY), null);
+        irisPack(folder, "IrisTwoTargets", chain(
+                "composite", program("", "0,1", "color = vec4(1.0, 0.0, 0.0, 1.0); color1 = vec4(0.0, 0.0, 1.0, 1.0);"),
+                "final", program("colortex0, colortex1", null, "color = texcoord.x < 0.5 ? texture(colortex0, texcoord) : texture(colortex1, texcoord);")), null);
+        irisPack(folder, "IrisIndependent", chain(
+                "composite", program("", "0,1", "color = vec4(1.0, 0.0, 0.0, 1.0); color1 = vec4(0.0, 0.0, 1.0, 1.0);"),
+                "composite1", program("", "0", "color = vec4(0.0, 1.0, 0.0, 1.0);"),
+                "final", program("colortex0, colortex1", null, "color = texcoord.x < 0.5 ? texture(colortex0, texcoord) : texture(colortex1, texcoord);")), null);
+        irisPack(folder, "IrisFlipOnce", chain(
+                "composite", program("", "0", RED),
+                "composite1", program("colortex0", "0", "color = vec4(0.0, 0.0, texture(colortex0, texcoord).r, 1.0);"),
+                "final", FINAL_COPY), null);
+        irisPack(folder, "IrisFlipTwice", chain(
+                "composite", program("", "0", RED),
+                "composite1", program("colortex0", "0", "color = vec4(0.0, texture(colortex0, texcoord).r, 0.0, 1.0);"),
+                "composite2", program("colortex0", "0", "color = vec4(0.0, 0.0, texture(colortex0, texcoord).g, 1.0);"),
+                "final", FINAL_COPY), null);
+        irisPack(folder, "IrisNoFlip", chain(
+                "composite", program("", "0", RED),
+                "composite1", program("colortex0", "0", "color = vec4(0.0, 0.0, texture(colortex0, texcoord).r, 1.0);"),
+                "final", FINAL_COPY), "flip.composite.colortex0=false\n");
+        irisPack(folder, "IrisPersist", chain(
+                "composite", program("colortex1, colortex2", "1,2",
+                        "const bool colortex1Clear = false;\n    float a = texelFetch(colortex1, ivec2(gl_FragCoord.xy), 0).r; float b = texelFetch(colortex2, ivec2(gl_FragCoord.xy), 0).r;\n"
+                                + "    // A counter that adds 16 (out of 255) every frame and wraps, so it can be followed across frames.\n"
+                                + "    color = vec4(mod(floor(a * 255.0 + 0.5) + 16.0, 256.0) / 255.0, 0.0, 0.0, 1.0); color1 = vec4(mod(floor(b * 255.0 + 0.5) + 16.0, 256.0) / 255.0, 0.0, 0.0, 1.0);"),
+                "final", FINAL_COPY), "\n");
+        irisPack(folder, "IrisOrder", chain(
+                "composite10", program("colortex0", "0", "color = vec4(0.0, 0.0, texture(colortex0, texcoord).g, 1.0);"),
+                "composite", program("", "0", RED),
+                "composite2", program("colortex0", "0", "color = vec4(0.0, texture(colortex0, texcoord).r, 0.0, 1.0);"),
+                "final", FINAL_COPY), null);
+        irisPack(folder, "IrisDisabled", chain(
+                "composite", program("", "0", RED),
+                "composite1", program("", "0", "color = vec4(0.0, 1.0, 0.0, 1.0);"),
+                "composite2", program("colortex0", "0", "color = vec4(0.0, 0.0, texture(colortex0, texcoord).r, 1.0);"),
+                "final", FINAL_COPY), "program.composite1.enabled=false\n");
+        irisPack(folder, "IrisNoFinal", chain(
+                "composite", program("", "0", RED),
+                "composite2", program("colortex0", "0", "color = vec4(0.0, 0.0, texture(colortex0, texcoord).r, 1.0);")), null);
+        // The final image shows where the depth textures differ: red where depthtex0 and depthtex1 do, green where depthtex1 and depthtex2 do.
+        irisPack(folder, "IrisDepth", chain(
+                "final", program("depthtex0, depthtex1, depthtex2", null,
+                        "ivec2 at = ivec2(gl_FragCoord.xy);\n    float d0 = texelFetch(depthtex0, at, 0).r; float d1 = texelFetch(depthtex1, at, 0).r; float d2 = texelFetch(depthtex2, at, 0).r;\n"
+                                + "    color = vec4(min(abs(d0 - d1) * 400.0, 1.0), min(abs(d1 - d2) * 400.0, 1.0), 0.0, 1.0);")), null);
+        irisPack(folder, "IrisReadsOne", chain("final", program("colortex1", null, "color = texture(colortex1, texcoord);")), null);
+        irisPack(folder, "IrisStages", chain(
+                "begin", program("", "2", "color = vec4(1.0, 0.0, 0.0, 1.0);"),
+                "prepare", program("colortex2", "2", "color = vec4(texture(colortex2, texcoord).r, 1.0, 0.0, 1.0);"),
+                "deferred", program("colortex2", "0", "color = vec4(0.0, texture(colortex2, texcoord).g, 0.0, 1.0);"),
+                "final", FINAL_COPY), null);
+        irisPack(folder, "IrisBroken", chain(
+                "composite", "#version 330\nin vec2 texcoord;\nlayout(location = 0) out vec4 color;\nvoid main() {\n    color = vec4(1.0)\n}\n",
+                "final", FINAL_COPY), null);
     }
 
     private static void add(final ZipOutputStream zos, final String name, final String text) throws IOException {

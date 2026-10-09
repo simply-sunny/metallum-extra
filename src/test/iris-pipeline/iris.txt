@@ -1,0 +1,219 @@
+# Pipeline test, run by run.sh: plays the Iris-layout test packs of TestPacks.writeIrisPacks in a scene with a stone wall
+# and a glass block in front of it, and traces what each program draws. PackTests 'iris' checks the log and the pictures.
+world PackTest
+wait 2000
+screen close
+hud off
+cmd gamemode spectator @a
+cmd tp @a 0.5 202 -9 0 0
+# A new world: its chunks must be there before blocks are placed in them.
+wait 9000
+cmd gamerule advance_time false
+cmd gamerule advance_weather false
+cmd weather clear
+cmd time set 6000
+cmd fill -12 199 -12 12 199 12 minecraft:grass_block
+cmd fill -12 200 -3 12 215 -3 minecraft:stone
+cmd setblock 0 203 -7 minecraft:red_stained_glass
+cmd tp @a 0.5 202 -9 0 0
+wait 3000
+pack builtin
+set shaders on
+set shadows off
+wait 6000
+shot 00_builtin
+cmd tp @a 0.5 202 -9 0 0
+wait 500
+# --- IrisSingle
+cmd tp @a 0.5 202 -9 0 0
+wait 300
+pack IrisSingle.zip
+wait 3500
+screen close
+trace 4
+wait 2500
+shot IrisSingle
+cache
+# --- IrisTwoTargets
+cmd tp @a 0.5 202 -9 0 0
+wait 300
+pack IrisTwoTargets.zip
+wait 3500
+screen close
+trace 4
+wait 2500
+shot IrisTwoTargets
+cache
+# --- IrisIndependent
+cmd tp @a 0.5 202 -9 0 0
+wait 300
+pack IrisIndependent.zip
+wait 3500
+screen close
+trace 4
+wait 2500
+shot IrisIndependent
+cache
+# --- IrisFlipOnce
+cmd tp @a 0.5 202 -9 0 0
+wait 300
+pack IrisFlipOnce.zip
+wait 3500
+screen close
+trace 4
+wait 2500
+shot IrisFlipOnce
+cache
+# --- IrisFlipTwice
+cmd tp @a 0.5 202 -9 0 0
+wait 300
+pack IrisFlipTwice.zip
+wait 3500
+screen close
+trace 4
+wait 2500
+shot IrisFlipTwice
+cache
+# --- IrisNoFlip
+cmd tp @a 0.5 202 -9 0 0
+wait 300
+pack IrisNoFlip.zip
+wait 3500
+screen close
+trace 4
+wait 2500
+shot IrisNoFlip
+cache
+# --- IrisPersist
+cmd tp @a 0.5 202 -9 0 0
+wait 300
+pack IrisPersist.zip
+wait 3500
+screen close
+trace 4
+wait 2500
+shot IrisPersist
+cache
+# --- IrisOrder
+cmd tp @a 0.5 202 -9 0 0
+wait 300
+pack IrisOrder.zip
+wait 3500
+screen close
+trace 4
+wait 2500
+shot IrisOrder
+cache
+# --- IrisDisabled
+cmd tp @a 0.5 202 -9 0 0
+wait 300
+pack IrisDisabled.zip
+wait 3500
+screen close
+trace 4
+wait 2500
+shot IrisDisabled
+cache
+# --- IrisNoFinal
+cmd tp @a 0.5 202 -9 0 0
+wait 300
+pack IrisNoFinal.zip
+wait 3500
+screen close
+trace 4
+wait 2500
+shot IrisNoFinal
+cache
+# --- IrisDepth
+cmd tp @a 0.5 202 -9 0 0
+wait 300
+pack IrisDepth.zip
+wait 3500
+screen close
+trace 4
+wait 2500
+shot IrisDepth
+cache
+# --- IrisStages
+cmd tp @a 0.5 202 -9 0 0
+wait 300
+pack IrisStages.zip
+wait 3500
+screen close
+trace 4
+wait 2500
+shot IrisStages
+cache
+# --- IrisBroken
+cmd tp @a 0.5 202 -9 0 0
+wait 300
+pack IrisBroken.zip
+wait 3500
+screen close
+trace 4
+wait 2500
+shot IrisBroken
+cache
+wait 2500
+shot IrisBroken_after
+# --- stability: resize, switching, shaders off and on, reload, dimensions
+cmd tp @a 0.5 202 -9 0 0
+wait 300
+pack IrisFlipTwice.zip
+wait 3500
+screen close
+resize 800x450
+trace 2
+wait 1500
+shot resized_small
+resize 1280x720
+trace 2
+wait 1500
+shot resized_large
+# a pack with other buffers than the one before: it must not see the other's contents
+cmd tp @a 0.5 202 -9 0 0
+wait 300
+pack IrisTwoTargets.zip
+wait 3500
+screen close
+cmd tp @a 0.5 202 -9 0 0
+wait 300
+pack IrisReadsOne.zip
+wait 3500
+screen close
+trace 2
+wait 1500
+shot IrisReadsOne_after_TwoTargets
+cmd tp @a 0.5 202 -9 0 0
+wait 300
+pack IrisSingle.zip
+wait 3000
+screen close
+set shaders off
+wait 2500
+shot shaders_off
+set shaders on
+wait 3500
+screen close
+trace 2
+wait 1500
+shot shaders_on_again
+reload
+wait 3500
+trace 2
+wait 1500
+shot after_reload
+cmd execute in minecraft:the_nether run tp @a 0.5 80 0.5 0 20
+wait 7000
+shot nether_view
+cmd execute in minecraft:overworld run tp @a 0.5 202 -9 0 0
+wait 5000
+trace 2
+wait 1500
+shot overworld_again
+pack builtin
+wait 4000
+screen close
+shot builtin_after
+cache
+quit

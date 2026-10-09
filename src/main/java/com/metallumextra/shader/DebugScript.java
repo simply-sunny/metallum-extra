@@ -52,6 +52,8 @@ import java.util.List;
  * packs               logs the packs found and the one in use
  * cache               logs the translation cache counters (MSL cache hits and translations)
  * reload             reads the shader files again
+ * perf 10000 name   measures frame times for that long (median and 95th percentile, logged and added to perf.txt)
+ * screen inventory   opens the inventory
  * quit               closes the game
  * </pre>
  */
@@ -61,6 +63,11 @@ public final class DebugScript {
     /** The next step runs once the clock passes this. */
     private static long resumeAt;
     private static boolean worldOpened;
+    /** A frame-time measurement in progress: its name, when it ends, and every frame's length so far, in milliseconds. */
+    private static @Nullable String perfName;
+    private static long perfEnd;
+    private static long perfLast;
+    private static final java.util.ArrayList<Double> PERF_FRAMES = new java.util.ArrayList<>();
 
     private DebugScript() {
     }
@@ -83,6 +90,7 @@ public final class DebugScript {
                 steps = new ArrayDeque<>(List.of());
             }
         }
+        samplePerf();
         while (System.nanoTime() >= resumeAt && !steps.isEmpty()) {
             run(minecraft, steps.poll().trim());
         }
@@ -112,6 +120,52 @@ public final class DebugScript {
         }
     }
 
+    /** Called once per frame: adds the frame to the measurement in progress and ends it when its time is up. */
+    private static void samplePerf() {
+        if (perfName == null) return;
+        long now = System.nanoTime();
+        if (perfLast != 0) PERF_FRAMES.add((now - perfLast) / 1.0e6);
+        perfLast = now;
+        if (now < perfEnd) return;
+        java.util.List<Double> sorted = PERF_FRAMES.stream().sorted().toList();
+        if (!sorted.isEmpty()) {
+            double median = sorted.get(sorted.size() / 2);
+            double p95 = sorted.get(Math.min(sorted.size() - 1, (int) (sorted.size() * 0.95)));
+            String line = String.format(java.util.Locale.ROOT, "perf %s: %d frames, median %.2f ms, 95th percentile %.2f ms", perfName, sorted.size(), median, p95);
+            MetallumExtra.LOGGER.info("[Metallum Extra] debug script: {}", line);
+            try {
+                Files.writeString(FILE.resolveSibling("perf.txt"), line + "\n", java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+            } catch (IOException e) {
+                MetallumExtra.LOGGER.warn("[Metallum Extra] debug script: could not write perf.txt", e);
+            }
+        }
+        perfName = null;
+        PERF_FRAMES.clear();
+    }
+
+    /** What a picture was taken with, written next to it, so a later run can tell whether the scene is the same. */
+    private static void writeSceneInfo(final Minecraft minecraft, final Path png) {
+        ExtraConfig c = ExtraConfig.get();
+        var target = minecraft.gameRenderer.mainRenderTarget();
+        var level = minecraft.level;
+        StringBuilder info = new StringBuilder();
+        info.append("resolution ").append(target.width).append('x').append(target.height).append('\n');
+        info.append("position ").append(minecraft.player.position()).append('\n');
+        info.append("rotation ").append(minecraft.player.getYRot()).append(' ').append(minecraft.player.getXRot()).append('\n');
+        info.append("dimension ").append(level.dimension().identifier()).append('\n');
+        info.append("gameTime ").append(level.getGameTime()).append(" raining ").append(level.isRaining()).append('\n');
+        info.append("pack ").append(PackManager.activeId()).append(" shaders ").append(c.shadersEnabled).append('\n');
+        info.append("quality ").append(c.shaderQuality()).append(" shadows ").append(c.shaderShadows).append(" bloom ").append(c.shaderBloom)
+                .append(" reflections ").append(c.shaderWaterReflections).append(" waving ").append(c.shaderWaving).append(" rays ").append(c.shaderSunRays)
+                .append(" ao ").append(c.shaderAmbientOcclusion).append(" colored ").append(c.shaderColoredLight).append(" edges ").append(c.shaderSmoothEdges).append('\n');
+        info.append("shadowResolution ").append(c.shadowResolution).append(" shadowDistance ").append(c.shadowDistance).append('\n');
+        try {
+            Files.writeString(png.resolveSibling(png.getFileName().toString().replace(".png", ".txt")), info.toString());
+        } catch (IOException e) {
+            MetallumExtra.LOGGER.warn("[Metallum Extra] debug script: could not write the scene info", e);
+        }
+    }
+
     private static void pause(final long milliseconds) {
         resumeAt = System.nanoTime() + milliseconds * 1_000_000L;
     }
@@ -136,6 +190,7 @@ public final class DebugScript {
             }
             case "shot" -> {
                 Path target = FILE.resolveSibling(rest + ".png");
+                writeSceneInfo(minecraft, target);
                 Screenshot.takeScreenshot(minecraft.gameRenderer.mainRenderTarget(), image -> Util.ioPool().execute(() -> {
                     try (image) {
                         image.writeToFile(target);
@@ -167,7 +222,8 @@ public final class DebugScript {
                 pause(100);
             }
             case "screen" -> {
-                minecraft.gui.setScreen(rest.equals("settings") ? new ExtraConfigScreen(null) : rest.equals("packs") ? new ShaderPackScreen(null) : rest.equals("options") ? new ShaderOptionsScreen(null, null) : null);
+                minecraft.gui.setScreen(rest.equals("settings") ? new ExtraConfigScreen(null) : rest.equals("packs") ? new ShaderPackScreen(null) : rest.equals("options") ? new ShaderOptionsScreen(null, null)
+                        : rest.equals("inventory") ? new net.minecraft.client.gui.screens.inventory.InventoryScreen(minecraft.player) : null);
                 pause(300);
             }
             case "key" -> {
@@ -211,6 +267,16 @@ public final class DebugScript {
                     }
                 }
                 pause(300);
+            }
+            case "perf" -> {
+                // perf <milliseconds> <name>: measures how long frames take for that long; the result is logged and added to perf.txt.
+                String[] parts = rest.split("\\s+", 2);
+                long milliseconds = Long.parseLong(parts[0]);
+                perfName = parts.length > 1 ? parts[1] : "perf";
+                perfLast = 0;
+                PERF_FRAMES.clear();
+                perfEnd = System.nanoTime() + milliseconds * 1_000_000L;
+                pause(milliseconds + 100);
             }
             case "packs" -> {
                 PackManager.rescan();

@@ -90,6 +90,17 @@ tasks.register('writeTestPacks', JavaExec) {
 	args = [project.findProperty('to') ?: 'run/shaderpacks']
 }
 
+// `gradlew compareScenes -Pa=<folder> -Pb=<folder>`: compares the pictures of two runs of src/test/baseline/run.sh.
+tasks.register('compareScenes', JavaExec) {
+	group = 'verification'
+	description = 'Compares the pictures of two baseline runs.'
+	classpath = sourceSets.test.output + sourceSets.main.runtimeClasspath
+	mainClass = 'com.metallumextra.PackTests'
+	workingDir = projectDir
+	args = ['compare', project.findProperty('a') ?: 'run/baseline-1', project.findProperty('b') ?: 'run/baseline-2',
+			project.findProperty('mean') ?: '0.5', project.findProperty('pct') ?: '1.0']
+}
+
 // `gradlew checkPackImages -Pfolder=<folder>`: checks the pictures a run of src/test/pack-regression/packs.txt saved.
 tasks.register('checkPackImages', JavaExec) {
 	group = 'verification'

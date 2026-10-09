@@ -33,6 +33,7 @@
     "shader.SodiumChunkRendererShaderMixin",
     "shader.SodiumFluidRendererShaderMixin",
     "shader.SodiumMeshBufferShaderMixin",
+    "shader.SodiumSectionDataShaderMixin",
     "shader.SodiumWorldRendererShaderMixin"
   ],
   "injectors": {

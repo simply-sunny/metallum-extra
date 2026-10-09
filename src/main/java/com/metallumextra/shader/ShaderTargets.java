@@ -21,6 +21,8 @@ public final class ShaderTargets {
     private @Nullable TextureTarget scene;
     private final TextureTarget[] bloom = new TextureTarget[BLOOM_LEVELS];
     private @Nullable TextureTarget shadow;
+    /** The terrain part of the shadow map, kept between frames; see {@link ShadowPass}. */
+    private @Nullable TextureTarget shadowCache;
     /** One empty texel, bound in place of the shadow map while the shadow map is the image being drawn into. */
     private @Nullable TextureTarget emptyShadow;
     /** Half-size images for the screen effects (sun rays, ambient occlusion): one drawn, one blurred. */
@@ -49,6 +51,10 @@ public final class ShaderTargets {
 
     public TextureTarget shadow() {
         return this.shadow;
+    }
+
+    public TextureTarget shadowCache() {
+        return this.shadowCache;
     }
 
     public TextureTarget emptyShadow() {
@@ -96,6 +102,10 @@ public final class ShaderTargets {
             this.shadowResolution = wantedResolution;
             this.shadow = new TextureTarget("Metallum Extra shadow map", wantedResolution, wantedResolution, true, GpuFormat.RGBA8_UNORM);
             ShadowPass.clear(this.shadow);
+            if (this.shadowCache != null) this.shadowCache.destroyBuffers();
+            this.shadowCache = new TextureTarget("Metallum Extra shadow terrain", wantedResolution, wantedResolution, true, GpuFormat.RGBA8_UNORM);
+            ShadowPass.clear(this.shadowCache);
+            ShadowPass.invalidate();
         }
     }
 
@@ -119,6 +129,8 @@ public final class ShaderTargets {
         this.effectsBlurred = null;
         if (this.shadow != null) this.shadow.destroyBuffers();
         this.shadow = null;
+        if (this.shadowCache != null) this.shadowCache.destroyBuffers();
+        this.shadowCache = null;
         if (this.emptyShadow != null) this.emptyShadow.destroyBuffers();
         this.emptyShadow = null;
         this.width = 1;

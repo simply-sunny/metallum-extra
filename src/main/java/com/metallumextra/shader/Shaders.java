@@ -157,6 +157,7 @@ public final class Shaders {
         drawingWorld = false;
         ShaderSources.clear();
         ShaderBindings.forget();
+        ShadowPass.invalidate();
         RenderSystem.getDevice().clearPipelineCache();
         if (value) {
             GLOBALS.upload(PHASE_NONE);
@@ -177,6 +178,7 @@ public final class Shaders {
      * they do not depend on the pack.
      */
     private static void switchPack() {
+        ShadowPass.invalidate();
         ShaderSources.clear();
         ShaderBindings.forget();
         RenderSystem.getDevice().clearPipelineCache();
@@ -193,6 +195,7 @@ public final class Shaders {
     public static void reload() {
         if (!active) return;
         RenderSystem.assertOnRenderThread();
+        ShadowPass.invalidate();
         ShaderSources.clear();
         RenderSystem.getDevice().clearPipelineCache();
     }

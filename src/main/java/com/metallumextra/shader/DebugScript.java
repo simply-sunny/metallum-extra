@@ -219,7 +219,7 @@ public final class DebugScript {
                 }
                 MetallumExtra.LOGGER.info("[Metallum Extra] debug script: in use {}", PackManager.activeId());
             }
-            case "cache" -> MetallumExtra.LOGGER.info("[Metallum Extra] debug script: {}", TranslationCache.summary());
+            case "cache" -> MetallumExtra.LOGGER.info("[Metallum Extra] debug script: {}; {}", TranslationCache.summary(), ShadowPass.summary());
             case "pos" -> MetallumExtra.LOGGER.info("[Metallum Extra] debug script: player at {} looking {} / {}", minecraft.player.position(), minecraft.player.getYRot(), minecraft.player.getXRot());
             case "view" -> minecraft.options.setCameraType(rest.equals("back") ? CameraType.THIRD_PERSON_BACK : rest.equals("front") ? CameraType.THIRD_PERSON_FRONT : CameraType.FIRST_PERSON);
             case "hud" -> {

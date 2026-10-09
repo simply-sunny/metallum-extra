@@ -48,8 +48,9 @@ public final class IrisPlan {
      *
      * @param writes the buffers the fragment outputs go to; empty for {@code final}, which draws to the screen
      * @param inPlace per write: the buffer's flip is switched off, so the program draws into the texture that is read
+     * @param uniforms the standard uniforms the program declares, in the order of {@link IrisUniforms#ALL}; they reach it in one block
      */
-    public record Step(ProgramSet.Program program, int[] writes, boolean[] inPlace, List<Input> inputs) {
+    public record Step(ProgramSet.Program program, int[] writes, boolean[] inPlace, List<Input> inputs, List<String> uniforms) {
         public boolean reads(final int colorBuffer) {
             for (Input input : inputs) {
                 if (input.colorBuffer == colorBuffer) return true;
@@ -58,6 +59,48 @@ public final class IrisPlan {
         }
     }
 
+    /** The kinds of terrain Sodium draws, each with its own program (the game draws them in this order). */
+    public enum Layer {
+        SOLID, CUTOUT, TRANSLUCENT
+    }
+
+    /** The program that draws a layer of terrain: the layer's own, then the ones Iris falls back to, in Iris's order. */
+    private static final Map<Layer, List<String>> TERRAIN_CHAIN = Map.of(
+            Layer.SOLID, List.of("gbuffers_terrain_solid", "gbuffers_terrain", "gbuffers_textured_lit", "gbuffers_textured", "gbuffers_basic"),
+            Layer.CUTOUT, List.of("gbuffers_terrain_cutout", "gbuffers_terrain", "gbuffers_textured_lit", "gbuffers_textured", "gbuffers_basic"),
+            Layer.TRANSLUCENT, List.of("gbuffers_water", "gbuffers_terrain", "gbuffers_textured_lit", "gbuffers_textured", "gbuffers_basic"));
+
+    /** The kinds of things in the world the game draws with its own pipelines, each with the programs Iris tries, in order. */
+    public enum Use {
+        ENTITY("gbuffers_entities", "gbuffers_textured_lit", "gbuffers_textured", "gbuffers_basic"),
+        ENTITY_TRANSLUCENT("gbuffers_entities_translucent", "gbuffers_entities", "gbuffers_textured_lit", "gbuffers_textured", "gbuffers_basic"),
+        BLOCK("gbuffers_block", "gbuffers_terrain", "gbuffers_textured_lit", "gbuffers_textured", "gbuffers_basic"),
+        BLOCK_TRANSLUCENT("gbuffers_block_translucent", "gbuffers_block", "gbuffers_terrain", "gbuffers_textured_lit", "gbuffers_textured", "gbuffers_basic"),
+        PARTICLES("gbuffers_particles", "gbuffers_textured_lit", "gbuffers_textured", "gbuffers_basic"),
+        PARTICLES_TRANSLUCENT("gbuffers_particles_translucent", "gbuffers_particles", "gbuffers_textured_lit", "gbuffers_textured", "gbuffers_basic"),
+        WEATHER("gbuffers_weather", "gbuffers_textured_lit", "gbuffers_textured", "gbuffers_basic");
+
+        private final List<String> chain;
+
+        Use(final String... chain) {
+            this.chain = List.of(chain);
+        }
+
+        public List<String> chain() {
+            return chain;
+        }
+    }
+
+    /** The vertex inputs a terrain program may declare, with their types. Everything else Iris offers is refused by name. */
+    static final Map<String, String> TERRAIN_INPUTS = Map.of("vaPosition", "vec3", "vaColor", "vec4", "vaUV0", "vec2", "vaUV2", "ivec2", "vaNormal", "vec3", "mc_Entity", "vec2");
+    /** The vertex inputs a program for anything but terrain may declare: terrain's, less the block id, plus the overlay. */
+    static final Map<String, String> WORLD_INPUTS = Map.of("vaPosition", "vec3", "vaColor", "vec4", "vaUV0", "vec2", "vaUV1", "ivec2", "vaUV2", "ivec2", "vaNormal", "vec3");
+    private static final List<String> LATER_INPUTS = List.of("mc_midTexCoord", "at_tangent", "at_midBlock", "mc_chunkFade");
+    private static final Pattern VERTEX_INPUT = Pattern.compile("(?m)^[ \\t]*(?:layout\\s*\\([^)]*\\)\\s*)?in\\s+(?:(?:highp|mediump|lowp)\\s+)?(\\w+)\\s+(\\w+)\\s*;");
+    /** The compatibility profile's names, which need the translation of the next step; until then they are named in the error. */
+    private static final Pattern LEGACY = Pattern.compile("\\b(varying|gl_FragData|gl_FragColor|texture2D|texture2DLod|texture3D|gl_Vertex|gl_Normal|gl_Color|gl_MultiTexCoord\\d|ftransform"
+            + "|gl_ModelViewMatrix|gl_ProjectionMatrix|gl_ModelViewProjectionMatrix|gl_NormalMatrix|gl_TextureMatrix|gl_ModelViewMatrixInverse|gl_ProjectionMatrixInverse|attribute)\\b");
+    private static final Pattern COMMENTS = Pattern.compile("(?s)/\\*.*?\\*/|//[^\\n]*");
     private static final Pattern RENDERTARGETS = Pattern.compile("/\\*\\s*RENDERTARGETS\\s*:\\s*([0-9,\\s]+?)\\s*\\*/");
     private static final Pattern DRAWBUFFERS = Pattern.compile("/\\*\\s*DRAWBUFFERS\\s*:\\s*([0-9]+)\\s*\\*/");
     private static final Pattern OUTPUT_LOCATION = Pattern.compile("layout\\s*\\(\\s*location\\s*=\\s*(\\d+)\\s*\\)\\s*(?:flat\\s+)?out\\b");
@@ -76,10 +119,21 @@ public final class IrisPlan {
     private final boolean[] depthUsed = new boolean[3];
     private final List<String> notes = new ArrayList<>();
     private final ProgramSet programs;
+    private float sunPathRotation;
+    private final Map<String, String> vertexSources = new TreeMap<>();
+    private final Set<Integer> worldBuffers = new java.util.TreeSet<>();
 
     private IrisPlan(final ProgramSet programs) {
         this.programs = programs;
         for (int i = 0; i < ProgramSet.Stage.values().length; i++) stages.add(new ArrayList<>());
+    }
+
+    /**
+     * The source without its {@code const int colortexNFormat = RGBA16F;} lines. They tell this class how to store a buffer; the format
+     * names are not GLSL, and Iris does not pass them to the compiler either.
+     */
+    public static String withoutBufferFormats(final String source) {
+        return FORMAT.matcher(source).replaceAll("");
     }
 
     /** The programs of a stage, in the order they run in. */
@@ -117,6 +171,47 @@ public final class IrisPlan {
         return programs;
     }
 
+    /** The program that draws this kind of thing, or null if the pack has none of the programs Iris would use (the game's own shader then draws it). */
+    public @Nullable Step worldStep(final Use use) {
+        for (String name : use.chain()) {
+            Step step = step(name);
+            if (step != null) return step;
+        }
+        return null;
+    }
+
+    /**
+     * The color buffers (other than 0) that any program drawing the world writes. Every pass that draws the world has them attached, in the
+     * attachment of the same number, so everything drawn into it agrees on where each output goes.
+     */
+    public Set<Integer> worldBuffers() {
+        return worldBuffers;
+    }
+
+    /** The program that draws this layer of terrain, or null if the pack has none of the programs Iris would use (the game's own shader then draws it). */
+    public @Nullable Step terrainStep(final Layer layer) {
+        for (String name : TERRAIN_CHAIN.get(layer)) {
+            Step step = step(name);
+            if (step != null) return step;
+        }
+        return null;
+    }
+
+    /** The program of this name, whatever its stage; null if it does not run. */
+    public @Nullable Step step(final String name) {
+        for (List<Step> list : stages) {
+            for (Step step : list) {
+                if (step.program().name().equals(name)) return step;
+            }
+        }
+        return null;
+    }
+
+    /** The tilt of the sun's and moon's path in degrees, from {@code const float sunPathRotation} in the programs; 0 when they do not say. */
+    public float sunPathRotation() {
+        return sunPathRotation;
+    }
+
     public int stepCount() {
         int count = 0;
         for (List<Step> list : stages) count += list.size();
@@ -135,29 +230,46 @@ public final class IrisPlan {
                 String vertex = pack.load(program.vertex());
                 String fragment = pack.load(program.fragment());
                 fragments.put(program.name(), fragment);
+                plan.findSunPath(vertex);
+                plan.findSunPath(fragment);
                 plan.add(set, program, vertex, fragment);
             } catch (IllegalStateException e) {
                 throw new PackException(e.getMessage(), e);
             }
         }
         plan.settleBuffers(fragments);
+        plan.validateUses();
         return plan;
     }
 
+    private static final Pattern SUN_PATH = Pattern.compile("const\\s+float\\s+sunPathRotation\\s*=\\s*(-?\\d+(?:\\.\\d*)?)\\s*;");
+
+    private void findSunPath(final String source) {
+        Matcher match = SUN_PATH.matcher(source);
+        if (match.find()) sunPathRotation = Float.parseFloat(match.group(1));
+    }
+
     private void add(final ProgramSet set, final ProgramSet.Program program, final String vertex, final String fragment) throws PackException {
+        boolean gbuffers = program.stage() == ProgramSet.Stage.GBUFFERS;
+        rejectLegacy(program, vertex, fragment);
+        if (gbuffers) vertexSources.put(program.name(), vertex);
         List<Input> inputs = new ArrayList<>();
         Set<String> seen = new HashSet<>();
         for (String sampler : ProgramSet.samplers(vertex + "\n" + fragment)) {
             if (!seen.add(sampler)) continue;
-            inputs.add(input(program, sampler));
+            inputs.add(gbuffers ? gbufferInput(program, sampler) : input(program, sampler));
         }
         int[] writes = program.stage() == ProgramSet.Stage.FINAL ? new int[0] : writes(program, fragment);
+        if (gbuffers && writes[0] != 0) {
+            throw new PackException(program.name() + " writes colortex" + writes[0] + " first, but this version draws the world into colortex0, so the first output must go there");
+        }
         Set<Integer> flipsOff = set.flipsOff(program.name());
         boolean[] inPlace = new boolean[writes.length];
         for (int i = 0; i < writes.length; i++) {
-            inPlace[i] = flipsOff.contains(writes[i]);
+            // The programs that draw the world draw into the buffers' main textures, which the programs after them read: nothing flips.
+            inPlace[i] = gbuffers || flipsOff.contains(writes[i]);
             for (Input input : inputs) {
-                if (input.colorBuffer == writes[i] && inPlace[i]) {
+                if (!gbuffers && input.colorBuffer == writes[i] && inPlace[i]) {
                     throw new PackException(program.name() + " reads colortex" + writes[i] + " while drawing into it (flip is off), which Metal does not allow");
                 }
             }
@@ -167,7 +279,52 @@ public final class IrisPlan {
             if (input.colorBuffer >= 0) buffers.putIfAbsent(input.colorBuffer, null);
             if (input.depthTexture >= 0) depthUsed[input.depthTexture] = true;
         }
-        stages.get(program.stage().ordinal()).add(new Step(program, writes, inPlace, List.copyOf(inputs)));
+        Set<String> both = new java.util.LinkedHashSet<>(IrisUniforms.declared(vertex));
+        both.addAll(IrisUniforms.declared(fragment));
+        List<String> uniforms = IrisUniforms.ALL.stream().map(IrisUniforms.Uniform::name).filter(both::contains).toList();
+        if (!gbuffers) {
+            for (IrisUniforms.Uniform uniform : IrisUniforms.ALL) {
+                if (uniform.gbuffers() && both.contains(uniform.name())) throw new PackException(program.name() + " declares " + uniform.name() + ", which only the programs that draw the world have");
+            }
+        }
+        stages.get(program.stage().ordinal()).add(new Step(program, writes, inPlace, List.copyOf(inputs), uniforms));
+    }
+
+    /** A program that draws the world samples the block atlas and the light map; Sodium binds both. */
+    private static Input gbufferInput(final ProgramSet.Program program, final String sampler) throws PackException {
+        if (sampler.equals("gtexture") || sampler.equals("lightmap")) return new Input(sampler, -1, -1);
+        if (sampler.equals("texture")) throw new PackException(program.name() + " names its atlas sampler 'texture', which is also a GLSL function; use gtexture");
+        if (sampler.matches("colortex\\d+|gcolor|gdepth|gnormal|composite|gaux\\d|depthtex\\d|gdepthtex")) {
+            throw new PackException(program.name() + " reads " + sampler + ", which the programs that draw the world cannot (Iris gives them the atlas in its place)");
+        }
+        throw new PackException(program.name() + " reads " + sampler + ", which this version cannot provide to the programs that draw the world yet");
+    }
+
+    /** The compatibility profile is named in the error until the next step translates it. */
+    private static void rejectLegacy(final ProgramSet.Program program, final String vertex, final String fragment) throws PackException {
+        for (String source : List.of(vertex, fragment)) {
+            Matcher match = LEGACY.matcher(COMMENTS.matcher(source).replaceAll(""));
+            if (match.find()) {
+                throw new PackException(program.name() + " uses " + match.group(1) + ", from the old compatibility profile of GLSL, which this version cannot read yet (use #version 330 core with in/out)");
+            }
+        }
+    }
+
+    /** Terrain programs read Sodium's vertices through the Iris names; refuses the ones that cannot be provided. */
+    private static void checkVertexInputs(final ProgramSet.Program program, final String vertex, final Map<String, String> allowed, final String use) throws PackException {
+        Matcher match = VERTEX_INPUT.matcher(COMMENTS.matcher(vertex).replaceAll(""));
+        while (match.find()) {
+            String type = match.group(1);
+            String name = match.group(2);
+            String expected = allowed.get(name);
+            if (expected == null) {
+                if (LATER_INPUTS.contains(name)) throw new PackException(program.name() + " reads the vertex input " + name + ", which this version cannot provide yet");
+                if (name.equals("mc_Entity")) throw new PackException(program.name() + " reads mc_Entity, which only the programs for terrain have (it draws " + use + ")");
+                if (name.equals("vaUV1")) throw new PackException(program.name() + " reads vaUV1 (the overlay), which terrain does not have (it draws " + use + ")");
+                throw new PackException(program.name() + " declares the vertex input " + name + ", which is not an Iris input this version knows");
+            }
+            if (!expected.equals(type)) throw new PackException(program.name() + " declares " + name + " as " + type + ", but it is a " + expected);
+        }
     }
 
     private static Input input(final ProgramSet.Program program, final String sampler) throws PackException {
@@ -228,6 +385,29 @@ public final class IrisPlan {
             while (match.find()) most = Math.max(most, Integer.parseInt(match.group(1)));
         }
         return most + 1;
+    }
+
+    /**
+     * Each kind of thing is drawn with the first program that exists in its chain, and that program must be able to read what
+     * that kind of thing has: terrain has a block id and no overlay, everything else the reverse.
+     */
+    private void validateUses() throws PackException {
+        for (Layer layer : Layer.values()) {
+            Step step = terrainStep(layer);
+            if (step != null) checkVertexInputs(step.program(), vertexSources.get(step.program().name()), TERRAIN_INPUTS, "terrain");
+        }
+        for (Use use : Use.values()) {
+            Step step = worldStep(use);
+            if (step != null) checkVertexInputs(step.program(), vertexSources.get(step.program().name()), WORLD_INPUTS, use.name().toLowerCase(java.util.Locale.ROOT).replace('_', ' '));
+        }
+        for (Step step : stages.get(ProgramSet.Stage.GBUFFERS.ordinal())) {
+            for (int index : step.writes()) {
+                if (index != 0) {
+                    if (index >= MAX_OUTPUTS) throw new PackException(step.program().name() + " writes colortex" + index + ", but the programs that draw the world can only write colortex0 to colortex" + (MAX_OUTPUTS - 1));
+                    worldBuffers.add(index);
+                }
+            }
+        }
     }
 
     private void settleBuffers(final Map<String, String> fragments) throws PackException {

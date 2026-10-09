@@ -73,6 +73,8 @@ final class IrisTargets {
 
     private static boolean needsAlternate(final IrisPlan plan, final int buffer) {
         for (ProgramSet.Stage stage : ProgramSet.Stage.values()) {
+            // The programs that draw the world write the main textures; nothing flips there.
+            if (stage == ProgramSet.Stage.GBUFFERS) continue;
             for (IrisPlan.Step step : plan.steps(stage)) {
                 for (int i = 0; i < step.writes().length; i++) {
                     if (step.writes()[i] == buffer && !step.inPlace()[i]) return true;
@@ -161,11 +163,9 @@ final class IrisTargets {
         return target.getDepthTextureView();
     }
 
-    /** Copies the depth of what has been drawn so far: {@code withTranslucent} is {@code depthtex0}, otherwise {@code depthtex1}. */
-    void snapshotDepth(final RenderTarget world, final boolean withTranslucent) {
-        TextureTarget target = withTranslucent ? depthAll : depthWithoutTranslucent;
-        if (target == null) return;
-        RenderSystem.getDevice().createCommandEncoder().copyTextureToTexture(world.getDepthTexture(), target.getDepthTexture(), 0, 0, 0, 0, 0, width, height);
+    /** The target whose depth is {@code depthtex0} (with translucent terrain) or {@code depthtex1} (without it); null when no program reads it. */
+    @Nullable TextureTarget depthTarget(final boolean withTranslucent) {
+        return withTranslucent ? depthAll : depthWithoutTranslucent;
     }
 
     int width() {

@@ -2,6 +2,10 @@ package com.metallumextra.shader;
 
 import com.metallumextra.MetallumExtra;
 import com.metallumextra.shader.pack.BuiltinPack;
+import com.metallumextra.shader.pack.IrisPlan;
+import com.metallumextra.shader.pack.IrisUniforms;
+import com.metallumextra.shader.pack.PackException;
+import com.metallumextra.shader.pack.ProgramSet;
 import com.metallumextra.shader.pack.PackManager;
 import com.metallumextra.shader.pack.ProgramSet;
 import com.metallumextra.shader.pack.ShaderPack;
@@ -53,14 +57,46 @@ public final class ShaderSources {
     public static ShaderSource wrap(final ShaderSource original) {
         return (id, type) -> {
             String ours = Shaders.active() ? get(id, type) : null;
-            if (DUMP_DIR != null) dump(id, type, original.get(id, type));
-            return ours != null ? ours : original.get(id, type);
+            Identifier real = isTerrainProgram(id) ? Identifier.fromNamespaceAndPath("sodium", "blocks/block_layer_opaque") : id;
+            if (DUMP_DIR != null) dump(id, type, original.get(real, type));
+            // A terrain pipeline made for a pack that has since gone (Sodium keeps them) compiles as Sodium's own shader until it is replaced.
+            return ours != null ? ours : original.get(real, type);
         };
+    }
+
+    /** Whether the id is one of {@link IrisPipeline#terrainShaderId}'s: Sodium's terrain shader replaced by a standard pack's program. */
+    private static boolean isTerrainProgram(final Identifier id) {
+        return id.getNamespace().equals("sodium") && id.getPath().startsWith("blocks/iris_");
+    }
+
+    /**
+     * A standard pack's program for a layer of terrain, fitted to Sodium's pipeline; null if the id belongs to a plan that is no longer
+     * current. The id is {@code blocks/iris_<generation>_<program>}.
+     */
+    private static @Nullable String terrain(final Lookup current, final Identifier id, final ShaderType type) {
+        String[] parts = id.getPath().substring("blocks/iris_".length()).split("_", 2);
+        IrisPlan plan = IrisPipeline.currentPlan();
+        if (plan == null || parts.length != 2 || Integer.parseInt(parts[0]) != IrisPipeline.generation()) return null;
+        IrisPlan.Step step = plan.step(parts[1]);
+        ProgramSet.Program program = step == null ? null : step.program();
+        String file = program == null ? null : type == ShaderType.VERTEX ? program.vertex() : program.fragment();
+        if (file == null) return null;
+        return current.files.computeIfAbsent(file, f -> {
+            String text = readExpanded(current.pack, f);
+            try {
+                if (text == null) return Optional.empty();
+                String adapted = IrisTerrain.adapt(IrisPlan.withoutBufferFormats(text), type == ShaderType.VERTEX);
+                return Optional.of(IrisUniforms.rewrite(adapted, step.uniforms()));
+            } catch (PackException e) {
+                throw new IllegalStateException(e.getMessage(), e);
+            }
+        }).orElseThrow();
     }
 
     public static @Nullable String get(final Identifier id, final ShaderType type) {
         PackManager.start();
         Lookup current = lookup;
+        if (isTerrainProgram(id)) return current.pack.standard() ? terrain(current, id, type) : null;
         String extension = type == ShaderType.VERTEX ? ".vsh" : ".fsh";
         boolean ours = id.getNamespace().equals(MetallumExtra.MOD_ID);
         if (ours && id.getPath().startsWith("internal/")) {
@@ -98,7 +134,16 @@ public final class ShaderSources {
         ProgramSet.Program program = programs.find(name);
         String file = program == null ? null : type == ShaderType.VERTEX ? program.vertex() : program.fragment();
         if (file == null) throw new IllegalStateException("Shader pack " + current.pack.name() + " has no " + name + " program for this dimension");
-        return current.files.computeIfAbsent(file, f -> Optional.ofNullable(readExpanded(current.pack, f))).orElseThrow();
+        java.util.List<String> uniforms = IrisPipeline.uniformsOf(name);
+        return current.files.computeIfAbsent(file, f -> {
+            String text = readExpanded(current.pack, f);
+            try {
+                // Loose standard uniforms become one block (see IrisUniforms), the same one in both stages of the program.
+                return Optional.ofNullable(text == null ? null : IrisUniforms.rewrite(IrisPlan.withoutBufferFormats(text), uniforms));
+            } catch (PackException e) {
+                throw new IllegalStateException(e.getMessage(), e);
+            }
+        }).orElseThrow();
     }
 
     /** Use this pack's files from now on. */

@@ -27,7 +27,7 @@ public final class ShaderBindings {
     public static final String SCENE_DEPTH = "MxSceneDepth";
 
     /** In mask order: bit 0 is the uniform block, then the textures. */
-    public static final String[] NAMES = {ShaderGlobals.NAME, SHADOW_MAP, SCENE_COLOR, SCENE_DEPTH, LightColorGrid.SAMPLER};
+    public static final String[] NAMES = {ShaderGlobals.NAME, SHADOW_MAP, SCENE_COLOR, SCENE_DEPTH, LightColorGrid.SAMPLER, com.metallumextra.shader.pack.IrisUniforms.BLOCK};
 
     /** The same masks, by the game's own pipeline object, for when only that is at hand. */
     private static final Map<RenderPipeline, Integer> MASKS = new IdentityHashMap<>();
@@ -38,6 +38,8 @@ public final class ShaderBindings {
     private static final int COLOR = 1 << 2;
     private static final int DEPTH = 1 << 3;
     private static final int LIGHT_COLORS = 1 << 4;
+    /** The block of standard Iris uniforms, for the programs of a standard pack. */
+    private static final int IRIS = 1 << 5;
 
     private ShaderBindings() {
     }
@@ -72,18 +74,22 @@ public final class ShaderBindings {
     }
 
     public static void addUniforms(final List<BindGroupLayout.UniformDescription> uniforms) {
-        if (Shaders.active()) uniforms.add(new BindGroupLayout.UniformDescription(ShaderGlobals.NAME, UniformType.UNIFORM_BUFFER));
+        if (Shaders.active()) {
+            uniforms.add(new BindGroupLayout.UniformDescription(ShaderGlobals.NAME, UniformType.UNIFORM_BUFFER));
+            uniforms.add(new BindGroupLayout.UniformDescription(com.metallumextra.shader.pack.IrisUniforms.BLOCK, UniformType.UNIFORM_BUFFER));
+        }
     }
 
     public static void addSamplers(final List<String> samplers) {
         if (!Shaders.active()) return;
-        for (int i = 1; i < NAMES.length; i++) samplers.add(NAMES[i]);
+        for (int i = 1; i < NAMES.length - 1; i++) samplers.add(NAMES[i]);
     }
 
     /** Called by the render pass when it switches to a pipeline that uses any of the extra names. */
     public static void bind(final RenderPassBackend pass, final int mask) {
         ShaderTargets targets = Shaders.targets();
         if ((mask & GLOBALS) != 0) pass.setUniform(ShaderGlobals.NAME, Shaders.globals().buffer());
+        if ((mask & IRIS) != 0) pass.setUniform(com.metallumextra.shader.pack.IrisUniforms.BLOCK, IrisPipeline.uniformBuffer());
         if (targets.scene() == null) return;
         GpuSampler nearest = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST);
         if ((mask & SHADOW) != 0) {

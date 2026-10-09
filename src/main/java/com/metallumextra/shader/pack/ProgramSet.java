@@ -27,7 +27,9 @@ import java.util.regex.Pattern;
 public final class ProgramSet {
     /** The stages of a frame that run a program over the whole screen, in the order Iris runs them in. */
     public enum Stage {
-        BEGIN, SHADOWCOMP, PREPARE, DEFERRED, COMPOSITE, FINAL;
+        BEGIN, SHADOWCOMP, PREPARE, DEFERRED, COMPOSITE, FINAL,
+        /** The programs that draw the world's geometry; the game draws with them, they are not run as full-screen passes. */
+        GBUFFERS;
 
         /** Whether this version runs the stage's programs; the others are found and reported. */
         public boolean supported() {
@@ -39,6 +41,9 @@ public final class ProgramSet {
 
     /** A program's file name: its stage, then for most stages a number from 1 to 99 (none means the first). */
     private static final Pattern NUMBERED = Pattern.compile("(begin|shadowcomp|prepare|deferred|composite)([1-9]\\d?)?");
+    /** The gbuffers programs that can draw something this version draws with them: terrain, entities and items, moving blocks, particles, weather, and the programs Iris falls back to. */
+    private static final Pattern TERRAIN_PROGRAM = Pattern.compile("gbuffers_(terrain|terrain_solid|terrain_cutout|water|textured_lit|textured|basic"
+            + "|entities|entities_translucent|block|block_translucent|particles|particles_translucent|weather)");
     private static final Pattern FILE = Pattern.compile("(?:(world-?\\d+)/)?([a-z][a-z0-9_]*)\\.(vsh|fsh|gsh|csh|tcs|tes)");
     /** Every other name Iris defines, which this version finds and reports without running. */
     private static final Pattern OTHER = Pattern.compile("setup[1-9]?\\d?|shadow|shadow_[a-z]+|dh_shadow|(?:dh_)?gbuffers_[a-z_]+|(?:begin|shadowcomp|prepare|deferred|composite)[1-9]?\\d?_[a-z]");
@@ -85,7 +90,10 @@ public final class ProgramSet {
             String folder = match.group(1);
             if (folder != null && !folder.equals(dimension)) continue;
             String name = match.group(2);
-            if (name.equals("final") || NUMBERED.matcher(name).matches()) {
+            if (TERRAIN_PROGRAM.matcher(name).matches()) {
+                if (match.group(3).equals("vsh") || match.group(3).equals("fsh")) names.add(name);
+                else if (match.group(3).equals("csh")) computeOnly.add(name);
+            } else if (name.equals("final") || NUMBERED.matcher(name).matches()) {
                 if (match.group(3).equals("vsh") || match.group(3).equals("fsh")) names.add(name);
                 else if (match.group(3).equals("csh")) computeOnly.add(name);
             } else if (OTHER.matcher(name).matches() && !unsupported.contains(name)) {
@@ -112,6 +120,7 @@ public final class ProgramSet {
 
     private static Stage stageOf(final String name) {
         if (name.equals("final")) return Stage.FINAL;
+        if (name.startsWith("gbuffers_")) return Stage.GBUFFERS;
         Matcher match = NUMBERED.matcher(name);
         match.matches();
         return Stage.valueOf(match.group(1).toUpperCase(java.util.Locale.ROOT));

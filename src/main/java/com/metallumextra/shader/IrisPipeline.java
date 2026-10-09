@@ -6,12 +6,18 @@ import com.metallumextra.shader.pack.PackException;
 import com.metallumextra.shader.pack.PackManager;
 import com.metallumextra.shader.pack.ProgramSet;
 import com.metallumextra.shader.pack.ShaderPack;
+import com.metallumextra.shader.pack.IrisUniforms;
 import com.mojang.blaze3d.GpuFormat;
+import com.mojang.blaze3d.buffers.GpuBuffer;
+import com.mojang.blaze3d.pipeline.DepthStencilState;
+import com.mojang.blaze3d.platform.CompareOp;
+import com.mojang.blaze3d.shaders.UniformType;
 import com.mojang.blaze3d.PrimitiveTopology;
 import com.mojang.blaze3d.pipeline.BindGroupLayout;
 import com.mojang.blaze3d.pipeline.ColorTargetState;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.pipeline.RenderTarget;
+import com.mojang.blaze3d.pipeline.TextureTarget;
 import com.mojang.blaze3d.systems.RenderPass;
 import com.mojang.blaze3d.systems.RenderPassDescriptor;
 import com.mojang.blaze3d.systems.RenderSystem;
@@ -66,6 +72,18 @@ public final class IrisPipeline {
 
     /** Development aid: how many more frames to log every program run and the pixels it wrote; see the debug script's {@code trace}. */
     private static int traceFrames;
+    private static final IrisUniformValues UNIFORMS = new IrisUniformValues();
+    private static java.util.Map<String, double[]> uniformValues = java.util.Map.of();
+    private static @Nullable GpuBuffer uniformBuffer;
+    private static @Nullable GpuBuffer depthParams;
+    private static @Nullable RenderPipeline depthPipeline;
+    private static final long START = System.nanoTime();
+    private static final boolean FROZEN_TIME = Boolean.getBoolean("metallumextra.freezeTime");
+    private static long lastFrameAt;
+    private static long frameCounter;
+    private static double frameSeconds = 1.0 / 60.0;
+    private static float far = 128.0F;
+    private static final org.joml.Matrix4f GAME_PROJECTION = new org.joml.Matrix4f();
     private static int frame;
     private static int passes;
     private static int copies;
@@ -111,6 +129,8 @@ public final class IrisPipeline {
                 PIPELINES.clear();
                 plan = built;
                 generation++;
+                // Sodium keeps its terrain pipelines, which carry the plan's shader ids and buffers.
+                com.metallumextra.shader.sodium.SodiumTerrain.resetPipelines();
                 planPack = pack;
                 planDimension = dimension;
                 if (REPORTED.add(pack.name() + "/" + dimension)) {
@@ -124,6 +144,68 @@ public final class IrisPipeline {
             }
         }
         return plan;
+    }
+
+    /** The standard uniforms the program of this name declares (what its block holds); empty when it has none. */
+    public static List<String> uniformsOf(final String program) {
+        IrisPlan current = plan();
+        IrisPlan.Step step = current == null ? null : current.step(program);
+        return step == null ? List.of() : step.uniforms();
+    }
+
+    /** The tilt of the sun's path the pack asked for, in degrees. */
+    static float sunPathRotation() {
+        return plan == null ? 0.0F : plan.sunPathRotation();
+    }
+
+    /** The current plan, or null if there is none: it is made when a frame starts, so what Sodium asks during the frame agrees with it. */
+    public static @Nullable IrisPlan currentPlan() {
+        return plan;
+    }
+
+    // ---- terrain: Sodium draws it with the pack's program ----
+
+    private static IrisPlan.@Nullable Layer terrainLayer;
+
+    /**
+     * The id of the shader for a layer of terrain, which Sodium builds its pipeline with in place of its own; null when the pack has no
+     * program for the layer. The id names the program and the plan it comes from ({@code sodium:blocks/iris_<generation>_<program>}),
+     * and is read back by {@link ShaderSources}. Sodium keeps its pipelines, so they are thrown away whenever the plan changes.
+     */
+    public static net.minecraft.resources.@Nullable Identifier terrainShaderId(final IrisPlan.Layer layer) {
+        IrisPlan current = inUse() ? plan : null;
+        IrisPlan.Step step = current == null ? null : current.terrainStep(layer);
+        return step == null ? null : net.minecraft.resources.Identifier.fromNamespaceAndPath("sodium", "blocks/iris_" + generation + "_" + step.program().name());
+    }
+
+    /** The formats of the buffers a layer's program writes besides the first (which is the game's own image); Sodium's pipeline declares them. */
+    public static List<GpuFormat> terrainExtraFormats(final IrisPlan.Layer layer) {
+        IrisPlan current = inUse() ? plan : null;
+        IrisPlan.Step step = current == null ? null : current.terrainStep(layer);
+        if (step == null) return List.of();
+        List<GpuFormat> formats = new java.util.ArrayList<>();
+        for (int i = 1; i < step.writes().length; i++) formats.add(current.buffers().get(step.writes()[i]).format());
+        return formats;
+    }
+
+    /** Sodium is about to draw a layer of terrain; the pass it makes gets the buffers the layer's program writes. */
+    public static void beginTerrain(final IrisPlan.Layer layer) {
+        terrainLayer = layer;
+    }
+
+    public static void endTerrain() {
+        terrainLayer = null;
+    }
+
+    /** Called for every render pass about to be made: the one for terrain drawn with a pack's program gets that program's extra buffers. */
+    public static void attachTerrainTargets(final RenderPassDescriptor descriptor) {
+        IrisPlan.Layer layer = terrainLayer;
+        if (layer == null || !inUse() || plan == null || descriptor.colorAttachments().size() != 1) return;
+        IrisPlan.Step step = plan.terrainStep(layer);
+        if (step == null || step.writes().length < 2 || TARGETS.width() == 0) return;
+        RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
+        if (!ready(main)) return;
+        for (int i = 1; i < step.writes().length; i++) descriptor.withColorAttachment(TARGETS.read(step.writes()[i]));
     }
 
     /** The generation of the plan that is current; the shader ids of its programs carry it. */
@@ -141,9 +223,16 @@ public final class IrisPipeline {
     public static void forget() {
         plan = null;
         planPack = null;
+        terrainLayer = null;
+        com.metallumextra.shader.sodium.SodiumTerrain.resetPipelines();
         PIPELINES.clear();
         BLITS.clear();
         TARGETS.release();
+        if (uniformBuffer != null) {
+            uniformBuffer.close();
+            uniformBuffer = null;
+        }
+        depthPipeline = null;
     }
 
     // ---- the stages ----
@@ -161,6 +250,7 @@ public final class IrisPipeline {
             copies = 0;
             worldCopied = false;
             TARGETS.clearForFrame(fog);
+            captureUniforms(current, main);
             run(current.steps(ProgramSet.Stage.BEGIN), main);
             run(current.steps(ProgramSet.Stage.PREPARE), main);
         });
@@ -174,7 +264,7 @@ public final class IrisPipeline {
             List<IrisPlan.Step> deferred = current.steps(ProgramSet.Stage.DEFERRED);
             RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
             if (!ready(main)) return;
-            TARGETS.snapshotDepth(main, false);
+            snapshotDepth(main, false);
             if (current.usesDepth(1) || current.usesDepth(2)) copies++;
             if (deferred.isEmpty()) return;
             worldIntoColor0(main);
@@ -189,7 +279,7 @@ public final class IrisPipeline {
             IrisPlan current = plan();
             RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
             if (current == null || !current.afterWorld() || !ready(main)) return;
-            TARGETS.snapshotDepth(main, true);
+            snapshotDepth(main, true);
             if (current.usesDepth(0)) copies++;
             if (current.steps(ProgramSet.Stage.DEFERRED).isEmpty() || !worldCopied) worldIntoColor0(main);
             run(current.steps(ProgramSet.Stage.COMPOSITE), main);
@@ -264,6 +354,105 @@ public final class IrisPipeline {
         return builder.build();
     }
 
+    // ---- the standard uniforms ----
+
+    /** Works out this frame's values of the standard uniforms and writes each program's block. Called with no render pass open. */
+    private static void captureUniforms(final IrisPlan current, final RenderTarget main) {
+        Minecraft minecraft = Minecraft.getInstance();
+        var level = minecraft.level;
+        var state = minecraft.gameRenderer.gameRenderState();
+        var camera = state.levelRenderState.cameraRenderState;
+        var sky = state.levelRenderState.skyRenderState;
+        var lightmap = state.lightmapRenderState;
+        long now = System.nanoTime();
+        frameSeconds = lastFrameAt == 0 ? 1.0 / 60.0 : (now - lastFrameAt) / 1.0e9;
+        lastFrameAt = now;
+        far = minecraft.options.getEffectiveRenderDistance() * 16.0F;
+        GAME_PROJECTION.set(Shaders.globals().projection);
+        int skyColor = sky.skyColor;
+        var player = minecraft.player;
+        var inputs = new IrisUniformValues.Inputs(new org.joml.Matrix4f(Shaders.globals().view), new org.joml.Matrix4f(GAME_PROJECTION), far,
+                camera.pos.x, camera.pos.y, camera.pos.z, sky.sunAngle, sky.moonAngle, Shaders.sunPathTilt(),
+                level.getOverworldClockTime(), sky.moonPhase.index(), level.getRainLevel(1.0F), level.getThunderLevel(1.0F),
+                FROZEN_TIME ? 0.0 : (now - START) / 1.0e9, frameSeconds, frameCounter++, main.width, main.height,
+                (float) (double) minecraft.options.gamma().get(), lightmap.nightVisionEffectIntensity,
+                player != null && player.hasEffect(net.minecraft.world.effect.MobEffects.BLINDNESS) ? 1.0F : 0.0F, lightmap.darknessEffectScale,
+                camera.fogData.color.x, camera.fogData.color.y, camera.fogData.color.z,
+                ((skyColor >> 16) & 255) / 255.0F, ((skyColor >> 8) & 255) / 255.0F, (skyColor & 255) / 255.0F,
+                level.getBrightness(net.minecraft.world.level.LightLayer.BLOCK, camera.blockPos), level.getBrightness(net.minecraft.world.level.LightLayer.SKY, camera.blockPos),
+                switch (camera.fogType) {
+                    case WATER -> 1;
+                    case LAVA -> 2;
+                    case POWDER_SNOW -> 3;
+                    default -> 0;
+                });
+        uniformValues = UNIFORMS.frame(inputs);
+        if (traceFrames > 0) {
+            MetallumExtra.LOGGER.info("[Metallum Extra] iris frame {} game projection: m00 {} m11 {} m22 {} m32 {} m23 {} m33 {} m20 {} m21 {} far {}", frame, GAME_PROJECTION.m00(), GAME_PROJECTION.m11(),
+                    GAME_PROJECTION.m22(), GAME_PROJECTION.m32(), GAME_PROJECTION.m23(), GAME_PROJECTION.m33(), GAME_PROJECTION.m20(), GAME_PROJECTION.m21(), far);
+        }
+        IrisUniforms.Layout layout = IrisUniforms.layout();
+        java.nio.ByteBuffer data = java.nio.ByteBuffer.allocateDirect(layout.size()).order(java.nio.ByteOrder.nativeOrder());
+        IrisUniformValues.write(layout, uniformValues, data);
+        data.position(0).limit(layout.size());
+        RenderSystem.getDevice().createCommandEncoder().writeToBuffer(uniformBuffer().slice(), data);
+    }
+
+    /**
+     * The one buffer behind the {@value IrisUniforms#BLOCK} block of every program, those of this pipeline and the game's own pipelines
+     * that run a pack's shaders alike: the block always has every member (see {@link IrisUniforms#rewrite}), so one layout fits all.
+     */
+    public static GpuBuffer uniformBuffer() {
+        if (uniformBuffer == null) {
+            uniformBuffer = RenderSystem.getDevice().createBuffer(() -> "Metallum Extra standard uniforms", GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_COPY_DST, IrisUniforms.layout().size());
+        }
+        return uniformBuffer;
+    }
+
+    /** This frame's value of a standard uniform, for the debug script and tests. */
+    public static double @Nullable [] uniform(final String name) {
+        return uniformValues.get(name);
+    }
+
+    // ---- depth ----
+
+    /**
+     * Copies the game's depth into {@code depthtex0} (with translucent terrain) or {@code depthtex1} (without it) as OpenGL depth:
+     * a full-screen pass that converts each value, since the game's own depth runs the other way and cannot be used as it is.
+     */
+    private static void snapshotDepth(final RenderTarget world, final boolean withTranslucent) {
+        TextureTarget target = TARGETS.depthTarget(withTranslucent);
+        if (target == null) return;
+        if (depthParams == null) {
+            depthParams = RenderSystem.getDevice().createBuffer(() -> "Metallum Extra depth conversion", GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_COPY_DST, 16);
+        }
+        java.nio.ByteBuffer data = java.nio.ByteBuffer.allocateDirect(16).order(java.nio.ByteOrder.nativeOrder());
+        data.putFloat(0, GAME_PROJECTION.m22()).putFloat(4, GAME_PROJECTION.m32()).putFloat(8, IrisUniformValues.NEAR).putFloat(12, far);
+        RenderSystem.getDevice().createCommandEncoder().writeToBuffer(depthParams.slice(), data);
+        if (depthPipeline == null) {
+            depthPipeline = RenderPipeline.builder()
+                    .withLocation(Identifier.fromNamespaceAndPath(MetallumExtra.MOD_ID, "pipeline/internal/depth"))
+                    .withVertexShader(BLIT_VERTEX)
+                    .withFragmentShader(Identifier.fromNamespaceAndPath(MetallumExtra.MOD_ID, "internal/depth"))
+                    .withBindGroupLayout(BindGroupLayout.builder().withSampler("u_Depth").withUniform("DepthParams", UniformType.UNIFORM_BUFFER).build())
+                    .withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, true))
+                    .withColorTargetState(new ColorTargetState(Optional.empty(), GpuFormat.R8_UNORM, ColorTargetState.WRITE_COLOR))
+                    .withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
+                    .build();
+        }
+        RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "Metallum Extra depth")
+                .withRenderArea(new RenderPass.RenderArea(0, 0, TARGETS.width(), TARGETS.height()))
+                .withColorAttachment(target.getColorTextureView())
+                .withDepthAttachment(target.getDepthTextureView());
+        try (RenderPass pass = RenderSystem.getDevice().createCommandEncoder().createRenderPass(descriptor)) {
+            pass.setPipeline(depthPipeline);
+            pass.setUniform("DepthParams", depthParams);
+            pass.bindTexture("u_Depth", world.getDepthTextureView(), RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST));
+            pass.draw(3, 1, 0, 0);
+        }
+        passes++;
+    }
+
     // ---- moving the world's image between the game's target and buffer 0 ----
 
     private static void worldIntoColor0(final RenderTarget main) {
@@ -308,6 +497,45 @@ public final class IrisPipeline {
 
     // ---- failure and tracing ----
 
+    /** How many of the first pixels of the top row {@link #traceFloats} logs. */
+    private static final int ROW_PIXELS = 64;
+
+    /**
+     * Development aid: logs the first pixels of the top row of a buffer of any format as numbers, which is how a test sees
+     * values that do not fit in 8 bits. The row is copied to a buffer the CPU can read; the log line comes when the copy is done.
+     */
+    private static void traceFloats(final int number, final String program, final int index, final TextureTarget target, final GpuFormat format) {
+        int width = TARGETS.width();
+        int height = TARGETS.height();
+        int pixel = IrisTargets.bytesPerPixel(format);
+        GpuBuffer buffer = RenderSystem.getDevice().createBuffer(() -> "Metallum Extra trace", GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, (long) width * height * pixel);
+        RenderSystem.getDevice().createCommandEncoder().copyTextureToBuffer(target.getColorTexture(), buffer, 0, () -> {
+            try (com.mojang.blaze3d.buffers.GpuBufferSlice.MappedView view = buffer.map(true, false)) {
+                java.nio.ByteBuffer data = view.data().order(java.nio.ByteOrder.nativeOrder());
+                String name = format.name();
+                int channels = name.startsWith("RGBA") ? 4 : name.startsWith("RGB") ? 3 : name.startsWith("RG") ? 2 : 1;
+                int bytes = pixel / channels;
+                StringBuilder text = new StringBuilder();
+                for (int x = 0; x < Math.min(ROW_PIXELS, width); x++) {
+                    text.append(" (");
+                    for (int c = 0; c < 4; c++) {
+                        double value = 0;
+                        if (c < channels) {
+                            int at = x * pixel + c * bytes;
+                            value = name.contains("FLOAT") ? (bytes == 4 ? data.getFloat(at) : Float.float16ToFloat(data.getShort(at)))
+                                    : bytes == 1 ? (data.get(at) & 255) / 255.0 : (data.getShort(at) & 65535) / 65535.0;
+                        }
+                        text.append(c > 0 ? "," : "").append(String.format(java.util.Locale.ROOT, "%.6f", value));
+                    }
+                    text.append(')');
+                }
+                MetallumExtra.LOGGER.info("[Metallum Extra] iris frame {} program {} colortex{} floats {}x{} row0{}", number, program, index, width, height, text);
+            } finally {
+                buffer.close();
+            }
+        }, 0);
+    }
+
     /** A pack that breaks while it runs is put aside, and the one before it (or the built-in shaders) takes over. */
     private static void guarded(final Runnable body) {
         try {
@@ -333,9 +561,16 @@ public final class IrisPipeline {
         MetallumExtra.LOGGER.info("[Metallum Extra] iris frame {} stage {} program {} writes {} reads {}", frame, program.stage().name().toLowerCase(java.util.Locale.ROOT),
                 program.name(), java.util.Arrays.toString(step.writes()), step.inputs().stream().map(IrisPlan.Input::name).toList());
         int number = frame;
+        for (String name : step.uniforms()) {
+            double[] value = uniformValues.get(name);
+            StringBuilder text = new StringBuilder();
+            for (double component : value) text.append(String.format(java.util.Locale.ROOT, " %.6f", component));
+            MetallumExtra.LOGGER.info("[Metallum Extra] iris frame {} program {} uniform {}{}", number, program.name(), name, text);
+        }
         for (int index : step.writes()) {
-            if (TARGETS.spec(index).format() != GpuFormat.RGBA8_UNORM) {
-                MetallumExtra.LOGGER.info("[Metallum Extra] iris frame {} program {} colortex{} not read back ({})", number, program.name(), index, TARGETS.spec(index).format());
+            GpuFormat format = TARGETS.spec(index).format();
+            if (format != GpuFormat.RGBA8_UNORM) {
+                traceFloats(number, program.name(), index, TARGETS.readTarget(index), format);
                 continue;
             }
             int buffer = index;

@@ -408,6 +408,8 @@ public final class Shaders {
 
     /** The tilt of the sun's path, in radians: a turn about the east-west axis. */
     public static float sunPathTilt() {
+        // A standard pack says how its sun moves, in its programs; the setting is for the built-in shaders.
+        if (IrisPipeline.inUse()) return (float) Math.toRadians(IrisPipeline.sunPathRotation());
         return (float) Math.toRadians(ExtraConfig.get().sunPathRotation);
     }
 

@@ -63,7 +63,8 @@ and `depthtex0` to `depthtex2` can be sampled; only the ones the programs name a
   `const int shadowMapResolution = 2048; // [1024 2048 4096]` the same for a constant;
 - `#define BLOOM` and `//#define BLOOM` are an on-or-off switch, on and off by default.
 The player's choices are written into the files as they are read (a chosen value replaces the one in its line, a switch is commented out or
-in), so programs, buffers and the conditions above all see them; changing one compiles the pack again. Names for the screen come from
+in), so programs, buffers and the conditions above all see them. Menu edits stay pending until Apply, which saves them and
+recompiles the selected pack once; changing pages or returning to the shader list does not apply them. Names for the screen come from
 `lang/en_us.lang` (`option.QUALITY=Quality`). What a program asks for is what its preprocessor would leave: a sampler behind
 an `#ifdef` of an option that is off is not asked for.
 

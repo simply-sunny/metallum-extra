@@ -70,6 +70,48 @@ public final class PackOptions {
         save();
     }
 
+    /** Pending menu edits, isolated from values used to render and compile shaders. */
+    public static final class Draft {
+        private final String pack;
+        private final java.util.Map<PackOption, Integer> original = new java.util.LinkedHashMap<>();
+        private final java.util.Map<PackOption, Integer> pending = new java.util.LinkedHashMap<>();
+
+        public Draft(final String pack, final java.util.List<PackOption> options) {
+            this.pack = pack;
+            for (PackOption option : options) original.put(option, PackOptions.get(pack, option));
+            pending.putAll(original);
+        }
+
+        public int get(final PackOption option) { return pending.get(option); }
+
+        public void set(final PackOption option, final int index) {
+            if (!pending.containsKey(option) || index < 0 || index >= option.values().size()) {
+                throw new IllegalArgumentException("Invalid pack option value: " + option.id());
+            }
+            pending.put(option, index);
+        }
+
+        public boolean changed() { return !pending.equals(original); }
+
+        public void reset() {
+            pending.replaceAll((option, index) -> option.defaultIndex());
+        }
+
+        public void apply() {
+            synchronized (PackOptions.class) {
+                if (!changed()) return;
+                for (var entry : pending.entrySet()) {
+                    PackOption option = entry.getKey();
+                    int index = entry.getValue();
+                    if (index == option.defaultIndex()) CHOSEN.remove(key(pack, option));
+                    else CHOSEN.setProperty(key(pack, option), option.values().get(index));
+                }
+                save();
+                original.putAll(pending);
+            }
+        }
+    }
+
     private static void save() {
         Path file = file();
         try {

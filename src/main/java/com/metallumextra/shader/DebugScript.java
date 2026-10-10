@@ -5,7 +5,7 @@ import com.metallumextra.ExtraConfigScreen;
 import com.metallumextra.Quality;
 import com.metallumextra.MetallumExtra;
 import com.metallumextra.ShaderKeys;
-import com.metallumextra.ShaderOptionsScreen;
+import com.metallumextra.PackOptionsScreen;
 import com.metallumextra.ShaderPackScreen;
 import com.metallumextra.shader.pack.BuiltinOptions;
 import com.metallumextra.shader.pack.PackManager;
@@ -226,7 +226,7 @@ public final class DebugScript {
                 pause(100);
             }
             case "screen" -> {
-                minecraft.gui.setScreen(rest.equals("settings") ? new ExtraConfigScreen(null) : rest.equals("packs") ? new ShaderPackScreen(null) : rest.equals("options") ? new ShaderOptionsScreen(null, null)
+                minecraft.gui.setScreen(rest.equals("settings") ? new ExtraConfigScreen(null) : rest.equals("packs") ? new ShaderPackScreen(null) : rest.equals("options") ? new PackOptionsScreen(new ShaderPackScreen(null), null)
                         : rest.equals("inventory") ? new net.minecraft.client.gui.screens.inventory.InventoryScreen(minecraft.player) : null);
                 pause(300);
             }

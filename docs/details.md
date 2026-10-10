@@ -209,8 +209,10 @@ game won't crash. To add a new release:
 ### Shader packs
 Open the shader menu from **Video Settings → Shaders** (a link under Metallum Extra in Sodium's sidebar), from Mod
 Menu → Metallum Extra → Shaders..., or with the **I** key. The menu has OFF and the packs in a list, **Shaders Folder**,
-**Done** (which reads **Apply** while a choice is not yet applied) and **Shader Options...** (quality and each effect;
-these settings are no longer on the Metallum Extra page). Escape closes the menu and drops what was not applied. **Drag a pack's ZIP onto the menu** to copy it into
+**Done** (which reads **Apply** while a pack choice or option change is pending) and **Shader Options...**, which opens
+that pack's paginated options directly. Option edits and Reset stay pending until **Apply**, which saves them, applies the
+selected pack and returns to the game. Escape from options returns to the shader list without applying; Escape from the
+list drops pending changes and returns to the previous screen. **Drag a pack's ZIP onto the menu** to copy it into
 `shaderpacks/` and list it (only ZIPs that are shader packs; an existing file is never overwritten).
 
 There is no separate on/off setting any more: OFF in the list is off. Three keys are in Controls under Miscellaneous:

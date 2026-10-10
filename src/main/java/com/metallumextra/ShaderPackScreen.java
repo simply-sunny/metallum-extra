@@ -2,6 +2,7 @@ package com.metallumextra;
 
 import com.metallumextra.shader.Shaders;
 import com.metallumextra.shader.pack.PackManager;
+import com.metallumextra.shader.pack.PackOptions;
 import com.metallumextra.shader.pack.ShaderPack;
 import com.metallumextra.shader.pack.PackManager.Entry;
 import com.metallumextra.shader.pack.ZipPack;
@@ -31,8 +32,8 @@ import java.util.List;
  * along the bottom, with Shader Options... where OptiFine has it. Pack settings are not shown.
  * <p>
  * Clicking a row only chooses it. The middle button reads Done until something chosen has not been applied, then
- * Apply; it applies and stays open, and reads Done again. Done closes the menu; Escape closes it and drops
- * what was not applied. The folder is read again every time the menu opens, so there is nothing to reload.
+ * Apply; it saves pending pack options, applies the choice and returns to the game. Done closes the menu;
+ * Escape closes it and drops what was not applied. The folder is read again every time the menu opens, so there is nothing to reload.
  */
 public final class ShaderPackScreen extends Screen {
     /** The id of the OFF row. */
@@ -50,6 +51,7 @@ public final class ShaderPackScreen extends Screen {
     private List<Entry> shown;
     /** The row chosen in the menu: {@link #OFF_ID} or a pack's id. */
     private String chosen;
+    private final java.util.Map<String, PackOptions.Draft> drafts = new java.util.LinkedHashMap<>();
     /** A row that was clicked but cannot be used, so its reason can be shown. */
     private @Nullable String refused;
     /** The pack last applied from this menu; if it then breaks, the choice moves to what took over. */
@@ -77,8 +79,8 @@ public final class ShaderPackScreen extends Screen {
         return ExtraConfig.get().shadersEnabled ? PackManager.activeId() : OFF_ID;
     }
 
-    private boolean changed() {
-        return !chosen.equals(inUse());
+    boolean changed() {
+        return !chosen.equals(inUse()) || drafts.values().stream().anyMatch(PackOptions.Draft::changed);
     }
 
     @Override
@@ -91,12 +93,12 @@ public final class ShaderPackScreen extends Screen {
                 .bounds(width / 2 - 154, bottom, 100, ROW).build());
         done = addRenderableWidget(Button.builder(doneLabel(), button -> {
             if (changed()) {
-                apply();
+                applyAndClose();
             } else {
                 onClose();
             }
         }).bounds(width / 2 - 50, bottom, 100, ROW).build());
-        options = addRenderableWidget(Button.builder(Component.literal("Shader Options..."), button -> minecraft.gui.setScreen(new ShaderOptionsScreen(this, chosenPack())))
+        options = addRenderableWidget(Button.builder(Component.literal("Shader Options..."), button -> minecraft.gui.setScreen(new PackOptionsScreen(this, chosenPack())))
                 .bounds(width / 2 + 54, bottom, 100, ROW).build());
         options.active = !chosen.equals(OFF_ID);
     }
@@ -107,7 +109,16 @@ public final class ShaderPackScreen extends Screen {
         return entry == null ? null : entry.pack();
     }
 
-    private Component doneLabel() {
+    PackOptions.Draft optionsFor(final ShaderPack pack) {
+        return drafts.computeIfAbsent(pack.name(), name -> new PackOptions.Draft(name, pack.options()));
+    }
+
+    void applyAndClose() {
+        apply();
+        minecraft.gui.setScreen(null);
+    }
+
+    Component doneLabel() {
         return changed() ? Component.literal("Apply") : CommonComponents.GUI_DONE;
     }
 
@@ -126,6 +137,10 @@ public final class ShaderPackScreen extends Screen {
 
     /** Puts what is chosen into use. A pack changes at the start of the next frame. */
     private void apply() {
+        String activeName = PackManager.active().name();
+        PackOptions.Draft activeDraft = drafts.get(activeName);
+        boolean reload = activeDraft != null && activeDraft.changed() && chosen.equals(inUse());
+        drafts.values().forEach(PackOptions.Draft::apply);
         if (chosen.equals(OFF_ID)) {
             // Switching off keeps the chosen pack for when shaders come back.
             if (ExtraConfig.get().shadersEnabled) ExtraConfig.get().setShadersEnabled(false);
@@ -137,7 +152,8 @@ public final class ShaderPackScreen extends Screen {
                 if (!ExtraConfig.get().shadersEnabled) ExtraConfig.get().setShadersEnabled(true);
             }
         }
-        done.setMessage(doneLabel());
+        if (reload) Shaders.packOptionsChanged();
+        if (done != null) done.setMessage(doneLabel());
     }
 
     private void openFolder() {
@@ -337,7 +353,7 @@ public final class ShaderPackScreen extends Screen {
             chosen = id;
             list.setSelected(this);
             done.setMessage(doneLabel());
-            if (doubleClick) apply();
+            if (doubleClick) applyAndClose();
             return true;
         }
 

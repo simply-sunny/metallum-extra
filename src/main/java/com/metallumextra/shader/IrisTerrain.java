@@ -18,7 +18,7 @@ import java.util.regex.Pattern;
  */
 public final class IrisTerrain {
     /** The vertex inputs the prelude provides, by name. */
-    private static final String[] INPUTS = {"vaPosition", "vaColor", "vaUV0", "vaUV2", "vaNormal", "mc_Entity", "mc_chunkFade", "mc_midTexCoord"};
+    private static final String[] INPUTS = {"vaPosition", "vaColor", "vaUV0", "vaUV2", "vaNormal", "mc_Entity", "mc_chunkFade", "mc_midTexCoord", "at_tangent", "at_midBlock"};
     private static final Pattern HEADER_LINE = Pattern.compile("(?m)^\\s*(#version[^\\n]*|#extension[^\\n]*)$");
     private static final String VERTEX_PRELUDE = InternalShaders.read("terrain_vertex.glsl");
     private static final String FRAGMENT_PRELUDE = InternalShaders.read("terrain_fragment.glsl");
@@ -47,6 +47,11 @@ public final class IrisTerrain {
      *                   (see {@link BlockTypes}) in place of an id from block.properties, which is not supported
      */
     public static String adapt(final String source, final boolean vertex, final boolean shadow, final boolean blockTypes) throws PackException {
+        return adapt(source, vertex, shadow, blockTypes, false);
+    }
+
+    /** @param blockIds the pack gives blocks ids in block.properties (see {@link BlockIds}): {@code mc_Entity.x} is the id */
+    public static String adapt(final String source, final boolean vertex, final boolean shadow, final boolean blockTypes, final boolean blockIds) throws PackException {
         String text = source;
         if (vertex) {
             for (String name : INPUTS) {
@@ -65,6 +70,7 @@ public final class IrisTerrain {
         text = bound[0];
         StringBuilder prelude = new StringBuilder("\n");
         if (blockTypes) prelude.append("#define MX_BLOCK_TYPES\n");
+        if (blockIds) prelude.append("#define MX_BLOCK_IDS\n");
         prelude.append(bound[1]);
         if (shadow) {
             text = IrisWorldAdapter.stripDeclarations(text, IrisWorldAdapter.SHADOW_MATRICES);

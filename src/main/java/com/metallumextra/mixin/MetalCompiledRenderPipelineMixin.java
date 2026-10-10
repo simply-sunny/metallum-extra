@@ -45,7 +45,7 @@ public abstract class MetalCompiledRenderPipelineMixin implements MultiTarget.Pi
     private byte @Nullable [] metallumExtra$samplerSlots;
 
     @Unique
-    private int metallumExtra$shaderBindings;
+    private long metallumExtra$shaderBindings;
 
     @Shadow
     abstract MemorySegment getNativePipeline(boolean depth);
@@ -76,7 +76,7 @@ public abstract class MetalCompiledRenderPipelineMixin implements MultiTarget.Pi
     }
 
     @Override
-    public int metallumExtra$shaderBindings() {
+    public long metallumExtra$shaderBindings() {
         return this.metallumExtra$shaderBindings;
     }
 

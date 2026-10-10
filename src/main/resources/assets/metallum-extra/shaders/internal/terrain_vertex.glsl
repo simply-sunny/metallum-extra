@@ -77,8 +77,16 @@ vec3 mx_va_normal() {
     return vec3(0.0, 1.0, 0.0);
 }
 
-// x: the block's id from block.properties, which is not supported yet, so -1 as Iris sends for a block with no id.
-// y: 1 for fluids, -1 for everything else.
+// x: the block's id from block.properties, y: 1 for fluids and -1 for everything else.
+#ifdef MX_BLOCK_IDS
+// The mesh keeps a small number for the block's id (the color's alpha byte and bit 6 of the material byte); MxBlockIds, which every program that reads
+// it has in its uniform block, turns that number into the id. 0 is "no id", which a program reads as -1 as in Iris.
+vec2 mx_mc_entity() {
+    uint index = uint(a_Color.a * 255.0 + 0.5) | (((a_LightAndData.z >> 6u) & 1u) << 8u);
+    int id = MxBlockIds[index >> 2u][index & 3u];
+    return vec2(index == 0u ? -1.0 : float(id), -1.0);
+}
+#else
 vec2 mx_mc_entity() {
     uint type = uint(a_Color.a * 255.0 + 0.5);
 #ifdef MX_BLOCK_TYPES
@@ -87,6 +95,7 @@ vec2 mx_mc_entity() {
     return vec2(-1.0, (type == 1u || type == 2u) ? 1.0 : -1.0);
 #endif
 }
+#endif
 
 #ifndef MX_SHADOW
 // How far a newly built section has come in fading from the fog (0 just built, 1 done): Sodium's own fade-in.
@@ -97,6 +106,33 @@ float mx_chunk_fade() {
 }
 #endif
 
+// The direction a quad's texture runs in (u increasing) is kept in four spare bits of the vertex position (see SodiumMeshBufferShaderMixin), as one of
+// these directions; the side of the handedness (which way v runs, given the normal) is bit 7 of the material byte.
+const vec3 MX_TANGENTS[16] = vec3[16](vec3(1.0, 0.0, 0.0), vec3(-1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, -1.0, 0.0), vec3(0.0, 0.0, 1.0), vec3(0.0, 0.0, -1.0),
+        vec3(0.7071068, 0.0, 0.7071068), vec3(0.7071068, 0.0, -0.7071068), vec3(-0.7071068, 0.0, 0.7071068), vec3(-0.7071068, 0.0, -0.7071068),
+        vec3(1.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0));
+
+vec4 mx_at_tangent() {
+    uint code = (a_Position.x >> 30u) | ((a_Position.y >> 30u) << 2u);
+    float handedness = ((a_LightAndData.z >> 7u) & 1u) == 1u ? -1.0 : 1.0;
+    return vec4(MX_TANGENTS[code], handedness);
+}
+
+// Where the vertex is from the middle of its block, in 1/64 of a block (-32 to 32). The mesh does not say which block a vertex belongs to, and a vertex
+// on the edge of a block could be in either; the side of the quad's middle it is on (the same bits that give mid_tex_coord), turned into a direction with the
+// tangent, settles it: the block is the one a hair towards the middle of the quad.
+vec4 mx_mid_block() {
+    vec4 tangent = mx_at_tangent();
+    vec3 normal = mx_va_normal();
+    vec2 toCenter = vec2(a_TexCoord >> 15u) * 2.0 - 1.0;
+    vec3 inQuad = tangent.xyz * toCenter.x + cross(normal, tangent.xyz) * tangent.w * toCenter.y;
+    vec3 position = mx_va_position();
+    vec3 cell = floor(position + inQuad * 0.02);
+    return vec4((position - cell - 0.5) * 64.0, 0.0);
+}
+
+#define at_tangent mx_at_tangent()
+#define at_midBlock mx_mid_block()
 #define vaPosition mx_va_position()
 #define vaColor mx_va_color()
 #define vaUV0 mx_va_uv0()

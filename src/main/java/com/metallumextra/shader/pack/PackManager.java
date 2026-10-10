@@ -48,6 +48,9 @@ public final class PackManager {
     private static final Entry BUILTIN_ENTRY = new Entry(BUILTIN_ID, BuiltinPack.NAME, BUILTIN, null, "");
 
     private static final java.util.Set<String> WARNED = ConcurrentHashMap.newKeySet();
+    /** The packs that were read, by file name and fingerprint, so opening the menu does not read them again. */
+    private static final java.util.Set<String> VALIDATED = ConcurrentHashMap.newKeySet();
+    private static final Map<String, ZipPack> OPENED = new ConcurrentHashMap<>();
     private static final Map<String, Failure> FAILURES = new ConcurrentHashMap<>();
 
     private static volatile List<Entry> entries = List.of(BUILTIN_ENTRY);
@@ -112,12 +115,18 @@ public final class PackManager {
                 continue;
             }
             try {
-                ZipPack pack = ZipPack.open(zip);
-                validate(pack);
+                // Checking a pack plans every program of every dimension, which takes seconds for a big pack, so it waits for the player to apply it
+                // (see commitPending). Opening the menu only reads the file, and once per version of it.
+                ZipPack pack = OPENED.get(id + ":" + fingerprint);
+                if (pack == null) {
+                    pack = ZipPack.open(zip);
+                    ProgramSet.validate(pack);
+                    OPENED.put(id + ":" + fingerprint, pack);
+                }
                 Failure failure = FAILURES.get(id);
                 String error = failure != null && failure.fingerprint.equals(fingerprint) ? failure.message : null;
                 result.add(new Entry(id, name, pack, error, fingerprint));
-            } catch (PackException e) {
+            } catch (RuntimeException | PackException e) {
                 // Said once per version of the file, not every time the menu opens.
                 if (WARNED.add(id + ":" + fingerprint)) {
                     MetallumExtra.LOGGER.warn("[Metallum Extra] Shader pack {} is not usable: {}", id, e.getMessage());
@@ -134,7 +143,7 @@ public final class PackManager {
      * @throws PackException naming what is missing
      */
     public static void validate(final ShaderPack pack) throws PackException {
-        ProgramSet.validate(pack);
+        ProgramSet.validateFully(pack);
     }
 
     private static String stem(final Path zip) {
@@ -239,6 +248,20 @@ public final class PackManager {
             lastWorkingFingerprint = activeFingerprint;
         }
         FAILURES.remove(entry.id);
+        if (entry.pack != null && !VALIDATED.contains(entry.id + ":" + entry.fingerprint)) {
+            try {
+                validate(entry.pack);
+                VALIDATED.add(entry.id + ":" + entry.fingerprint);
+            } catch (RuntimeException | PackException e) {
+                // The pack cannot run: it is listed with the reason, and what was in use stays in use.
+                MetallumExtra.LOGGER.warn("[Metallum Extra] Shader pack {} cannot be used: {}", entry.id, e.getMessage());
+                FAILURES.put(entry.id, new Failure(e.getMessage(), entry.fingerprint));
+                entries = markFailed(entries, entry.id, e.getMessage());
+                problem = "Shader pack " + entry.id + " cannot be used: " + e.getMessage();
+                ExtraConfig.get().setShaderPack(activeId);
+                return changed;
+            }
+        }
         apply(entry);
         MetallumExtra.LOGGER.info("[Metallum Extra] Shader pack: {}", entry.name);
         return true;

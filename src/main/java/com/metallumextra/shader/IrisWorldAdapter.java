@@ -1,5 +1,6 @@
 package com.metallumextra.shader;
 
+import com.metallumextra.shader.pack.IrisPlan;
 import com.metallumextra.shader.pack.IrisUniforms;
 import com.mojang.blaze3d.pipeline.BindGroupLayout;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
@@ -40,7 +41,7 @@ public final class IrisWorldAdapter {
 
     /** The matrices of the programs that draw the world, which for these pipelines are the game's per-draw ones, not a frame's. */
     private static final String[] MATRICES = {"modelViewMatrix", "modelViewMatrixInverse", "projectionMatrix", "projectionMatrixInverse", "normalMatrix"};
-    private static final String[] INPUTS = {"vaPosition", "vaColor", "vaUV0", "vaUV1", "vaUV2", "vaNormal", "mc_Entity", "mc_chunkFade", "mc_midTexCoord"};
+    private static final String[] INPUTS = {"vaPosition", "vaColor", "vaUV0", "vaUV1", "vaUV2", "vaNormal", "mc_Entity", "mc_chunkFade", "mc_midTexCoord", "at_tangent", "at_midBlock"};
     private static final Pattern HEADER_LINE = Pattern.compile("(?m)^\\s*(#version[^\\n]*|#extension[^\\n]*)$");
     private static final Pattern OUTPUT_LOCATION = Pattern.compile("layout\\s*\\(\\s*location\\s*=\\s*(\\d+)\\s*\\)(\\s*(?:flat\\s+)?out\\b)");
     private static final Pattern OUTPUT_NAMED = Pattern.compile("(?m)^([ \\t]*)out(\\s+(?:highp\\s+|mediump\\s+|lowp\\s+)?vec4\\s+outColor(\\d+)\\s*;)");
@@ -89,14 +90,14 @@ public final class IrisWorldAdapter {
             const float MX_CLOUD_SHADE[6] = float[](0.7, 1.0, 0.8, 0.8, 0.9, 0.9);
             const vec3 MX_CLOUD_NORMALS[6] = vec3[](vec3(0, -1, 0), vec3(0, 1, 0), vec3(0, 0, -1), vec3(0, 0, 1), vec3(-1, 0, 0), vec3(1, 0, 0));
             int mx_cloud_flags() {
-                return texelFetch(CloudFaces, (gl_VertexID / 4) * 3 + 2).r;
+                return texelFetch(CloudFaces, (gl_VertexIndex / 4) * 3 + 2).r;
             }
             vec3 mx_cloud_position() {
-                int index = (gl_VertexID / 4) * 3;
+                int index = (gl_VertexIndex / 4) * 3;
                 int flags = mx_cloud_flags();
                 int cellX = (texelFetch(CloudFaces, index).r << 1) | ((flags & 128) >> 7);
                 int cellZ = (texelFetch(CloudFaces, index + 1).r << 1) | ((flags & 64) >> 6);
-                int quadVertex = gl_VertexID % 4;
+                int quadVertex = gl_VertexIndex % 4;
                 vec3 corner = MX_CLOUD_CORNERS[(flags & 7) * 4 + ((flags & 16) != 0 ? 3 - quadVertex : quadVertex)];
                 return corner * CellSize + vec3(cellX, 0, cellZ) * CellSize + CloudOffset;
             }
@@ -122,7 +123,7 @@ public final class IrisWorldAdapter {
             uniform mat4 gbufferProjection;
             uniform mat4 gbufferProjectionInverse;
             vec3 mx_sky_vertex() {
-                vec2 ndc = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2) * 2.0 - 1.0;
+                vec2 ndc = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2) * 2.0 - 1.0;
                 vec4 far = gbufferProjectionInverse * vec4(ndc, 1.0, 1.0);
                 return mat3(gbufferModelViewInverse) * (far.xyz / far.w);
             }
@@ -204,6 +205,19 @@ public final class IrisWorldAdapter {
             text = declaration.matcher(text).replaceAll("");
             internal.computeIfAbsent(entry.getValue(), k -> new java.util.ArrayList<>()).add(entry.getKey());
         }
+        // Anything else the programs that draw the world read goes through a slot the plan gave it (see IrisPlan#worldSlots).
+        IrisPlan plan = IrisPipeline.currentPlan();
+        if (plan != null) {
+            Matcher any = Pattern.compile("(?m)^[ \\t]*uniform\\s+(?:(?:highp|mediump|lowp)\\s+)?sampler2D\\s+(\\w+)\\s*;[ \\t]*$").matcher(text);
+            java.util.List<String> declared = new java.util.ArrayList<>();
+            while (any.find()) declared.add(any.group(1));
+            for (String name : declared) {
+                int slot = plan.worldSlotOf(name);
+                if (slot < 0) continue;
+                text = Pattern.compile("(?m)^[ \\t]*uniform\\s+(?:(?:highp|mediump|lowp)\\s+)?sampler2D\\s+" + name + "\\s*;[ \\t]*$").matcher(text).replaceAll("");
+                internal.computeIfAbsent(ShaderBindings.WORLD_SLOT + slot, k -> new java.util.ArrayList<>()).add(name);
+            }
+        }
         StringBuilder lines = new StringBuilder();
         for (java.util.Map.Entry<String, java.util.List<String>> entry : internal.entrySet()) {
             lines.append("uniform sampler2D ").append(entry.getKey()).append(";\n");
@@ -240,8 +254,9 @@ public final class IrisWorldAdapter {
         for (String name : names) {
             text = Pattern.compile("(?m)^[ \\t]*uniform\\s+(?:(?:highp|mediump|lowp)\\s+)?\\w+\\s+" + name + "\\s*;[ \\t]*$").matcher(text).replaceAll("");
         }
-        boolean atlas = uses(text, "gtexture");
-        boolean light = uses(text, "lightmap");
+        boolean atlas = uses(text, "gtexture") && format.atlas();
+        // A sampler is only bound if the pipeline has it (a program may declare one it never reads).
+        boolean light = uses(text, "lightmap") && format.light();
         text = Pattern.compile("(?m)^[ \\t]*uniform\\s+sampler2D\\s+(gtexture|lightmap)\\s*;[ \\t]*$").matcher(text).replaceAll("");
         String[] bound = boundSamplers(text);
         text = bound[0];
@@ -264,6 +279,9 @@ public final class IrisWorldAdapter {
             p.append("#define vaUV1 ").append(format.uv1() ? "UV1" : "ivec2(0, 10)").append('\n');
             p.append("#define vaUV2 ").append(format.uv2() ? "UV2" : "ivec2(240, 240)").append('\n');
             p.append("#define mc_Entity vec2(-1.0, 0.0)\n#define mc_chunkFade 1.0\n#define mc_midTexCoord vaUV0\n");
+            // The game's models have no tangents: the tangent is any direction across the surface (a program that bends light by a normal map gets that map
+            // wrongly turned), and there is no block the model sits in.
+            p.append("#define at_tangent vec4(normalize(cross(").append(format.normal() ? "Normal" : "vec3(0.0, 1.0, 0.0)").append(", abs(").append(format.normal() ? "Normal.y" : "1.0").append(") > 0.99 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0))), 1.0)\n#define at_midBlock vec4(0.0)\n");
             p.append("#define vaNormal ").append(format.normal() ? "Normal" : "vec3(0.0, 1.0, 0.0)").append('\n');
             // The overlay (the red of a hurt mob, the white of a charged creeper) lives in a texture of its own: this reads it for a vertex's overlay coordinate.
             if (format.overlay()) p.append("uniform sampler2D Sampler1;\nvec4 mx_overlay_color(ivec2 uv) {\n    return texelFetch(Sampler1, uv, 0);\n}\n");

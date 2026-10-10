@@ -132,6 +132,10 @@ public abstract class MetalCommandEncoderMixin implements MultiTarget.Encoder {
 
     @Inject(method = "endEncoder", at = @At("TAIL"))
     private void metallumExtra$encoderEnded(final CallbackInfo ci) {
+        // Development aid: -Dmetallumextra.traceEnd=<n> logs where the first n encoders with extra targets were ended.
+        if (this.metallumExtra$encoderExtraTargets != null && TRACE_END > 0 && TRACE_ENDED++ < TRACE_END) {
+            MetallumExtra.LOGGER.info("[Metallum Extra] an encoder with {} extra targets ended", this.metallumExtra$encoderExtraTargets.length, new Throwable("ended here"));
+        }
         this.metallumExtra$encoderExtraTargets = null;
     }
 
@@ -169,6 +173,11 @@ public abstract class MetalCommandEncoderMixin implements MultiTarget.Encoder {
      * Whether a view covers its whole texture, so that a deferred clear of the texture can be done as the pass
      * starts. Metallum 0.0.23 has this as a private method of its own; 0.0.24 dropped it.
      */
+    @Unique
+    private static final int TRACE_END = Integer.getInteger("metallumextra.traceEnd", 0);
+    @Unique
+    private static int TRACE_ENDED;
+
     @Unique
     private static boolean metallumExtra$isFullTextureView(final GpuTextureView view) {
         return view.baseMipLevel() == 0

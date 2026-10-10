@@ -8,11 +8,10 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * What this Mac is: its chip, core counts and memory, read once in the background (the GPU's core count comes from
- * {@code system_profiler}, which takes a second). For the line of specs in the shader menu.
+ * {@code system_profiler}, which takes a second). Appears in the line of specs in the shader menu.
  */
 public final class MacSpecs {
     public record Specs(String chip, int cpuCores, int gpuCores, int memoryGb) {
-        /** For the menu: {@code Apple M1 Pro | 10-core CPU | 16-core GPU | 32 GB}. */
         public String line() {
             return chip + " | " + cpuCores + "-core CPU" + (gpuCores > 0 ? " | " + gpuCores + "-core GPU" : "") + " | " + memoryGb + " GB";
         }

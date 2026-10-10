@@ -62,9 +62,12 @@ public final class ProgramSet {
     private final List<Program> programs;
     private final List<String> unsupported;
     private final Properties properties;
+    /** The properties in file order, which custom uniforms need (a variable may use an earlier one). */
+    private java.util.Map<String, String> ordered = java.util.Map.of();
     /** What each option of the pack is set to, for the conditions in {@code properties}. */
     private final java.util.Map<String, String> optionValues;
     private final List<PackOption> options;
+    private @Nullable ShaderPack pack;
 
     private ProgramSet(final String dimension, final List<Program> programs, final List<String> unsupported, final Properties properties,
                        final java.util.Map<String, String> optionValues, final List<PackOption> options) {
@@ -123,8 +126,12 @@ public final class ProgramSet {
         }
         programs.sort(java.util.Comparator.comparing(Program::stage).thenComparingInt(Program::number));
         unsupported.sort(String::compareTo);
-        return new ProgramSet(dimension == null ? "" : dimension, List.copyOf(programs), List.copyOf(unsupported), properties(pack),
+        ProgramSet result = new ProgramSet(dimension == null ? "" : dimension, List.copyOf(programs), List.copyOf(unsupported), properties(pack),
                 StandardOptions.values(pack.name(), pack.options()), pack.options());
+        result.pack = pack;
+        String text = pack.read("shaders.properties");
+        if (text != null) result.ordered = PropertiesFile.parse(text, PropertiesFile.macros(result.optionValues));
+        return result;
     }
 
     private static Stage stageOf(final String name) {
@@ -151,11 +158,33 @@ public final class ProgramSet {
         String text = pack.read("shaders.properties");
         if (text == null) return result;
         try {
-            result.load(new StringReader(text));
-        } catch (IOException | IllegalArgumentException e) {
+            result.putAll(PropertiesFile.parse(text, PropertiesFile.macros(StandardOptions.values(pack.name(), pack.options()))));
+        } catch (RuntimeException e) {
             MetallumExtra.LOGGER.warn("[Metallum Extra] Shader pack {}: shaders.properties could not be read: {}", pack.name(), e.getMessage());
         }
         return result;
+    }
+
+    /** {@code shaders.properties} as the preprocessor left it, in file order. */
+    public java.util.Map<String, String> orderedProperties() {
+        return ordered;
+    }
+
+    /** The block ids the pack's {@code block.properties} gives; none when it has no such file. */
+    public BlockMappings blockMappings() {
+        String text = pack().read("block.properties");
+        if (text == null) return BlockMappings.none();
+        return BlockMappings.parse(PropertiesFile.parse(text, PropertiesFile.macros(optionValues)));
+    }
+
+    /** The custom uniforms and variables the pack defines, ready to be evaluated; the constants (biomes) are supplied by the game. */
+    public CustomUniforms customUniforms(final java.util.function.Function<String, @Nullable Double> constant) throws PackException {
+        return CustomUniforms.parse(ordered, constant);
+    }
+
+    /** The pack these programs are from. */
+    public ShaderPack pack() {
+        return java.util.Objects.requireNonNull(pack);
     }
 
     /** The options of the pack, which the conditions in its files may be on. */
@@ -167,6 +196,27 @@ public final class ProgramSet {
     public @Nullable String property(final String key) {
         String value = properties.getProperty(key);
         return value == null ? null : value.strip();
+    }
+
+    /**
+     * The picture a pack gives a sampler in a stage: {@code texture.<stage>.<sampler>=<path>} in {@code shaders.properties}, or {@code texture.noise} for
+     * {@code noisetex} everywhere. The stage is begin, prepare, shadow, deferred, composite (which includes final) or gbuffers. Null when there is none.
+     */
+    public @Nullable String customTexture(final Stage stage, final String sampler) {
+        String stageName = switch (stage) {
+            case BEGIN -> "begin";
+            case SHADOWCOMP -> "shadowcomp";
+            case PREPARE -> "prepare";
+            case DEFERRED -> "deferred";
+            case COMPOSITE, FINAL -> "composite";
+            case GBUFFERS -> "gbuffers";
+            case SHADOW -> "shadow";
+        };
+        String value = property("texture." + stageName + "." + sampler);
+        if (value == null && sampler.equals("noisetex")) value = property("texture.noise");
+        if (value == null || value.isBlank()) return null;
+        String path = value.split("\\s+")[0];
+        return path.endsWith(".png") ? path : null;
     }
 
     /** The programs of the pack that can be run here, in the order they run in, with their files present and not switched off. */
@@ -214,6 +264,33 @@ public final class ProgramSet {
             return true;
         }
     }
+
+    private static final Pattern SAMPLER_DECLARATION = Pattern.compile("(?m)^[ \\t]*(?:writeonly[ \\t]+|readonly[ \\t]+)?uniform[ \\t]+(?:(?:highp|mediump|lowp)[ \\t]+)?\\w+[ \\t]+(\\w+)[ \\t]*;[ \\t]*(?://.*)?$");
+
+    /**
+     * The source without the declarations of uniforms (samplers too) that nothing reads. A pack that shares one list of uniforms between all its programs
+     * declares every one of them in every program, and a program is only given what it reads.
+     */
+    public static String withoutUnusedUniforms(final String source) {
+        String code = LegacyGlsl.code(source);
+        Matcher declarations = SAMPLER_DECLARATION.matcher(code);
+        if (!declarations.find()) return source;
+        // How many times each word occurs, counted once for the whole program.
+        java.util.Map<String, Integer> counts = new java.util.HashMap<>();
+        Matcher words = WORD.matcher(code);
+        while (words.find()) counts.merge(words.group(), 1, Integer::sum);
+        java.util.List<int[]> remove = new ArrayList<>();
+        declarations.reset();
+        while (declarations.find()) {
+            if (counts.getOrDefault(declarations.group(1), 0) == 1) remove.add(new int[] {declarations.start(), declarations.end()});
+        }
+        if (remove.isEmpty()) return source;
+        StringBuilder out = new StringBuilder(source);
+        for (int i = remove.size() - 1; i >= 0; i--) out.replace(remove.get(i)[0], remove.get(i)[1], "");
+        return out.toString();
+    }
+
+    private static final Pattern WORD = Pattern.compile("[A-Za-z_]\\w*");
 
     /** The names of the {@code sampler2D} uniforms a shader declares. */
     public static List<String> samplers(final String source) {
@@ -265,6 +342,23 @@ public final class ProgramSet {
      * @throws PackException saying what is wrong
      */
     public static void validate(final ShaderPack pack) throws PackException {
+        check(pack, false);
+    }
+
+    /**
+     * {@link #validate} and then a plan of every dimension, which reads and checks every program: seconds for a big pack, so it is done when the
+     * pack is put into use. It leaves the layout of the standard uniforms' block as it found it.
+     */
+    public static void validateFully(final ShaderPack pack) throws PackException {
+        Object saved = IrisUniforms.saveCustom();
+        try {
+            check(pack, true);
+        } finally {
+            IrisUniforms.restoreCustom(saved);
+        }
+    }
+
+    private static void check(final ShaderPack pack, final boolean plan) throws PackException {
         boolean any = false;
         List<String> others = new ArrayList<>();
         for (String dimension : DIMENSIONS) {
@@ -277,7 +371,7 @@ public final class ProgramSet {
             }
             if (!set.runnable().isEmpty()) {
                 any = true;
-                IrisPlan.build(pack, dimension);
+                if (plan) IrisPlan.build(pack, dimension);
             }
             for (String name : set.unsupported()) {
                 if (!others.contains(name)) others.add(name);

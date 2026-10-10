@@ -25,9 +25,11 @@ public final class ZipPack implements ShaderPack {
     private final String name;
     private final Map<String, String> files;
     private final List<PackOption> options;
+    private final Map<String, byte[]> binary;
 
-    private ZipPack(final String name, final Map<String, String> files, final List<PackOption> options) {
+    private ZipPack(final String name, final Map<String, String> files, final Map<String, byte[]> binary, final List<PackOption> options) {
         this.name = name;
+        this.binary = binary;
         this.files = files;
         this.options = options;
     }
@@ -58,6 +60,7 @@ public final class ZipPack implements ShaderPack {
                 throw new PackException("It is in this mod's earlier pack layout (pack.json, program/, override/), which is no longer read. Packs now use the Iris layout: see docs/shader-packs.md");
             }
             Map<String, String> files = new HashMap<>();
+            Map<String, byte[]> binary = new HashMap<>();
             long budget = MAX_BYTES;
             for (var entries = file.entries(); entries.hasMoreElements(); ) {
                 ZipEntry entry = entries.nextElement();
@@ -65,10 +68,16 @@ public final class ZipPack implements ShaderPack {
                 if (entry.isDirectory() || !entryName.startsWith(SHADERS)) continue;
                 byte[] bytes = read(file, entry, budget);
                 budget -= bytes.length;
-                files.put(entryName.substring(SHADERS.length()), new String(bytes, StandardCharsets.UTF_8));
+                String relative = entryName.substring(SHADERS.length());
+                if (relative.endsWith(".png")) {
+                    binary.put(relative, bytes);
+                    continue;
+                }
+                // Packs written on Windows end their lines in CR LF; the loader reads lines.
+                files.put(relative, new String(bytes, StandardCharsets.UTF_8).replace("\r\n", "\n").replace('\r', '\n'));
             }
             if (files.isEmpty()) throw new PackException("there is no shaders/ folder with files in it");
-            return new ZipPack(name, Map.copyOf(files), StandardOptions.discover(files));
+            return new ZipPack(name, Map.copyOf(files), Map.copyOf(binary), StandardOptions.discover(files));
         } catch (IOException | RuntimeException e) {
             if (e instanceof PackException pack) throw pack;
             throw new PackException("could not read the ZIP: " + e.getMessage(), e);
@@ -86,6 +95,11 @@ public final class ZipPack implements ShaderPack {
     @Override
     public @Nullable String read(final String path) {
         return files.get(path);
+    }
+
+    @Override
+    public byte @Nullable [] bytes(final String path) {
+        return binary.get(path);
     }
 
     @Override

@@ -51,13 +51,48 @@ public final class ShaderSources {
     /** Wraps the source the game compiles from, so this mod's shaders are found first while shaders are on. */
     public static ShaderSource wrap(final ShaderSource original) {
         return (id, type) -> {
-            String ours = Shaders.active() ? get(id, type) : null;
+            String ours = null;
+            if (Shaders.active()) {
+                try {
+                    ours = get(id, type);
+                } catch (RuntimeException e) {
+                    // A pack's program that cannot be made is never a crash: the pack is put aside and the game goes on without it.
+                    ours = null;
+                    if (!isStale(e)) PackManager.fail(e);
+                    return fallback(original, id, type);
+                }
+            }
             Identifier world = IrisWorld.originalOf(id, type == ShaderType.VERTEX);
             Identifier real = isTerrainProgram(id) ? Identifier.fromNamespaceAndPath("sodium", "blocks/block_layer_opaque") : world != null ? world : id;
             if (DUMP_DIR != null) dump(id, type, ours != null ? ours : original.get(real, type));
             // A terrain pipeline made for a pack that has since gone (Sodium keeps them) compiles as Sodium's own shader until it is replaced.
             return ours != null ? ours : original.get(real, type);
         };
+    }
+
+    private static boolean isStale(final Throwable error) {
+        for (Throwable cause = error; cause != null; cause = cause.getCause() == cause ? null : cause.getCause()) {
+            if (cause instanceof StalePipelineException) return true;
+        }
+        return false;
+    }
+
+    /**
+     * What a pipeline compiles from when its pack's program could not be made: the game's own program where there is one, else a program that
+     * draws nothing. The pipelines of the pack are thrown away at the start of the next frame, so this only has to compile.
+     */
+    private static String fallback(final ShaderSource original, final Identifier id, final ShaderType type) {
+        Identifier world = IrisWorld.originalOf(id, type == ShaderType.VERTEX);
+        Identifier real = isTerrainProgram(id) ? Identifier.fromNamespaceAndPath("sodium", "blocks/block_layer_opaque") : world != null ? world : id;
+        try {
+            String source = original.get(real, type);
+            if (source != null) return source;
+        } catch (RuntimeException ignored) {
+            // No program of the game's by that name: the empty one below.
+        }
+        return type == ShaderType.VERTEX
+                ? "#version 330\nvoid main() {\n    gl_Position = vec4(0.0, 0.0, 2.0, 1.0);\n}\n"
+                : "#version 330\nlayout(location = 0) out vec4 mx_color;\nvoid main() {\n    mx_color = vec4(0.0);\n}\n";
     }
 
     /** Whether the id is one of {@link IrisPipeline#terrainShaderId}'s: Sodium's terrain shader replaced by a standard pack's program. */
@@ -81,7 +116,7 @@ public final class ShaderSources {
             String text = readExpanded(current.pack, f);
             try {
                 if (text == null) return Optional.empty();
-                String adapted = IrisTerrain.adapt(IrisPlan.withoutBufferFormats(text), type == ShaderType.VERTEX, false, "true".equals(plan.programs().property("mx.blockTypes")));
+                String adapted = IrisTerrain.adapt(IrisPlan.withoutBufferFormats(text), type == ShaderType.VERTEX, false, "true".equals(plan.programs().property("mx.blockTypes")), plan.usesBlockIds());
                 if (type != ShaderType.VERTEX) adapted = IrisWorldAdapter.remapOutputs(adapted, step.writes());
                 return Optional.of(IrisUniforms.rewrite(adapted, IrisUniforms.declared(adapted)));
             } catch (PackException e) {
@@ -130,7 +165,7 @@ public final class ShaderSources {
             String text = readExpanded(current.pack, file);
             try {
                 if (text == null) return Optional.empty();
-                String adapted = IrisTerrain.adapt(IrisPlan.withoutBufferFormats(text), type == ShaderType.VERTEX, true);
+                String adapted = IrisTerrain.adapt(IrisPlan.withoutBufferFormats(text), type == ShaderType.VERTEX, true, false, plan.usesBlockIds());
                 return Optional.of(IrisUniforms.rewrite(adapted, IrisUniforms.declared(adapted)));
             } catch (PackException e) {
                 throw new IllegalStateException(e.getMessage(), e);

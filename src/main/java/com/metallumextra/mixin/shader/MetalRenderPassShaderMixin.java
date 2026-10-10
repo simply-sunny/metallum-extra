@@ -27,7 +27,8 @@ public abstract class MetalRenderPassShaderMixin {
             original.call(IrisWorld.pipelineFor(pipeline));
         } catch (RuntimeException e) {
             if (!Shaders.active() || !PackManager.fail(e)) throw e;
-            original.call(IrisWorld.pipelineFor(pipeline));
+            // The pack's copy of the pipeline is the one that failed: the game's own is drawn with for the rest of this frame.
+            original.call(pipeline);
         }
     }
 }

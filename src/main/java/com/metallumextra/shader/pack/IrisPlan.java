@@ -58,8 +58,14 @@ public final class IrisPlan {
     }
 
     /** One thing a program samples: a color buffer, or one of the depth textures. */
-    public record Input(String name, int colorBuffer, int depthTexture) {
+    public record Input(String name, int colorBuffer, int depthTexture, @Nullable String texture) {
+        public Input(final String name, final int colorBuffer, final int depthTexture) {
+            this(name, colorBuffer, depthTexture, null);
+        }
     }
+
+    /** {@link Input#colorBuffer} of a picture the pack supplies ({@link Input#texture} is its path). */
+    public static final int CUSTOM = -5;
 
     /**
      * One program in the order it runs.
@@ -125,10 +131,12 @@ public final class IrisPlan {
     }
 
     /** The vertex inputs a terrain program may declare, with their types. Everything else Iris offers is refused by name. */
-    static final Map<String, String> TERRAIN_INPUTS = Map.of("vaPosition", "vec3", "vaColor", "vec4", "vaUV0", "vec2", "vaUV2", "ivec2", "vaNormal", "vec3", "mc_Entity", "vec2", "mc_chunkFade", "float", "mc_midTexCoord", "vec2");
+    static final Map<String, String> TERRAIN_INPUTS = Map.of("vaPosition", "vec3", "vaColor", "vec4", "vaUV0", "vec2", "vaUV2", "ivec2", "vaNormal", "vec3", "mc_Entity", "vec2", "mc_chunkFade", "float", "mc_midTexCoord", "vec2", "at_tangent", "vec4", "at_midBlock", "vec4");
     /** The vertex inputs a program for anything but terrain may declare: terrain's plus the overlay; mc_Entity is -1 there, as in Iris. */
-    static final Map<String, String> WORLD_INPUTS = Map.of("vaPosition", "vec3", "vaColor", "vec4", "vaUV0", "vec2", "vaUV1", "ivec2", "vaUV2", "ivec2", "vaNormal", "vec3", "mc_Entity", "vec2", "mc_chunkFade", "float", "mc_midTexCoord", "vec2");
-    private static final List<String> LATER_INPUTS = List.of("at_tangent", "at_midBlock");
+    static final Map<String, String> WORLD_INPUTS = Map.ofEntries(Map.entry("vaPosition", "vec3"), Map.entry("vaColor", "vec4"), Map.entry("vaUV0", "vec2"), Map.entry("vaUV1", "ivec2"),
+            Map.entry("vaUV2", "ivec2"), Map.entry("vaNormal", "vec3"), Map.entry("mc_Entity", "vec2"), Map.entry("mc_chunkFade", "float"), Map.entry("mc_midTexCoord", "vec2"),
+            Map.entry("at_tangent", "vec4"), Map.entry("at_midBlock", "vec4"));
+    private static final List<String> LATER_INPUTS = List.of();
     private static final Pattern VERTEX_INPUT = Pattern.compile("(?m)^[ \\t]*(?:layout\\s*\\([^)]*\\)\\s*)?in\\s+(?:(?:highp|mediump|lowp)\\s+)?(\\w+)\\s+(\\w+)\\s*;");
     /** The compatibility profile's names, which need the translation of the next step; until then they are named in the error. */
     private static final Pattern LEGACY = Pattern.compile("\\b(varying|gl_FragData|gl_FragColor|texture2D|texture2DLod|texture3D|gl_Vertex|gl_Normal|gl_Color|gl_MultiTexCoord\\d|ftransform"
@@ -159,6 +167,8 @@ public final class IrisPlan {
     private float shadowDistance = 160.0F;
     private final Map<String, String> vertexSources = new TreeMap<>();
     private final Set<Integer> worldBuffers = new java.util.TreeSet<>();
+    private final List<Input> worldSlots = new ArrayList<>();
+    private boolean usesBlockIds;
 
     private IrisPlan(final ProgramSet programs) {
         this.programs = programs;
@@ -244,6 +254,36 @@ public final class IrisPlan {
         return null;
     }
 
+    /** Whether the pack gives blocks ids of its own (block.properties), which terrain programs then read as {@code mc_Entity.x}. */
+    public boolean usesBlockIds() {
+        return usesBlockIds;
+    }
+
+    /** Most things the programs that draw the world can read besides the fixed ones (see {@link #worldSlots()}). */
+    public static final int WORLD_SLOTS = 48;
+
+    /**
+     * What the programs that draw the world read apart from the atlas, light map, shadow map and the first buffer's copy: each distinct sampler name has a
+     * slot, and the game's passes bind the slot's content as {@code MxWorld<slot>} (see {@code ShaderBindings}).
+     */
+    public List<Input> worldSlots() {
+        return worldSlots;
+    }
+
+    /** The slot the world programs read this sampler through, or -1. */
+    public int worldSlotOf(final String sampler) {
+        for (int i = 0; i < worldSlots.size(); i++) {
+            if (worldSlots.get(i).name().equals(sampler)) return i;
+        }
+        return -1;
+    }
+
+    private void slotFor(final Input input) throws PackException {
+        if (worldSlotOf(input.name()) >= 0) return;
+        if (worldSlots.size() >= WORLD_SLOTS) throw new PackException("the programs that draw the world read more than " + WORLD_SLOTS + " different samplers beyond the atlas and light map (" + input.name() + " is one too many)");
+        worldSlots.add(input);
+    }
+
     /** Whether a program reads the grid of block light colors, which then has to be kept up to date. */
     public boolean usesLightColors() {
         return usesLightColors;
@@ -292,7 +332,10 @@ public final class IrisPlan {
     /** @throws PackException if a program asks for something that cannot be provided, saying what */
     public static IrisPlan build(final ShaderPack pack, final @Nullable String dimension) throws PackException {
         ProgramSet set = ProgramSet.discover(pack, dimension);
+        // The programs may declare the pack's own uniforms, so they must be known before any program is read.
+        IrisUniforms.useCustom(set.customUniforms(name -> 0.0).uniforms());
         IrisPlan plan = new IrisPlan(set);
+        plan.usesBlockIds = !set.blockMappings().isEmpty();
         for (String name : set.unsupported()) plan.notes.add(name + " is not run yet");
 
         Map<String, String> fragments = new TreeMap<>();
@@ -341,7 +384,21 @@ public final class IrisPlan {
         Set<String> seen = new HashSet<>();
         for (String sampler : ProgramSet.samplers(vertex + "\n" + fragment)) {
             if (!seen.add(sampler)) continue;
-            inputs.add(gbuffers ? gbufferInput(program, sampler, shadow) : input(program, sampler));
+            String custom = set.customTexture(program.stage(), sampler);
+            // The resource pack's normal and specular maps: there are none yet (every surface is flat and not shiny), as in Iris without one.
+            if (custom == null && sampler.equals("normals")) custom = "mx:flat_normals";
+            if (custom == null && sampler.equals("specular")) custom = "mx:no_specular";
+            if (custom != null) {
+                if (!custom.startsWith("mx:") && set.pack().bytes(custom) == null) throw new PackException(program.name() + " reads " + sampler + ", which shaders.properties gives the picture " + custom + ", but the pack has no such PNG");
+                Input made = new Input(sampler, CUSTOM, -1, custom);
+                if (gbuffers) slotFor(made);
+                inputs.add(made);
+                continue;
+            }
+            Input made = gbuffers ? gbufferInput(program, sampler, shadow) : input(program, sampler);
+            // The ones read through the game's passes (see ShaderBindings) that are not one of its fixed bindings get a slot of their own.
+            if (gbuffers && made.colorBuffer >= 1) slotFor(made);
+            inputs.add(made);
         }
         int[] writes = program.stage() == ProgramSet.Stage.FINAL ? new int[0] : writes(program, fragment);
         if (gbuffers && writes[0] != 0) {
@@ -360,16 +417,16 @@ public final class IrisPlan {
             if (!shadow) buffers.putIfAbsent(writes[i], null);
         }
         for (Input input : inputs) {
-            if (gbuffers && input.colorBuffer == 0) translucentReadsColor = true;
+            if (gbuffers && input.colorBuffer == 0 && !shadow && (program.name().equals("gbuffers_water") || program.name().equals("gbuffers_hand_water") || program.name().endsWith("_translucent"))) translucentReadsColor = true;
             if (input.colorBuffer == LIGHT_COLORS) usesLightColors = true;
             if (input.colorBuffer >= 0) buffers.putIfAbsent(input.colorBuffer, null);
             if (input.depthTexture >= 0) depthUsed[input.depthTexture] = true;
         }
         Set<String> both = new java.util.LinkedHashSet<>(IrisUniforms.declared(vertex));
         both.addAll(IrisUniforms.declared(fragment));
-        List<String> uniforms = IrisUniforms.ALL.stream().map(IrisUniforms.Uniform::name).filter(both::contains).toList();
+        List<String> uniforms = IrisUniforms.allUniforms().stream().map(IrisUniforms.Uniform::name).filter(both::contains).toList();
         if (!gbuffers) {
-            for (IrisUniforms.Uniform uniform : IrisUniforms.ALL) {
+            for (IrisUniforms.Uniform uniform : IrisUniforms.allUniforms()) {
                 if (uniform.gbuffers() && both.contains(uniform.name())) throw new PackException(program.name() + " declares " + uniform.name() + ", which only the programs that draw the world have");
             }
         }
@@ -388,15 +445,14 @@ public final class IrisPlan {
         if (sampler.equals("texture")) throw new PackException(program.name() + " names its atlas sampler 'texture', which is also a GLSL function; use gtexture");
         if (!shadow && sampler.matches("shadowtex[01]")) return new Input(sampler, SHADOW_DEPTH, -1);
         if (!shadow && sampler.equals("shadowcolor0")) return new Input(sampler, SHADOW_COLOR, -1);
-        boolean translucent = program.name().equals("gbuffers_water") || program.name().equals("gbuffers_hand_water") || program.name().endsWith("_translucent");
-        if (translucent && !shadow) {
-            if (sampler.equals("colortex0") || sampler.equals("gcolor")) return new Input(sampler, 0, -1);
-            // Both are the depth before the translucent things: it is all there is when they are drawn.
-            if (sampler.matches("depthtex[01]") || sampler.equals("gdepthtex")) return new Input(sampler, -1, 1);
-        }
-        if (sampler.matches("colortex\\d+|gcolor|gdepth|gnormal|composite|gaux\\d|depthtex\\d|gdepthtex")) {
-            throw new PackException(program.name() + " reads " + sampler + ", which " + (translucent ? "this version gives only as colortex0 and depthtex0/1 to the programs that draw translucent things"
-                    : "the programs that draw the world cannot read (only those for water and other translucent things can, and only colortex0 and the depth textures)"));
+        // Every program that draws the world may bind the depth of the world so far and the buffers the passes before it wrote, as in Iris.
+        if (sampler.matches("depthtex[012]") || sampler.equals("gdepthtex")) return new Input(sampler, -1, 1);
+        if (OLD_NAMES.containsKey(sampler)) return new Input(sampler, OLD_NAMES.get(sampler), -1);
+        Matcher buffer = COLORTEX.matcher(sampler);
+        if (buffer.matches()) {
+            int index = Integer.parseInt(buffer.group(1));
+            if (index >= COLOR_BUFFERS) throw new PackException(program.name() + " reads " + sampler + ", but there are only colortex0 to colortex" + (COLOR_BUFFERS - 1));
+            return new Input(sampler, index, -1);
         }
         throw new PackException(program.name() + " reads " + sampler + ", which this version cannot provide to the programs that draw the world yet");
     }
@@ -592,14 +648,22 @@ public final class IrisPlan {
             case "RGBA16", "RGB16" -> GpuFormat.RGBA16_UNORM;
             case "R16F" -> GpuFormat.R16_FLOAT;
             case "RG16F" -> GpuFormat.RG16_FLOAT;
-            case "RGBA16F", "RGB16F", "R11F_G11F_B10F", "RGB10_A2" -> GpuFormat.RGBA16_FLOAT;
+            case "RGBA16F", "RGB16F" -> GpuFormat.RGBA16_FLOAT;
+            case "R11F_G11F_B10F" -> GpuFormat.RG11B10_FLOAT;
+            case "RGB10_A2" -> GpuFormat.RGB10A2_UNORM;
+            case "R8_SNORM" -> GpuFormat.R8_SNORM;
+            case "RG8_SNORM" -> GpuFormat.RG8_SNORM;
+            case "RGBA8_SNORM", "RGB8_SNORM" -> GpuFormat.RGBA8_SNORM;
+            case "R16_SNORM" -> GpuFormat.R16_SNORM;
+            case "RG16_SNORM" -> GpuFormat.RG16_SNORM;
+            case "RGBA16_SNORM", "RGB16_SNORM" -> GpuFormat.RGBA16_SNORM;
             case "R32F" -> GpuFormat.R32_FLOAT;
             case "RG32F" -> GpuFormat.RG32_FLOAT;
             case "RGBA32F", "RGB32F" -> GpuFormat.RGBA32_FLOAT;
             default -> null;
         };
         if (format == null) throw new PackException(program + " gives colortex" + buffer + " the format " + name + ", which this version does not support");
-        if (name.equals("RGB8") || name.equals("RGB16") || name.equals("RGB16F") || name.equals("RGB32F") || name.equals("R11F_G11F_B10F") || name.equals("RGB10_A2")) {
+        if (name.equals("RGB8") || name.equals("RGB16") || name.equals("RGB16F") || name.equals("RGB32F") || name.equals("RGB8_SNORM") || name.equals("RGB16_SNORM")) {
             notes.add("colortex" + buffer + " is " + name + "; stored with four channels (" + format.name() + ") because Metal has no three-channel or packed formats here");
         }
         return format;

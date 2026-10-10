@@ -1,6 +1,7 @@
 package com.metallumextra.shader;
 
 import com.metallumextra.MetallumExtra;
+import com.metallumextra.shader.pack.CustomUniforms;
 import com.metallumextra.shader.pack.IrisPlan;
 import com.metallumextra.shader.pack.PackException;
 import com.metallumextra.shader.pack.PackManager;
@@ -84,6 +85,7 @@ public final class IrisPipeline {
     private static double frameSeconds = 1.0 / 60.0;
     private static float far = 128.0F;
     private static final org.joml.Matrix4f GAME_PROJECTION = new org.joml.Matrix4f();
+    private static final org.joml.Matrix4f BASE_PROJECTION = new org.joml.Matrix4f();
     private static int frame;
     private static int passes;
     private static int copies;
@@ -126,6 +128,9 @@ public final class IrisPipeline {
         if (plan == null || pack != planPack || !java.util.Objects.equals(dimension, planDimension)) {
             try {
                 IrisPlan built = IrisPlan.build(pack, dimension);
+                customUniforms = built.programs().customUniforms(IrisPipeline::biomeConstant);
+                // Blocks of chunks already built carry the ids of the old mapping: they are built again when it changes.
+                if (BlockIds.use(built.programs().blockMappings())) Minecraft.getInstance().levelExtractor.allChanged();
                 PIPELINES.clear();
                 plan = built;
                 generation++;
@@ -204,6 +209,28 @@ public final class IrisPipeline {
         }
     }
 
+    /**
+     * Binds what slot {@code slot} of the programs that draw the world stands for: a picture of the pack, or a color buffer. A buffer that this very pass
+     * is drawing into cannot also be read (Metal does not allow it), so the program is given an empty picture for it.
+     */
+    static void bindWorldSlot(final com.mojang.blaze3d.systems.RenderPassBackend pass, final String name, final int slot) {
+        IrisPlan current = plan;
+        if (current == null || slot >= current.worldSlots().size()) return;
+        IrisPlan.Input input = current.worldSlots().get(slot);
+        ShaderPack pack = PackManager.active();
+        if (input.colorBuffer() == IrisPlan.CUSTOM) {
+            var view = PackTextures.view(pack, input.texture());
+            if (view != null) pass.bindTexture(name, view, PackTextures.sampler(pack, input.texture()));
+            return;
+        }
+        GpuSampler linear = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR);
+        if (input.colorBuffer() >= 0 && TARGETS.hasBuffer(input.colorBuffer())) {
+            boolean attached = current.worldBuffers().contains(input.colorBuffer());
+            var view = attached ? PackTextures.view(pack, "mx:black") : TARGETS.read(input.colorBuffer());
+            if (view != null) pass.bindTexture(name, view, linear);
+        }
+    }
+
     /** Whether a program of the pack in use reads the grid of block light colors. */
     static boolean usesLightColors() {
         return plan != null && plan.usesLightColors();
@@ -275,6 +302,7 @@ public final class IrisPipeline {
             uniformBuffer = null;
         }
         depthPipeline = null;
+        PackTextures.release();
     }
 
     // ---- the stages ----
@@ -290,6 +318,7 @@ public final class IrisPipeline {
             if (current == null) return;
             RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
             TARGETS.configure(current, main.width, main.height);
+            PackTextures.prepare(PackManager.active(), current);
             frame++;
             lastPasses = passes;
             passes = 0;
@@ -319,7 +348,7 @@ public final class IrisPipeline {
     static void beforeTranslucent() {
         guarded(() -> {
             IrisPlan current = plan();
-            if (current == null || TARGETS.width() == 0) return;
+            if (current == null || TARGETS.width() == 0 || !TARGETS.isFor(current)) return;
             List<IrisPlan.Step> deferred = current.steps(ProgramSet.Stage.DEFERRED);
             RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
             if (!ready(main)) return;
@@ -340,7 +369,7 @@ public final class IrisPipeline {
         guarded(() -> {
             IrisPlan current = plan();
             RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
-            if (current == null || !current.afterWorld() || !ready(main)) return;
+            if (current == null || !current.afterWorld() || !ready(main) || !TARGETS.isFor(current)) return;
             snapshotDepth(main, true);
             if (current.usesDepth(0)) copies++;
             // Translucent things were drawn into the game's image after the deferred programs: it, not buffer 0, is the finished world.
@@ -389,6 +418,11 @@ public final class IrisPipeline {
                 if (input.colorBuffer() >= 0) pass.bindTexture(input.name(), TARGETS.read(input.colorBuffer()), linear);
                 else if (input.colorBuffer() == IrisPlan.SHADOW_DEPTH) pass.bindTexture(input.name(), shadowDepth(), nearest);
                 else if (input.colorBuffer() == IrisPlan.SHADOW_COLOR) pass.bindTexture(input.name(), shadowColor(), linear);
+                else if (input.colorBuffer() == IrisPlan.CUSTOM) {
+                    ShaderPack pack = PackManager.active();
+                    var view = PackTextures.view(pack, input.texture());
+                    pass.bindTexture(input.name(), view != null ? view : TARGETS.read(0), PackTextures.sampler(pack, input.texture()));
+                }
                 else pass.bindTexture(input.name(), TARGETS.depth(input.depthTexture() == 0 ? 0 : 1), nearest);
             }
             pass.draw(3, 1, 0, 0);
@@ -436,9 +470,10 @@ public final class IrisPipeline {
         lastFrameAt = now;
         far = minecraft.options.getEffectiveRenderDistance() * 16.0F;
         GAME_PROJECTION.set(Shaders.globals().projection);
+        BASE_PROJECTION.set(camera.projectionMatrix);
         int skyColor = sky.skyColor;
         var player = minecraft.player;
-        var inputs = new IrisUniformValues.Inputs(new org.joml.Matrix4f(Shaders.globals().view), new org.joml.Matrix4f(GAME_PROJECTION), far,
+        var inputs = new IrisUniformValues.Inputs(new org.joml.Matrix4f(Shaders.globals().view), new org.joml.Matrix4f(GAME_PROJECTION), new org.joml.Matrix4f(BASE_PROJECTION), far,
                 camera.pos.x, camera.pos.y, camera.pos.z, sky.sunAngle, sky.moonAngle, Shaders.sunPathTilt(),
                 level.getOverworldClockTime(), sky.moonPhase.index(), level.getRainLevel(1.0F), level.getThunderLevel(1.0F),
                 FROZEN_TIME ? 0.0 : (now - START) / 1.0e9, frameSeconds, frameCounter++, main.width, main.height,
@@ -454,12 +489,60 @@ public final class IrisPipeline {
                     default -> 0;
                 });
         uniformValues = new HashMap<>(UNIFORMS.frame(inputs));
+        var fogData = camera.fogData;
+        // The fog that is nearer: the one the camera is inside of (water, lava, blindness) or the one the render distance makes.
+        boolean environmental = fogData.environmentalEnd > 0.0F && fogData.environmentalEnd < fogData.renderDistanceEnd;
+        uniformValues.put("fogStart", new double[] {environmental ? fogData.environmentalStart : fogData.renderDistanceStart});
+        uniformValues.put("fogEnd", new double[] {environmental ? fogData.environmentalEnd : fogData.renderDistanceEnd});
+        addBiome(level, camera.blockPos, uniformValues);
+        uniformValues.put("MxBlockIds", BlockIds.table());
+        // What nothing supplies is zero: no held item, no entity being drawn, and so on.
+        for (IrisUniforms.Uniform uniform : IrisUniforms.allUniforms()) {
+            uniformValues.computeIfAbsent(uniform.name(), name -> new double[valueCount(uniform.type())]);
+        }
+        if (customUniforms != null) customUniforms.evaluate(uniformValues, frameSeconds);
         addShadowAndExtensions(uniformValues, false);
         if (traceFrames > 0) {
             MetallumExtra.LOGGER.info("[Metallum Extra] iris frame {} game projection: m00 {} m11 {} m22 {} m32 {} m23 {} m33 {} m20 {} m21 {} far {}", frame, GAME_PROJECTION.m00(), GAME_PROJECTION.m11(),
                     GAME_PROJECTION.m22(), GAME_PROJECTION.m32(), GAME_PROJECTION.m23(), GAME_PROJECTION.m33(), GAME_PROJECTION.m20(), GAME_PROJECTION.m21(), far);
         }
         writeUniforms();
+    }
+
+    /** The custom uniforms of the pack in use; null until the plan has made them. */
+    private static @Nullable CustomUniforms customUniforms;
+
+    /** What a biome's name stands for in the pack's expressions ({@code BIOME_PLAINS}): its number in the game's registry, or -1 when there is no such biome. */
+    private static @Nullable Double biomeConstant(final String name) {
+        if (!name.startsWith("BIOME_")) return null;
+        var level = Minecraft.getInstance().level;
+        if (level == null) return null;
+        var registry = level.registryAccess().lookupOrThrow(net.minecraft.core.registries.Registries.BIOME);
+        var holder = registry.get(net.minecraft.resources.Identifier.withDefaultNamespace(name.substring("BIOME_".length()).toLowerCase(java.util.Locale.ROOT)));
+        return holder.isPresent() ? (double) registry.getId(holder.get().value()) : -1.0;
+    }
+
+    /** {@code biome} (its number, as {@link #biomeConstant}) and {@code biome_precipitation} (0 none, 1 rain, 2 snow) where the camera is. */
+    private static void addBiome(final net.minecraft.client.multiplayer.ClientLevel level, final net.minecraft.core.BlockPos pos, final Map<String, double[]> values) {
+        var biome = level.getBiome(pos);
+        var registry = level.registryAccess().lookupOrThrow(net.minecraft.core.registries.Registries.BIOME);
+        values.put("biome", new double[] {registry.getId(biome.value())});
+        var precipitation = biome.value().getPrecipitationAt(pos, level.getSeaLevel());
+        values.put("biome_precipitation", new double[] {precipitation == net.minecraft.world.level.biome.Biome.Precipitation.RAIN ? 1 : precipitation == net.minecraft.world.level.biome.Biome.Precipitation.SNOW ? 2 : 0});
+    }
+
+    /** How many numbers a value of this GLSL type has. */
+    private static int valueCount(final String type) {
+        return switch (type) {
+            case "float", "int" -> 1;
+            case "vec2", "ivec2" -> 2;
+            case "vec3", "ivec3" -> 3;
+            case "vec4", "ivec4" -> 4;
+            case "mat3" -> 9;
+            case "mat4" -> 16;
+            case "ivec4[128]" -> 512;
+            default -> 1;
+        };
     }
 
     private static void writeUniforms() {
@@ -517,6 +600,10 @@ public final class IrisPipeline {
      * that run a pack's shaders alike: the block always has every member (see {@link IrisUniforms#rewrite}), so one layout fits all.
      */
     public static GpuBuffer uniformBuffer() {
+        if (uniformBuffer != null && uniformBuffer.size() != IrisUniforms.layout().size()) {
+            uniformBuffer.close();
+            uniformBuffer = null;
+        }
         if (uniformBuffer == null) {
             uniformBuffer = RenderSystem.getDevice().createBuffer(() -> "Metallum Extra standard uniforms", GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_COPY_DST, IrisUniforms.layout().size());
         }
@@ -541,7 +628,7 @@ public final class IrisPipeline {
             depthParams = RenderSystem.getDevice().createBuffer(() -> "Metallum Extra depth conversion", GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_COPY_DST, 16);
         }
         java.nio.ByteBuffer data = java.nio.ByteBuffer.allocateDirect(16).order(java.nio.ByteOrder.nativeOrder());
-        data.putFloat(0, GAME_PROJECTION.m22()).putFloat(4, GAME_PROJECTION.m32()).putFloat(8, IrisUniformValues.NEAR).putFloat(12, far);
+        data.putFloat(0, BASE_PROJECTION.m22()).putFloat(4, BASE_PROJECTION.m32()).putFloat(8, IrisUniformValues.NEAR).putFloat(12, far);
         RenderSystem.getDevice().createCommandEncoder().writeToBuffer(depthParams.slice(), data);
         if (depthPipeline == null) {
             depthPipeline = RenderPipeline.builder()
@@ -612,7 +699,7 @@ public final class IrisPipeline {
     // ---- failure and tracing ----
 
     /** How many of the first pixels of the top row {@link #traceFloats} logs. */
-    private static final int ROW_PIXELS = 64;
+    private static final int ROW_PIXELS = 128;
 
     /**
      * Development aid: logs the first pixels of the top row of a buffer of any format as numbers, which is how a test sees

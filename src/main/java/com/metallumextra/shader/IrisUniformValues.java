@@ -21,7 +21,7 @@ public final class IrisUniformValues {
     public static final float NEAR = 0.05F;
 
     /** Everything one frame's values are made from. Times are in seconds, angles in radians, positions in blocks. */
-    public record Inputs(Matrix4f view, Matrix4f gameProjection, float far, double cameraX, double cameraY, double cameraZ,
+    public record Inputs(Matrix4f view, Matrix4f gameProjection, Matrix4f baseProjection, float far, double cameraX, double cameraY, double cameraZ,
                          float sunAngle, float moonAngle, float sunPathTilt, long clockTicks, int moonPhase,
                          float rain, float thunder, double time, double frameTime, long frameCounter, int width, int height,
                          float screenBrightness, float nightVision, float blindness, float darkness,
@@ -41,13 +41,14 @@ public final class IrisUniformValues {
     private double smoothSky;
 
     /** The projection Iris shaders expect: the game's field of view and aspect, with near {@value #NEAR} and far {@code far}, in OpenGL's depth range. */
-    public static Matrix4f glProjection(final Matrix4f game, final float far) {
-        Matrix4f result = new Matrix4f(game);
+    public static Matrix4f glProjection(final Matrix4f game, final Matrix4f base, final float far) {
+        Matrix4f result = new Matrix4f(base);
         result.m22((far + NEAR) / (NEAR - far));
         result.m32(2.0F * far * NEAR / (NEAR - far));
         result.m23(-1.0F);
         result.m33(0.0F);
-        return result;
+        // Convert depth before reapplying camera bob/hurt/portal transforms, not by overwriting their matrix entries.
+        return result.mul(new Matrix4f(base).invert().mul(game));
     }
 
     /**
@@ -77,7 +78,7 @@ public final class IrisUniformValues {
     /** The values of one frame, by name; matrices are 16 numbers in column-major order, vectors their components. */
     public Map<String, double[]> frame(final Inputs in) {
         Map<String, double[]> v = new HashMap<>();
-        Matrix4f projection = glProjection(in.gameProjection, in.far);
+        Matrix4f projection = glProjection(in.gameProjection, in.baseProjection, in.far);
         Matrix4f viewInverse = new Matrix4f(in.view).invert();
         Matrix4f projectionInverse = new Matrix4f(projection).invert();
         if (!started) {
@@ -111,6 +112,14 @@ public final class IrisUniformValues {
         v.put("normalMatrix", normalValues);
         v.put("cameraPosition", new double[] {in.cameraX, in.cameraY, in.cameraZ});
         v.put("previousCameraPosition", new double[] {previousX, previousY, previousZ});
+        // The same positions as a whole number of blocks and the rest, which keeps the precision a position far from the origin has no room for in a float.
+        v.put("cameraPositionInt", new double[] {Math.floor(in.cameraX), Math.floor(in.cameraY), Math.floor(in.cameraZ)});
+        v.put("cameraPositionFract", new double[] {in.cameraX - Math.floor(in.cameraX), in.cameraY - Math.floor(in.cameraY), in.cameraZ - Math.floor(in.cameraZ)});
+        v.put("previousCameraPositionInt", new double[] {Math.floor(previousX), Math.floor(previousY), Math.floor(previousZ)});
+        v.put("previousCameraPositionFract", new double[] {previousX - Math.floor(previousX), previousY - Math.floor(previousY), previousZ - Math.floor(previousZ)});
+        // The eye is where the camera is in first person; in third person it is not, and this version does not say how far.
+        v.put("relativeEyePosition", new double[] {0, 0, 0});
+        v.put("darknessLightFactor", new double[] {in.darkness});
 
         float sunAngle = irisSunAngle(in.sunAngle);
         Vector3f sun = viewDirection(in.view, celestialDirection(in.sunAngle, in.sunPathTilt));
@@ -147,6 +156,8 @@ public final class IrisUniformValues {
         v.put("screenBrightness", new double[] {in.screenBrightness});
         v.put("nightVision", new double[] {in.nightVision});
         v.put("blindness", new double[] {in.blindness});
+        // Not checked against Iris: the square root of blindness (0 without the effect either way).
+        v.put("blindFactor", new double[] {Math.sqrt(Math.max(0.0, in.blindness))});
         v.put("darknessFactor", new double[] {in.darkness});
         v.put("worldTime", new double[] {Math.floorMod(in.clockTicks, 24000L)});
         v.put("worldDay", new double[] {Math.floorDiv(in.clockTicks, 24000L)});

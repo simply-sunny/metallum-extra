@@ -1,5 +1,6 @@
 package com.metallumextra.shader;
 
+import com.metallumextra.shader.pack.IrisPlan;
 import com.metallumextra.shader.pack.IrisUniforms;
 import com.mojang.blaze3d.pipeline.BindGroupLayout;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
@@ -27,16 +28,28 @@ public final class ShaderBindings {
     public static final String DEPTH0 = "MxDepth0";
     public static final String DEPTH1 = "MxDepth1";
 
-    /** In mask order: bit 0 is the uniform block of the standard uniforms, the rest textures. */
-    public static final String[] NAMES = {IrisUniforms.BLOCK, SHADOW_MAP, LightColorGrid.SAMPLER, SHADOW_COLOR, COLOR0, DEPTH0, DEPTH1};
+    /** Prefix of the names of the slots for the other things the programs that draw the world read (see {@code IrisPlan#worldSlots}). */
+    public static final String WORLD_SLOT = "MxWorld";
+    private static final int FIXED = 7;
 
-    private static final int IRIS = 1;
-    private static final int SHADOW = 1 << 1;
-    private static final int LIGHT_COLORS = 1 << 2;
-    private static final int SHADOW_COLOR_BIT = 1 << 3;
-    private static final int COLOR0_BIT = 1 << 4;
-    private static final int DEPTH0_BIT = 1 << 5;
-    private static final int DEPTH1_BIT = 1 << 6;
+    /** In mask order: bit 0 is the uniform block of the standard uniforms, the rest textures; then the world's slots. */
+    public static final String[] NAMES = names();
+
+    private static String[] names() {
+        String[] names = new String[FIXED + IrisPlan.WORLD_SLOTS];
+        String[] fixed = {IrisUniforms.BLOCK, SHADOW_MAP, LightColorGrid.SAMPLER, SHADOW_COLOR, COLOR0, DEPTH0, DEPTH1};
+        System.arraycopy(fixed, 0, names, 0, FIXED);
+        for (int i = 0; i < IrisPlan.WORLD_SLOTS; i++) names[FIXED + i] = WORLD_SLOT + i;
+        return names;
+    }
+
+    private static final long IRIS = 1;
+    private static final long SHADOW = 1L << 1;
+    private static final long LIGHT_COLORS = 1L << 2;
+    private static final long SHADOW_COLOR_BIT = 1L << 3;
+    private static final long COLOR0_BIT = 1L << 4;
+    private static final long DEPTH0_BIT = 1L << 5;
+    private static final long DEPTH1_BIT = 1L << 6;
 
     private static final Identifier BLOB_SHADOW = Identifier.withDefaultNamespace("pipeline/entity_shadow");
 
@@ -45,7 +58,7 @@ public final class ShaderBindings {
 
     /** Added to Metallum's compiled pipeline: which of {@link #NAMES} its shaders use, as a bit mask. */
     public interface Pipeline {
-        int metallumExtra$shaderBindings();
+        long metallumExtra$shaderBindings();
     }
 
     /**
@@ -74,7 +87,7 @@ public final class ShaderBindings {
     }
 
     /** Called by the render pass when it switches to a pipeline that uses any of the extra names. */
-    public static void bind(final RenderPassBackend pass, final int mask) {
+    public static void bind(final RenderPassBackend pass, final long mask) {
         if ((mask & IRIS) != 0) pass.setUniform(IrisUniforms.BLOCK, IrisPipeline.uniformBuffer());
         GpuSampler nearest = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST);
         GpuSampler linear = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR);
@@ -84,5 +97,9 @@ public final class ShaderBindings {
         if ((mask & DEPTH0_BIT) != 0) pass.bindTexture(DEPTH0, IrisPipeline.worldDepth(), nearest);
         if ((mask & DEPTH1_BIT) != 0) pass.bindTexture(DEPTH1, IrisPipeline.worldDepth(), nearest);
         if ((mask & LIGHT_COLORS) != 0) pass.bindTexture(LightColorGrid.SAMPLER, Shaders.lightColors().view(), linear);
+        long slots = mask >>> FIXED;
+        for (int slot = 0; slots != 0 && slot < IrisPlan.WORLD_SLOTS; slot++, slots >>>= 1) {
+            if ((slots & 1) != 0) IrisPipeline.bindWorldSlot(pass, WORLD_SLOT + slot, slot);
+        }
     }
 }

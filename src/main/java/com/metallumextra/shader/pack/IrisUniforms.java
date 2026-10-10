@@ -47,7 +47,7 @@ public final class IrisUniforms {
             new Uniform("frameTime", "float"), new Uniform("frameTimeCounter", "float"),
             new Uniform("viewWidth", "float"), new Uniform("viewHeight", "float"), new Uniform("aspectRatio", "float"),
             new Uniform("screenBrightness", "float"), new Uniform("near", "float"), new Uniform("far", "float"),
-            new Uniform("nightVision", "float"), new Uniform("blindness", "float"), new Uniform("darknessFactor", "float"),
+            new Uniform("nightVision", "float"), new Uniform("blindness", "float"), new Uniform("blindFactor", "float"), new Uniform("darknessFactor", "float"),
             new Uniform("frameCounter", "int"), new Uniform("worldTime", "int"), new Uniform("worldDay", "int"),
             new Uniform("moonPhase", "int"), new Uniform("isEyeInWater", "int"),
             new Uniform("shadowModelView", "mat4"), new Uniform("shadowModelViewInverse", "mat4"),
@@ -60,23 +60,66 @@ public final class IrisUniforms {
             new Uniform("MxFlags", "vec4"), new Uniform("MxFog", "vec4"), new Uniform("MxFogEnds", "vec4"), new Uniform("MxFogColor", "vec4"),
             new Uniform("modelViewMatrix", "mat4", true), new Uniform("modelViewMatrixInverse", "mat4", true),
             new Uniform("projectionMatrix", "mat4", true), new Uniform("projectionMatrixInverse", "mat4", true),
-            new Uniform("normalMatrix", "mat3", true));
+            new Uniform("normalMatrix", "mat3", true),
+            new Uniform("cameraPositionInt", "ivec3"), new Uniform("previousCameraPositionInt", "ivec3"),
+            new Uniform("cameraPositionFract", "vec3"), new Uniform("previousCameraPositionFract", "vec3"), new Uniform("relativeEyePosition", "vec3"),
+            new Uniform("lightningBoltPosition", "vec4"), new Uniform("playerMood", "float"), new Uniform("darknessLightFactor", "float"),
+            new Uniform("fogStart", "float"), new Uniform("fogEnd", "float"),
+            new Uniform("heldItemId", "int"), new Uniform("heldItemId2", "int"), new Uniform("heldBlockLightValue", "int"), new Uniform("heldBlockLightValue2", "int"),
+            // What is being drawn right now: not one value for the frame, so the block holds the last one set (see IrisPipeline).
+            new Uniform("entityId", "int", true), new Uniform("renderStage", "int", true), new Uniform("blockEntityId", "int", true), new Uniform("currentRenderedItemId", "int", true),
+            new Uniform("entityColor", "vec4", true),
+            // Not Iris: the table from the mesh's palette index to the id block.properties gave (see BlockIds). Programs do not declare it; the terrain's prelude uses it.
+            new Uniform("MxBlockIds", "ivec4[128]"));
 
     private static final Map<String, Uniform> BY_NAME = new LinkedHashMap<>();
+    /** The custom uniforms of the pack in use ({@code uniform.float.x = ...} in shaders.properties); every program's block holds them after the standard ones. */
+    private static volatile Map<String, Uniform> custom = Map.of();
+    private static volatile Layout customLayout;
+
+    /** Makes the custom uniforms of the pack about to be planned known. Called when a plan is built; the block's layout follows. */
+    public static synchronized void useCustom(final List<CustomUniforms.Def> defs) {
+        Map<String, Uniform> map = new LinkedHashMap<>();
+        for (CustomUniforms.Def def : defs) {
+            String type = def.type().equals("bool") ? "int" : def.type();
+            if (!BY_NAME.containsKey(def.name())) map.put(def.name(), new Uniform(def.name(), type));
+        }
+        custom = map;
+        customLayout = computeLayout(allUniforms());
+    }
+
+    /** The pack's custom uniforms and the layout they make, to put back with {@link #restoreCustom}. */
+    public static synchronized Object saveCustom() {
+        return new Object[] {custom, customLayout};
+    }
+
+    @SuppressWarnings("unchecked")
+    public static synchronized void restoreCustom(final Object saved) {
+        Object[] state = (Object[]) saved;
+        custom = (Map<String, Uniform>) state[0];
+        customLayout = (Layout) state[1];
+    }
+
+    /** Every uniform of the block: the standard ones, then the pack's own, in layout order. */
+    public static List<Uniform> allUniforms() {
+        List<Uniform> all = new ArrayList<>(ALL);
+        all.addAll(custom.values());
+        return all;
+    }
 
     /** Iris uniforms this version does not provide yet, and why; asking for one is an error that says so. */
     private static final Map<String, String> LATER = new LinkedHashMap<>();
 
     static {
         for (Uniform uniform : ALL) BY_NAME.put(uniform.name, uniform);
-        for (String name : List.of("entityId", "blockEntityId", "entityColor", "blendFunc", "renderStage", "currentRenderedItemId")) {
+        for (String name : List.of("blendFunc")) {
             LATER.put(name, "the gbuffers programs, which are not run yet");
         }
-        for (String name : List.of("centerDepthSmooth", "cameraPositionFract", "cameraPositionInt", "previousCameraPositionFract", "previousCameraPositionInt", "eyePosition",
-                "relativeEyePosition", "playerBodyVector", "playerLookVector", "heldItemId", "heldItemId2", "heldBlockLightValue", "heldBlockLightValue2", "isSpectator", "hideGUI",
-                "lightningBoltPosition", "fogStart", "fogEnd", "fogDensity", "fogShape", "fogMode", "biome", "biome_category", "biome_precipitation", "rainfall", "temperature",
-                "ambientLight", "bedrockLevel", "cloudHeight", "hasCeiling", "hasSkylight", "heightLimit", "logicalHeightLimit", "playerMood", "constantMood", "firstPersonCamera",
-                "currentDate", "currentTime", "currentYearTime", "textureFilteringMode", "endFlashPosition", "endFlashIntensity", "previousEndFlashIntensity", "darknessLightFactor")) {
+        for (String name : List.of("centerDepthSmooth", "eyePosition",
+                "playerBodyVector", "playerLookVector", "isSpectator", "hideGUI",
+                "fogDensity", "fogShape", "fogMode", "biome", "biome_category", "biome_precipitation", "rainfall", "temperature",
+                "ambientLight", "bedrockLevel", "cloudHeight", "hasCeiling", "hasSkylight", "heightLimit", "logicalHeightLimit", "constantMood", "firstPersonCamera",
+                "currentDate", "currentTime", "currentYearTime", "textureFilteringMode", "endFlashPosition", "endFlashIntensity", "previousEndFlashIntensity")) {
             LATER.put(name, "this version");
         }
     }
@@ -88,6 +131,33 @@ public final class IrisUniforms {
     private static final Pattern HEADER_LINE = Pattern.compile("(?m)^\\s*(#version[^\\n]*|#extension[^\\n]*)$");
 
     private IrisUniforms() {
+    }
+
+    /**
+     * A uniform that is neither standard nor one of the pack's own custom ones is never set by anything, which in Iris leaves it at zero; so its
+     * declaration becomes a constant zero of the same type. (A name a program also uses for a local variable is then simply shadowed.)
+     */
+    public static String zeroUndefined(final String source) {
+        Matcher match = LOOSE.matcher(source);
+        StringBuilder out = new StringBuilder();
+        while (match.find()) {
+            String type = match.group(2);
+            String[] declarators = match.group(3).split(",");
+            boolean opaque = type.matches("[iu]?sampler.*|image.*|[iu]image.*");
+            boolean allKnown = true;
+            for (String d : declarators) {
+                String name = d.strip();
+                if (name.contains("[") || !(BY_NAME.containsKey(name) || custom.containsKey(name) || TERRAIN_MACROS.contains(name))) allKnown = false;
+            }
+            if (opaque || allKnown || declarators.length != 1 || declarators[0].contains("[") || !type.matches("float|int|uint|bool|[iub]?vec[234]|mat[234]")) {
+                match.appendReplacement(out, Matcher.quoteReplacement(match.group()));
+                continue;
+            }
+            String zero = type.startsWith("mat") ? type + "(0.0)" : type + "(0)";
+            match.appendReplacement(out, Matcher.quoteReplacement(match.group(1) + "const " + type + " " + declarators[0].strip() + " = " + zero + ";"));
+        }
+        match.appendTail(out);
+        return out.toString();
     }
 
     /** The standard uniforms a source declares, in layout order. Samplers are not uniforms in this sense. */
@@ -102,8 +172,10 @@ public final class IrisUniforms {
                 if (!TERRAIN_MACROS.contains(name)) found.add(name);
             }
         }
+        // The terrain's prelude reads the block id table without any program declaring it.
+        if (BLOCK_IDS.matcher(source).find()) found.add("MxBlockIds");
         List<String> ordered = new ArrayList<>();
-        for (Uniform uniform : ALL) {
+        for (Uniform uniform : allUniforms()) {
             if (found.contains(uniform.name)) ordered.add(uniform.name);
         }
         return ordered;
@@ -121,11 +193,12 @@ public final class IrisUniforms {
 
     private static Uniform lookup(final String type, final String name) throws PackException {
         Uniform uniform = BY_NAME.get(name);
+        if (uniform == null) uniform = custom.get(name);
         if (uniform == null && TERRAIN_MACROS.contains(name)) return new Uniform(name, type, true);
         if (uniform == null) {
             String later = LATER.get(name);
             if (later != null) throw new PackException("uniform " + name + " is an Iris uniform that is not provided by " + later);
-            throw new PackException("uniform " + name + " is not a standard Iris uniform this version knows (custom uniforms are not supported yet)");
+            throw new PackException("uniform " + name + " is not a standard Iris uniform this version knows (and shaders.properties defines no custom uniform of that name)");
         }
         if (!uniform.type.equals(type)) throw new PackException("uniform " + name + " is declared " + type + ", but it is a " + uniform.type);
         return uniform;
@@ -158,7 +231,7 @@ public final class IrisUniforms {
         String stripped = out.toString();
 
         StringBuilder block = new StringBuilder("layout(std140) uniform ").append(BLOCK).append(" {\n");
-        for (Uniform uniform : ALL) {
+        for (Uniform uniform : allUniforms()) {
             block.append("    ").append(uniform.type).append(' ').append(declared.contains(uniform.name) ? uniform.name : "_mx_unused_" + uniform.name).append(";\n");
         }
         block.append("};\n");
@@ -174,17 +247,16 @@ public final class IrisUniforms {
     public record Layout(Map<String, Integer> offsets, int size) {
     }
 
-    private static final Layout LAYOUT = computeLayout();
-
     /** The {@code std140} layout of the block: each member starts at a multiple of its alignment, and a float may follow a vec3 in its last four bytes. */
-    public static Layout layout() {
-        return LAYOUT;
+    public static synchronized Layout layout() {
+        if (customLayout == null) customLayout = computeLayout(allUniforms());
+        return customLayout;
     }
 
-    private static Layout computeLayout() {
+    private static Layout computeLayout(final List<Uniform> uniforms) {
         Map<String, Integer> offsets = new LinkedHashMap<>();
         int offset = 0;
-        for (Uniform uniform : ALL) {
+        for (Uniform uniform : uniforms) {
             offset = align(offset, alignment(uniform.type));
             offsets.put(uniform.name, offset);
             offset += size(uniform.type);
@@ -200,6 +272,8 @@ public final class IrisUniforms {
         };
     }
 
+    private static final Pattern BLOCK_IDS = Pattern.compile("\\bMxBlockIds\\b");
+
     static int size(final String type) {
         return switch (type) {
             case "float", "int" -> 4;
@@ -208,6 +282,7 @@ public final class IrisUniforms {
             case "vec4", "ivec4" -> 16;
             case "mat4" -> 64;
             case "mat3" -> 48;
+            case "ivec4[128]" -> 2048;
             default -> throw new IllegalArgumentException(type);
         };
     }
@@ -217,6 +292,7 @@ public final class IrisUniforms {
     }
 
     public static @Nullable Uniform find(final String name) {
-        return BY_NAME.get(name);
+        Uniform uniform = BY_NAME.get(name);
+        return uniform != null ? uniform : custom.get(name);
     }
 }

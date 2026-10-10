@@ -131,7 +131,7 @@ public abstract class MetalRenderPassMixin implements MultiTarget.Pass {
             at = @At(value = "INVOKE", target = "Lcom/metallum/render/MetalCompiledRenderPipeline;getNativePipeline(Z)Ljava/lang/foreign/MemorySegment;"))
     private MemorySegment metallumExtra$pipelineForAttachedTargets(final @Coerce Object pipeline, final boolean depth) {
         this.metallumExtra$samplerSlots = ((SamplerSlots.Pipeline) pipeline).metallumExtra$samplerSlots();
-        int shaderBindings = ((ShaderBindings.Pipeline) pipeline).metallumExtra$shaderBindings();
+        long shaderBindings = ((ShaderBindings.Pipeline) pipeline).metallumExtra$shaderBindings();
         if (shaderBindings != 0) ShaderBindings.bind((RenderPassBackend) (Object) this, shaderBindings);
         return ((MultiTarget.Pipeline) pipeline).metallumExtra$nativePipeline(depth, this.metallumExtra$attachedTargets);
     }

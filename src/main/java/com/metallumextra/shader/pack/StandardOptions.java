@@ -69,23 +69,61 @@ public final class StandardOptions {
         found.put(name, new PackOption(name, labels.getOrDefault(name, name), List.copyOf(values), at, false));
     }
 
-    /** The text with the player's choices written in. */
+    private static final Pattern TOGGLE_LINE = Pattern.compile("^([ \\t]*)(?://[ \\t]*)?#define[ \\t]+([A-Za-z_]\\w*)\\b[ \\t]*((?://.*)?)$");
+    private static final Pattern VALUE_LINE = Pattern.compile("^([ \\t]*#define[ \\t]+)([A-Za-z_]\\w*)([ \\t]+)\\S+");
+    private static final Pattern CONSTANT_LINE = Pattern.compile("(const[ \\t]+(?:int|float|bool)[ \\t]+)([A-Za-z_]\\w*)([ \\t]*=[ \\t]*)[^;\\n]+;");
+
+    /**
+     * The text with the player's choices written in. One pass over the lines: a pack has hundreds of options and its programs thousands of lines, so
+     * looking for each option in the whole text would take longer than compiling the program.
+     */
     public static String apply(final String text, final String pack, final List<PackOption> options) {
-        String result = text;
+        Map<String, PackOption> byName = new java.util.HashMap<>();
+        Map<String, Integer> chosen = new java.util.HashMap<>();
         for (PackOption option : options) {
-            int chosen = PackOptions.get(pack, option);
-            String name = Pattern.quote(option.id());
-            if (option.toggle()) {
-                boolean on = chosen == 1;
-                Matcher match = Pattern.compile("(?m)^([ \\t]*)(?://[ \\t]*)?#define[ \\t]+" + name + "\\b[ \\t]*((?://.*)?)$").matcher(result);
-                result = match.replaceAll(m -> Matcher.quoteReplacement(m.group(1) + (on ? "" : "//") + "#define " + option.id() + (m.group(2).isEmpty() ? "" : " " + m.group(2))));
-            } else {
-                String value = option.values().get(chosen);
-                result = Pattern.compile("(?m)^([ \\t]*#define[ \\t]+" + name + "[ \\t]+)\\S+").matcher(result).replaceAll(m -> Matcher.quoteReplacement(m.group(1) + value));
-                result = Pattern.compile("(const[ \\t]+(?:int|float|bool)[ \\t]+" + name + "[ \\t]*=[ \\t]*)[^;\\n]+;").matcher(result).replaceAll(m -> Matcher.quoteReplacement(m.group(1) + value + ";"));
+            byName.put(option.id(), option);
+            chosen.put(option.id(), PackOptions.get(pack, option));
+        }
+        StringBuilder out = new StringBuilder(text.length());
+        int start = 0;
+        while (start <= text.length()) {
+            int end = text.indexOf('\n', start);
+            if (end < 0) end = text.length();
+            out.append(line(text.substring(start, end), byName, chosen));
+            if (end < text.length()) out.append('\n');
+            start = end + 1;
+        }
+        return out.toString();
+    }
+
+    private static String line(final String line, final Map<String, PackOption> byName, final Map<String, Integer> chosen) {
+        if (line.indexOf("define") < 0 && line.indexOf("const") < 0) return line;
+        Matcher match = TOGGLE_LINE.matcher(line);
+        if (match.matches()) {
+            PackOption option = byName.get(match.group(2));
+            if (option != null && option.toggle()) {
+                boolean on = chosen.get(option.id()) == 1;
+                return match.group(1) + (on ? "" : "//") + "#define " + option.id() + (match.group(3).isEmpty() ? "" : " " + match.group(3));
+            }
+            return line;
+        }
+        String result = line;
+        match = VALUE_LINE.matcher(result);
+        if (match.find()) {
+            PackOption option = byName.get(match.group(2));
+            if (option != null && !option.toggle()) {
+                result = match.group(1) + match.group(2) + match.group(3) + option.values().get(chosen.get(option.id())) + result.substring(match.end());
             }
         }
-        return result;
+        match = CONSTANT_LINE.matcher(result);
+        StringBuilder replaced = new StringBuilder();
+        while (match.find()) {
+            PackOption option = byName.get(match.group(2));
+            String replacement = option != null && !option.toggle() ? match.group(1) + match.group(2) + match.group(3) + option.values().get(chosen.get(option.id())) + ";" : match.group();
+            match.appendReplacement(replaced, Matcher.quoteReplacement(replacement));
+        }
+        match.appendTail(replaced);
+        return replaced.toString();
     }
 
     /** What each option is set to, for the conditions of {@code shaders.properties}: "true" or "false" for a toggle, the value for the others. */

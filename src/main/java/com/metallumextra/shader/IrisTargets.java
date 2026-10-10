@@ -52,6 +52,11 @@ final class IrisTargets {
     /** Textures created so far over the life of this object, for the debug counters. */
     private int created;
 
+    /** Whether the buffers are the ones this plan asked for (a pack that failed halfway through a frame is replaced by another, whose buffers do not exist yet). */
+    boolean isFor(final IrisPlan other) {
+        return other == plan;
+    }
+
     /** Makes the buffers match the plan and the size, creating them if the plan or the size changed. */
     void configure(final IrisPlan newPlan, final int newWidth, final int newHeight) {
         if (newPlan == plan && newWidth == width && newHeight == height) return;

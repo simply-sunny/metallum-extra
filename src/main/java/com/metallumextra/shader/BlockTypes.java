@@ -56,11 +56,13 @@ public final class BlockTypes {
     }
 
     public static void begin(final BlockState state) {
-        CURRENT.get()[0] = Shaders.active() ? of(state) : NONE;
+        CURRENT.get()[0] = !Shaders.active() ? NONE : BlockIds.active() ? BlockIds.indexOf(state) : of(state);
     }
 
     public static void begin(final FluidState fluid) {
-        CURRENT.get()[0] = !Shaders.active() ? NONE : fluid.is(FluidTags.WATER) ? WATER : fluid.is(FluidTags.LAVA) ? LAVA : NONE;
+        // A pack with ids of its own gives fluids the id of the block they are (water, lava).
+        CURRENT.get()[0] = !Shaders.active() ? NONE : BlockIds.active() ? BlockIds.indexOf(fluid.createLegacyBlock())
+                : fluid.is(FluidTags.WATER) ? WATER : fluid.is(FluidTags.LAVA) ? LAVA : NONE;
     }
 
     public static void end() {

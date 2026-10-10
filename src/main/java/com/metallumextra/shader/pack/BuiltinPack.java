@@ -17,10 +17,10 @@ import java.util.stream.Stream;
 
 /** The shader pack inside this mod's jar: an ordinary pack in the Iris layout, read from {@code assets/metallum-extra/pack/shaders/}. */
 public final class BuiltinPack implements ShaderPack {
-    public static final String NAME = "Metallically Beautiful";
+    public static final String NAME = "Metallically Beautiful - Internal";
 
     private static final String ROOT = "assets/metallum-extra/pack/shaders";
-    /** Development aid: read the shaders from this folder instead of the jar, so they can be edited while the game runs. */
+    /** Development aid: read the shaders from this folder. */
     private static final @Nullable Path DEV_DIR = devDir();
 
     private volatile @Nullable Map<String, String> files;

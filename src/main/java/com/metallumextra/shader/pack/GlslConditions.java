@@ -19,7 +19,33 @@ public final class GlslConditions {
     private static final Pattern DIRECTIVE = Pattern.compile("^\\s*#\\s*(ifdef|ifndef|if|elif|else|endif|define|undef)\\b(.*)$");
     private static final Pattern DEFINED = Pattern.compile("defined\\s*\\(\\s*(\\w+)\\s*\\)|defined\\s+(\\w+)");
 
+    /** The names the game's pipelines define after the pack's text is read (the vanilla shaders test these), so the text cannot decide them. */
+    private static final Set<String> PIPELINE = Set.of("ALPHA_CUTOUT", "APPLY_TEXTURE_MATRIX", "DISSOLVE", "EMISSIVE", "IS_GRAYSCALE", "IS_GUI", "IS_SEE_THROUGH",
+            "NO_CARDINAL_LIGHTING", "NO_OVERLAY", "PER_FACE_LIGHTING");
+
     private GlslConditions() {
+    }
+
+    /** Every name {@link #open} is true for that can be listed (the prefixes cannot, and are matched in {@link #open}). */
+    private static final Set<String> PIPELINE_NAMES = new java.util.AbstractSet<>() {
+        @Override
+        public boolean contains(final Object name) {
+            return name instanceof String text && open(text);
+        }
+
+        @Override
+        public java.util.Iterator<String> iterator() {
+            return PIPELINE.iterator();
+        }
+
+        @Override
+        public int size() {
+            return PIPELINE.size();
+        }
+    };
+
+    private static boolean open(final String name) {
+        return PIPELINE.contains(name) || name.startsWith("MX_") || name.startsWith("USE_");
     }
 
     /** One level of nesting: whether its current branch is kept, and whether any earlier branch of it was taken (so an else is not). */
@@ -30,38 +56,59 @@ public final class GlslConditions {
         boolean open;
     }
 
+    private static final Pattern DEFINE_BODY = Pattern.compile("(\\w+)\\s*(.*?)\\s*(?://.*)?$");
+
     /**
+     * For analysis (which samplers and inputs a program really has): the text with every directive blank and the lines the conditions rule out blank too. A
+     * condition that cannot be decided keeps both of its sides.
+     *
      * @param options the names of the pack's options: each is known, and defined or not as the text says
      */
     public static String strip(final String source, final Set<String> options) {
-        Map<String, String> defined = new HashMap<>();
-        // Names the text defines anywhere are known; an option that no line defines is known to be off.
-        Matcher all = Pattern.compile("(?m)^\\s*#\\s*define\\s+(\\w+)\\s*(.*?)\\s*(?://.*)?$").matcher(source);
-        Set<String> known = new java.util.HashSet<>(options);
-        while (all.find()) known.add(all.group(1));
+        return process(source, options, false);
+    }
 
-        StringBuilder out = new StringBuilder(source.length());
+    /**
+     * For compiling: the text with the lines that decided conditions rule out blank, and the directives of those conditions blank. A condition that cannot
+     * be decided (a name the game defines when it compiles) is left exactly as written, with both of its sides, for the compiler's preprocessor to decide.
+     */
+    public static String decide(final String source, final Set<String> options) {
+        return process(source, options, true);
+    }
+
+    private static String process(final String source, final Set<String> options, final boolean keepOpen) {
+        Map<String, String> defined = new HashMap<>();
+        String[] lines = source.split("\n", -1);
+        // The directive on each line, and the condition it belongs to (null for a line that is not part of one).
+        Level[] owner = new Level[lines.length];
+        boolean[] directive = new boolean[lines.length];
+        boolean[] keptLine = new boolean[lines.length];
         Deque<Level> stack = new ArrayDeque<>();
         boolean kept = true;
-        for (String line : source.split("\n", -1)) {
-            Matcher match = DIRECTIVE.matcher(line);
-            String kind = match.matches() ? match.group(1) : "";
-            String rest = match.matches() ? match.group(2).strip() : "";
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i];
+            Matcher match = line.indexOf('#') < 0 ? null : DIRECTIVE.matcher(line);
+            boolean isDirective = match != null && match.matches();
+            String kind = isDirective ? match.group(1) : "";
+            String rest = isDirective ? match.group(2).strip() : "";
+            directive[i] = isDirective && !kind.equals("define") && !kind.equals("undef");
             switch (kind) {
                 case "ifdef", "ifndef", "if" -> {
                     Level level = new Level();
                     level.parentKept = kept;
-                    Boolean value = condition(kind, rest, defined, known);
+                    Boolean value = condition(kind, rest, defined, options);
                     level.open = value == null;
                     level.kept = value == null || value;
                     level.taken = value != null && value;
                     stack.push(level);
+                    owner[i] = level;
                     kept = level.parentKept && level.kept;
                 }
                 case "elif" -> {
                     Level level = stack.peek();
+                    owner[i] = level;
                     if (level != null) {
-                        Boolean value = level.taken ? Boolean.FALSE : condition("if", rest, defined, known);
+                        Boolean value = level.taken ? Boolean.FALSE : condition("if", rest, defined, options);
                         level.open |= value == null;
                         level.kept = value == null || value;
                         level.taken |= value != null && value;
@@ -70,6 +117,7 @@ public final class GlslConditions {
                 }
                 case "else" -> {
                     Level level = stack.peek();
+                    owner[i] = level;
                     if (level != null) {
                         level.kept = level.open || !level.taken;
                         kept = level.parentKept && level.kept;
@@ -77,11 +125,12 @@ public final class GlslConditions {
                 }
                 case "endif" -> {
                     Level level = stack.poll();
+                    owner[i] = level;
                     if (level != null) kept = level.parentKept;
                 }
                 case "define" -> {
                     if (kept) {
-                        Matcher d = Pattern.compile("(\\w+)\\s*(.*?)\\s*(?://.*)?$").matcher(rest);
+                        Matcher d = DEFINE_BODY.matcher(rest);
                         if (d.matches()) defined.put(d.group(1), d.group(2));
                     }
                 }
@@ -91,9 +140,19 @@ public final class GlslConditions {
                 default -> {
                 }
             }
-            out.append(kept && (kind.isEmpty() || kind.equals("define")) ? line : "").append('\n');
+            keptLine[i] = kept;
         }
-        out.setLength(Math.max(0, out.length() - 1));
+        StringBuilder out = new StringBuilder(source.length());
+        for (int i = 0; i < lines.length; i++) {
+            if (directive[i]) {
+                // A condition the text cannot decide stays in the text, if the code around it does.
+                Level level = owner[i];
+                if (keepOpen && level != null && level.open && level.parentKept) out.append(lines[i]);
+            } else if (keptLine[i]) {
+                out.append(lines[i]);
+            }
+            if (i < lines.length - 1) out.append('\n');
+        }
         return out.toString();
     }
 
@@ -101,34 +160,15 @@ public final class GlslConditions {
     private static Boolean condition(final String kind, final String text, final Map<String, String> defined, final Set<String> known) {
         switch (kind) {
             case "ifdef":
-                return known.contains(text) ? Boolean.valueOf(defined.containsKey(text)) : null;
+                return open(text) ? null : Boolean.valueOf(defined.containsKey(text));
             case "ifndef":
-                return known.contains(text) ? Boolean.valueOf(!defined.containsKey(text)) : null;
+                return open(text) ? null : Boolean.valueOf(!defined.containsKey(text));
             default:
                 break;
         }
-        String expression = text.replaceAll("//.*$", "").strip();
-        Matcher match = DEFINED.matcher(expression);
-        StringBuilder replaced = new StringBuilder();
-        while (match.find()) {
-            String name = match.group(1) != null ? match.group(1) : match.group(2);
-            if (!known.contains(name)) return null;
-            match.appendReplacement(replaced, defined.containsKey(name) ? "true" : "false");
-        }
-        match.appendTail(replaced);
-        // Names the text defines have their values; a name it does not know leaves the condition open.
-        Map<String, String> values = new HashMap<>();
-        Matcher names = Pattern.compile("[A-Za-z_]\\w*").matcher(replaced);
-        while (names.find()) {
-            String name = names.group();
-            if (name.equals("true") || name.equals("false")) continue;
-            if (!defined.containsKey(name)) return null;
-            String value = defined.get(name);
-            values.put(name, value.isEmpty() ? "true" : value);
-        }
         try {
-            return OptionExpression.evaluate(replaced.toString(), values);
-        } catch (PackException e) {
+            return PreprocessorExpression.evaluate(text.replaceAll("//.*$", "").replaceAll("/\\*.*?\\*/", " ").strip(), defined, PIPELINE_NAMES);
+        } catch (PreprocessorExpression.Open | PackException e) {
             return null;
         }
     }

@@ -88,11 +88,11 @@ public final class MetallumExtraBridge {
     }
 
     /** Bit {@code i} is set when the pipeline's shaders use the uniform block or texture called {@code names[i]}. */
-    public static int resourceMask(final Object compiledPipeline, final String[] names) {
+    public static long resourceMask(final Object compiledPipeline, final String[] names) {
         MetalCompiledRenderPipeline pipeline = (MetalCompiledRenderPipeline) compiledPipeline;
-        int mask = 0;
+        long mask = 0;
         for (int i = 0; i < names.length; i++) {
-            if (pipeline.resource(names[i]) != null) mask |= 1 << i;
+            if (pipeline.resource(names[i]) != null) mask |= 1L << i;
         }
         return mask;
     }

@@ -5,7 +5,6 @@ import com.metallumextra.MetallumExtra;
 import com.metallumextra.shader.ShaderSources;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.components.toasts.SystemToast;
 import net.minecraft.network.chat.Component;
 import org.jspecify.annotations.Nullable;
 
@@ -173,8 +172,9 @@ public final class PackManager {
             if (entry.error != null) problem = entry.error;
         } else if (!saved.equals(BUILTIN_ID)) {
             String why = entry == null ? "is not in the shaderpacks folder" : "cannot be used: " + entry.error;
-            problem = "Shader pack " + saved + " " + why + ". Using the built-in shaders.";
+            problem = "Shader pack " + saved + " " + why + ". Shaders are off.";
             MetallumExtra.LOGGER.warn("[Metallum Extra] {}", problem);
+            ExtraConfig.get().setShadersEnabled(false);
         }
     }
 
@@ -250,7 +250,9 @@ public final class PackManager {
         FAILURES.remove(entry.id);
         if (entry.pack != null && !VALIDATED.contains(entry.id + ":" + entry.fingerprint)) {
             try {
-                validate(entry.pack);
+                try (var step = com.metallumextra.ResourceLog.step("validate-pack", entry.id)) {
+                    validate(entry.pack);
+                }
                 VALIDATED.add(entry.id + ":" + entry.fingerprint);
             } catch (RuntimeException | PackException e) {
                 // The pack cannot run: it is listed with the reason, and what was in use stays in use.
@@ -258,8 +260,9 @@ public final class PackManager {
                 FAILURES.put(entry.id, new Failure(e.getMessage(), entry.fingerprint));
                 entries = markFailed(entries, entry.id, e.getMessage());
                 problem = "Shader pack " + entry.id + " cannot be used: " + e.getMessage();
-                ExtraConfig.get().setShaderPack(activeId);
-                return changed;
+                ExtraConfig.get().setShadersEnabled(false);
+                tell("Shader load failed: " + entry.id + " (" + e.getMessage() + "). Shaders are off.");
+                return true;
             }
         }
         apply(entry);
@@ -283,27 +286,39 @@ public final class PackManager {
      * @return false if the built-in shaders were in use, which have nothing to fall back to
      */
     public static synchronized boolean fail(final Throwable cause) {
-        if (activeId.equals(BUILTIN_ID)) return false;
+        // Shaders are already off (several pipelines of the pack fail in the same frame): the first failure said it.
+        if (!ExtraConfig.get().shadersEnabled) return true;
         String failedId = activeId;
         String message = describe(cause);
         FAILURES.put(failedId, new Failure(message, activeFingerprint));
         MetallumExtra.LOGGER.error("[Metallum Extra] Shader pack {} is broken and is switched off: {}", failedId, message, cause);
-
-        boolean usable = !lastWorkingId.equals(failedId) && !FAILURES.containsKey(lastWorkingId);
-        Entry fallback = usable
-                ? new Entry(lastWorkingId, lastWorkingId, lastWorking, null, lastWorkingFingerprint)
-                : BUILTIN_ENTRY;
-        apply(fallback);
+        // Shaders go off: the pipelines of the pack are thrown away at the start of the next frame, and until then the built-in entry only keeps lookups valid.
+        apply(BUILTIN_ENTRY);
         pending = null;
         flush = true;
         problem = "Shader pack " + failedId + " failed: " + message;
-        ExtraConfig.get().setShaderPack(fallback.id);
+        ExtraConfig.get().setShadersEnabled(false);
         entries = markFailed(entries, failedId, message);
-        Minecraft minecraft = Minecraft.getInstance();
-        minecraft.execute(() -> SystemToast.add(minecraft.gui.toastManager(), SystemToast.SystemToastId.PACK_LOAD_FAILURE,
-                Component.literal("Shader pack " + failedId + " failed"),
-                Component.literal(usable ? "Back to " + lastWorkingId : "Back to the built-in shaders")));
+        tell("Shader load failed: " + failedId + " (" + message + "). Shaders are off.");
         return true;
+    }
+
+    /** Things to say in the chat, kept until the start of the next frame: a pack can fail while a render pass is open, and the chat draws text, which uploads glyphs, which cannot be done then. */
+    private static final java.util.Queue<String> MESSAGES = new java.util.concurrent.ConcurrentLinkedQueue<>();
+
+    /** Says something in the chat, where the player will see it; without a world it is only in the log. */
+    private static void tell(final String text) {
+        MESSAGES.add(text);
+    }
+
+    /** At the start of a frame, when nothing is being drawn: the chat lines that were waiting. */
+    public static void sayWaiting() {
+        if (MESSAGES.isEmpty()) return;
+        Minecraft minecraft = Minecraft.getInstance();
+        String text;
+        while ((text = MESSAGES.poll()) != null) {
+            if (minecraft.player != null) minecraft.player.sendSystemMessage(Component.literal("[Metallum Extra] " + text));
+        }
     }
 
     private static List<Entry> markFailed(final List<Entry> list, final String id, final String message) {

@@ -2,9 +2,11 @@ package com.metallumextra.shader;
 
 import com.metallumextra.shader.pack.IrisPlan;
 import com.metallumextra.shader.pack.IrisUniforms;
-import com.mojang.blaze3d.pipeline.BindGroupLayout;
-import com.mojang.blaze3d.pipeline.RenderPipeline;
-import com.mojang.blaze3d.vertex.VertexFormat;
+import com.mojang.renderpearl.api.pipeline.BindGroupLayout;
+import com.mojang.renderpearl.api.pipeline.RenderPipeline;
+import com.mojang.renderpearl.api.vertex.VertexFormat;
+
+import org.jspecify.annotations.Nullable;
 
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -33,16 +35,18 @@ public final class IrisWorldAdapter {
                 uv2 |= binding.contains("UV2");
                 normal |= binding.contains("Normal");
             }
-            var samplers = BindGroupLayout.flattenSamplers(pipeline.getBindGroupLayouts());
-            return new Format(color, uv0, uv1, uv2, normal, pipeline.getVertexShader().getPath().equals("core/block"), samplers.contains("Sampler0"), samplers.contains("Sampler2"),
-                    pipeline.getVertexShader().getPath().equals("core/rendertype_clouds"), samplers.contains("Sampler1"));
+            var samplers = BindGroupLayout.flattenUniforms(pipeline.getBindGroupLayouts()).stream()
+                    .filter(uniform -> uniform.type() == com.mojang.renderpearl.api.pipeline.UniformType.COMBINED_IMAGE_SAMPLER)
+                    .map(BindGroupLayout.UniformDescription::name).toList();
+            return new Format(color, uv0, uv1, uv2, normal, IrisWorld.vertexOf(pipeline).getPath().equals("core/block"), samplers.contains("Sampler0"), samplers.contains("Sampler2"),
+                    IrisWorld.vertexOf(pipeline).getPath().equals("core/rendertype_clouds"), samplers.contains("Sampler1"));
         }
     }
 
     /** The matrices of the programs that draw the world, which for these pipelines are the game's per-draw ones, not a frame's. */
     private static final String[] MATRICES = {"modelViewMatrix", "modelViewMatrixInverse", "projectionMatrix", "projectionMatrixInverse", "normalMatrix"};
     private static final String[] INPUTS = {"vaPosition", "vaColor", "vaUV0", "vaUV1", "vaUV2", "vaNormal", "mc_Entity", "mc_chunkFade", "mc_midTexCoord", "at_tangent", "at_midBlock"};
-    private static final Pattern HEADER_LINE = Pattern.compile("(?m)^\\s*(#version[^\\n]*|#extension[^\\n]*)$");
+    private static final Pattern HEADER_LINE = Pattern.compile("(?m)^[ \\t]*(#version[^\\n]*|#extension[^\\n]*)$");
     private static final Pattern OUTPUT_LOCATION = Pattern.compile("layout\\s*\\(\\s*location\\s*=\\s*(\\d+)\\s*\\)(\\s*(?:flat\\s+)?out\\b)");
     private static final Pattern OUTPUT_NAMED = Pattern.compile("(?m)^([ \\t]*)out(\\s+(?:highp\\s+|mediump\\s+|lowp\\s+)?vec4\\s+outColor(\\d+)\\s*;)");
 
@@ -64,7 +68,7 @@ public final class IrisWorldAdapter {
     /** The samplers of the buffers and shadow maps, by the names the pack reads them with and the internal names they are bound by (see {@link ShaderBindings}). */
     private static final java.util.Map<String, String> BOUND_SAMPLERS = java.util.Map.ofEntries(
             java.util.Map.entry("shadowtex0", ShaderBindings.SHADOW_MAP), java.util.Map.entry("shadowtex1", ShaderBindings.SHADOW_MAP),
-            java.util.Map.entry("shadowcolor0", ShaderBindings.SHADOW_COLOR),
+            java.util.Map.entry("shadowcolor0", ShaderBindings.SHADOW_COLOR), java.util.Map.entry("shadowcolor1", ShaderBindings.SHADOW_COLOR1),
             java.util.Map.entry("colortex0", ShaderBindings.COLOR0), java.util.Map.entry("gcolor", ShaderBindings.COLOR0),
             java.util.Map.entry("depthtex0", ShaderBindings.DEPTH0), java.util.Map.entry("gdepthtex", ShaderBindings.DEPTH0),
             java.util.Map.entry("depthtex1", ShaderBindings.DEPTH1));
@@ -153,7 +157,7 @@ public final class IrisWorldAdapter {
      * A program for the sky (see {@link #SKY_PRELUDE}). Nothing is drawn with depth there, so the depth the vertex stage leaves is simply made valid.
      */
     public static String adaptSky(final String source, final boolean vertex) {
-        String text = source;
+        String text = declarationsWithoutComments(source);
         if (vertex) {
             for (String name : INPUTS) {
                 text = Pattern.compile("(?m)^[ \\t]*(?:layout\\s*\\([^)]*\\)\\s*)?in\\s+(?:(?:highp|mediump|lowp)\\s+)?\\w+\\s+" + name + "\\s*;[ \\t]*$").matcher(text).replaceAll("");
@@ -178,7 +182,14 @@ public final class IrisWorldAdapter {
         if (!vertex) return result;
         Matcher main = MAIN.matcher(result);
         if (!main.find()) return result;
-        return main.replaceFirst("void mx_pack_main()") + "\nvoid main() {\n    mx_pack_main();\n    gl_Position.z = gl_Position.w * 0.5;\n}\n";
+        return main.replaceAll("void mx_pack_main()") + "\nvoid main() {\n    mx_pack_main();\n    gl_Position.z = gl_Position.w * 0.5;\n}\n";
+    }
+
+    private static final Pattern DECLARATION_COMMENT = Pattern.compile("(?m)^([ \\t]*(?:layout\\s*\\([^)]*\\)\\s*)?(?:flat\\s+)?(?:uniform|in|out)\\s[^;\\n]*;)[ \\t]*//[^\\n]*$");
+
+    /** A comment after a declaration ({@code uniform sampler2D colortex4; // sky map}) would hide it from the patterns that look for whole lines. */
+    public static String declarationsWithoutComments(final String source) {
+        return DECLARATION_COMMENT.matcher(source).replaceAll("$1");
     }
 
     /** The source without its loose declarations of these uniforms. */
@@ -233,7 +244,17 @@ public final class IrisWorldAdapter {
     static String shadowClip(final String vertex) {
         Matcher match = MAIN.matcher(vertex);
         if (!match.find()) return vertex;
-        return match.replaceFirst("void mx_pack_main()") + "\nvoid main() {\n    mx_pack_main();\n    gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5;\n}\n";
+        return match.replaceAll("void mx_pack_main()") + "\nvoid main() {\n    mx_pack_main();\n    gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5;\n}\n";
+    }
+
+    /** A program that is told what the game is drawing ({@code uniform int renderStage}) gets it as a constant, since one pipeline is made for each thing. */
+    public static String withRenderStage(final String source, final int stage) {
+        if (stage == 0) return source;
+        String text = Pattern.compile("(?m)^[ \\t]*uniform[ \\t]+int[ \\t]+renderStage[ \\t]*;[ \\t]*$").matcher(source).replaceAll("");
+        Matcher header = HEADER_LINE.matcher(text);
+        int at = 0;
+        while (header.find()) at = header.end();
+        return text.substring(0, at) + "\nconst int renderStage = " + stage + ";\n" + text.substring(at);
     }
 
     public static String adapt(final String source, final boolean vertex, final Format format) {
@@ -242,7 +263,7 @@ public final class IrisWorldAdapter {
 
     /** @param shadow the program draws the shadow map (see {@link #SHADOW_PRELUDE_WORLD}) */
     public static String adapt(final String source, final boolean vertex, final Format format, final boolean shadow) {
-        String text = source;
+        String text = declarationsWithoutComments(source);
         if (shadow) text = stripDeclarations(text, java.util.List.of("shadowModelView", "shadowProjection", "gbufferModelViewInverse"));
         if (vertex) {
             for (String name : INPUTS) {
@@ -262,7 +283,7 @@ public final class IrisWorldAdapter {
         text = bound[0];
 
         StringBuilder p = new StringBuilder("\n");
-        p.append("layout(std140) uniform DynamicTransforms {\n    mat4 ModelViewMat;\n    vec4 ColorModulator;\n    vec3 ModelOffset;\n    mat4 TextureMat;\n};\n");
+        p.append("layout(std140) uniform DynamicTransforms {\n    mat4 ModelViewMat;\n    mat4 TextureMat;\n    vec4 ColorModulator;\n    vec3 ModelOffset;\n};\n");
         p.append("layout(std140) uniform Projection {\n    mat4 ProjMat;\n};\n");
         if (vertex && format.cloud()) {
             p.append(CLOUD_PRELUDE);
@@ -298,6 +319,11 @@ public final class IrisWorldAdapter {
         p.append("#ifdef ALPHA_CUTOUT\n#define alphaTestRef ALPHA_CUTOUT\n#else\n#define alphaTestRef 0.0\n#endif\n");
         if (atlas) p.append("uniform sampler2D Sampler0;\n#define gtexture Sampler0\n#define atlasSize textureSize(Sampler0, 0)\n");
         if (light) p.append("uniform sampler2D Sampler2;\n#define lightmap Sampler2\n");
+        // A program that reads a texture this pipeline has none of (the clouds have no atlas) reads a white texel, so what it multiplies by is left alone.
+        boolean wantsAtlas = uses(text, "gtexture") && !format.atlas(), wantsLight = uses(text, "lightmap") && !format.light();
+        if (wantsAtlas || wantsLight) p.append("uniform sampler2D ").append(ShaderBindings.WHITE).append(";\n");
+        if (wantsAtlas) p.append("#define gtexture ").append(ShaderBindings.WHITE).append("\n#define atlasSize ivec2(1)\n");
+        if (wantsLight) p.append("#define lightmap ").append(ShaderBindings.WHITE).append('\n');
 
         int at = 0;
         Matcher header = HEADER_LINE.matcher(text);
@@ -311,11 +337,28 @@ public final class IrisWorldAdapter {
      * {@code b}; so each output is moved to the attachment of its buffer.
      */
     public static String remapOutputs(final String fragment, final int[] writes) {
+        return remapOutputs(fragment, writes, null, 0.1F);
+    }
+
+    /**
+     * @param plan the plan whose attachments the outputs are moved to (see {@link IrisPlan#attachment}); null leaves each output at the number of its buffer
+     * @param alphaThreshold what the first output's alpha must be above to be kept; zero or less keeps everything
+     */
+    public static String remapOutputs(final String fragment, final int[] writes, final @Nullable IrisPlan plan, final float alphaThreshold) {
+        // Outputs the program declares beyond the buffers it writes go to attachments nothing else uses.
+        java.util.Set<Integer> taken = new java.util.HashSet<>();
+        for (int buffer : writes) taken.add(plan == null ? buffer : plan.attachment(buffer));
+        java.util.Deque<Integer> spare = new java.util.ArrayDeque<>();
+        for (int i = 0; i < 8; i++) if (!taken.contains(i)) spare.add(i);
+        java.util.Map<Integer, Integer> spareFor = new java.util.HashMap<>();
+        // The alpha test is on the program's first output, wherever the buffer it goes to ends up.
+        Matcher first = FIRST_OUTPUT.matcher(fragment);
+        String firstName = first.find() ? first.group(1) : null;
         Matcher match = OUTPUT_LOCATION.matcher(fragment);
         StringBuilder out = new StringBuilder();
         while (match.find()) {
             int n = Integer.parseInt(match.group(1));
-            int to = n < writes.length ? writes[n] : n;
+            int to = n < writes.length ? (plan == null ? writes[n] : plan.attachment(writes[n])) : spareFor.computeIfAbsent(n, k -> spare.isEmpty() ? k : spare.poll());
             match.appendReplacement(out, Matcher.quoteReplacement("layout(location = " + to + ")" + match.group(2)));
         }
         match.appendTail(out);
@@ -323,11 +366,24 @@ public final class IrisWorldAdapter {
         StringBuilder named = new StringBuilder();
         while (match.find()) {
             int n = Integer.parseInt(match.group(3));
-            int to = n < writes.length ? writes[n] : n;
+            int to = n < writes.length ? (plan == null ? writes[n] : plan.attachment(writes[n])) : spareFor.computeIfAbsent(n, k -> spare.isEmpty() ? k : spare.poll());
             match.appendReplacement(named, Matcher.quoteReplacement(match.group(1) + "layout(location = " + to + ") out" + match.group(2)));
         }
         match.appendTail(named);
-        return named.toString();
+        return alphaTest(named.toString(), alphaThreshold, firstName);
+    }
+
+    private static final Pattern FIRST_OUTPUT = Pattern.compile("layout\\s*\\(\\s*location\\s*=\\s*0\\s*\\)\\s*out\\s+(?:(?:highp|mediump|lowp)\\s+)?vec4\\s+(\\w+)\\s*;");
+
+    /**
+     * Iris tests the alpha of what a program draws into its first target: below a tenth it is thrown away (the particles' and the foliage's transparent
+     * texels). The programs rely on it, since the game's own shaders it replaces did the same; without it a smoke particle is a black square.
+     */
+    static String alphaTest(final String fragment, final float threshold, final @Nullable String outputName) {
+        if (threshold <= 0.0F || outputName == null) return fragment;
+        Matcher main = MAIN.matcher(fragment);
+        if (!main.find() || fragment.contains("mx_alpha_main")) return fragment;
+        return main.replaceAll("void mx_alpha_main()") + "\nvoid main() {\n    mx_alpha_main();\n    if (" + outputName + ".a < " + threshold + ") discard;\n}\n";
     }
 
     private static boolean uses(final String text, final String name) {

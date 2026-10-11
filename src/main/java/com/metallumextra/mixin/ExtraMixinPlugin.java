@@ -1,5 +1,6 @@
 package com.metallumextra.mixin;
 
+import net.fabricmc.loader.api.FabricLoader;
 import org.objectweb.asm.tree.ClassNode;
 import org.spongepowered.asm.mixin.extensibility.IMixinConfigPlugin;
 import org.spongepowered.asm.mixin.extensibility.IMixinInfo;
@@ -8,7 +9,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
-/** Only patch Metallum on macOS (Metallum itself only activates there). */
+/** Only patch Metallum on macOS (Metallum itself only activates there), and only patch Voxy when it is installed. */
 public final class ExtraMixinPlugin implements IMixinConfigPlugin {
     private boolean isMacOs;
 
@@ -24,7 +25,11 @@ public final class ExtraMixinPlugin implements IMixinConfigPlugin {
 
     @Override
     public boolean shouldApplyMixin(final String targetClassName, final String mixinClassName) {
-        return this.isMacOs;
+        if (!this.isMacOs) {
+            return false;
+        }
+        // The Voxy bridge targets Voxy's classes, which only exist when Voxy is installed.
+        return !mixinClassName.startsWith("com.metallumextra.mixin.voxy.") || FabricLoader.getInstance().isModLoaded("voxy");
     }
 
     @Override

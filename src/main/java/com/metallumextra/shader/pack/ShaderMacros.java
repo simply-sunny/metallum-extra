@@ -8,8 +8,9 @@ import java.util.Map;
  * operating system, the GPU's vendor and the settings of the game. They are defined in every program (see {@link ShaderPack#load}) and in
  * {@code shaders.properties} (see {@link PropertiesFile}), so a pack decides the same thing in both.
  * <p>
- * Only what is true of this renderer is defined: it is Metal on macOS, so {@code MC_OS_MAC} and {@code MC_GL_VENDOR_APPLE}, and no {@code IS_IRIS},
- * since this is not Iris and a pack that tests for it may then expect uniforms (such as {@code renderStage}) that are not provided.
+ * It is Metal on macOS, so {@code MC_OS_MAC} and {@code MC_GL_VENDOR_APPLE}. {@code IS_IRIS} and {@code IRIS_VERSION} are defined too: this runs packs of the
+ * Iris layout with Iris's uniforms (including {@code renderStage}), and a pack that does not find them treats the game as OptiFine (Complementary shows
+ * "Colored Lighting is not supported on Optifine"). The version is one without the known bugs packs work around.
  */
 public final class ShaderMacros {
     private ShaderMacros() {
@@ -19,6 +20,8 @@ public final class ShaderMacros {
     public static Map<String, String> builtin() {
         Map<String, String> macros = new LinkedHashMap<>();
         macros.put("MC_VERSION", "26020");
+        macros.put("IS_IRIS", "");
+        macros.put("IRIS_VERSION", "11100");
         macros.put("MC_GL_VERSION", "410");
         macros.put("MC_GLSL_VERSION", "330");
         macros.put("MC_OS_MAC", "");

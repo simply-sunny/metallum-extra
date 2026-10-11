@@ -1,13 +1,11 @@
 package com.metallumextra;
 
-import com.metallum.objc.Msg;
-import com.mojang.blaze3d.pipeline.RenderPipeline;
+import io.github.kokodio.metaljvm.metal.MTLDevice;
+import com.mojang.renderpearl.api.pipeline.RenderPipeline;
 import net.fabricmc.loader.api.FabricLoader;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
-import java.lang.foreign.MemorySegment;
-import java.lang.foreign.ValueLayout;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
@@ -84,8 +82,7 @@ public final class FrameProfiler {
     private static boolean shownThisFrame;
 
     // ---- memory ----
-    private static final Msg CURRENT_ALLOCATED_SIZE = Msg.of("currentAllocatedSize", ValueLayout.JAVA_LONG);
-    private static volatile MemorySegment metalDevice;
+    private static volatile MTLDevice metalDevice;
     private static long gpuMemMb;
 
     // ---- GPU timing (from Metal's command buffer timestamps) ----
@@ -254,16 +251,21 @@ public final class FrameProfiler {
         else windowSkipped++;
     }
 
-    public static void deviceSeen(final MemorySegment device) {
+    public static void deviceSeen(final MTLDevice device) {
         if (metalDevice == null) metalDevice = device;
+    }
+
+    /** Memory Metal has allocated for this process's buffers and textures, in MB, for the resource log (0 until the device is known). */
+    public static long gpuMemoryMb() {
+        return readGpuMemMb();
     }
 
     /** Memory Metal has allocated for this process's buffers and textures, in MB (0 until the device is known). */
     private static long readGpuMemMb() {
-        MemorySegment device = metalDevice;
+        MTLDevice device = metalDevice;
         if (device == null) return 0L;
         try {
-            return CURRENT_ALLOCATED_SIZE.sendLong(device) >> 20;
+            return device.currentAllocatedSize() >> 20;
         } catch (Throwable t) {
             return 0L;
         }

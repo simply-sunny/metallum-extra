@@ -38,13 +38,11 @@ public final class ExtraConfigScreen extends Screen {
         GridLayout.RowHelper cells = grid.createRowHelper(2);
         cells.addChild(Button.builder(Component.literal("Shaders..."), button -> minecraft.gui.setScreen(new ShaderPackScreen(this)))
                 .width(BUTTON_WIDTH).tooltip(Tooltip.create(Component.literal("Choose a shader pack, switch shaders on or off, and set how they look."))).build());
+        cells.addChild(choice(Settings.upscaling()));
         for (Settings.Toggle toggle : Settings.smoothness()) {
             cells.addChild(button(toggle));
         }
         for (Settings.Toggle toggle : Settings.messages()) {
-            cells.addChild(button(toggle));
-        }
-        for (Settings.Toggle toggle : Settings.compatibility()) {
             cells.addChild(button(toggle));
         }
         for (Settings.Toggle toggle : Settings.troubleshooting()) {
@@ -78,6 +76,13 @@ public final class ExtraConfigScreen extends Screen {
     @Override
     protected void repositionElements() {
         layout.arrangeElements();
+    }
+
+    /** A right click on a setting moves it back or turns it the other way. */
+    @Override
+    public boolean mouseClicked(final net.minecraft.client.input.MouseButtonEvent event, final boolean doubleClick) {
+        if (CycleRightClick.handle(this, event)) return true;
+        return super.mouseClicked(event, doubleClick);
     }
 
     @Override

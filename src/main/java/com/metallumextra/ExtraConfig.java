@@ -27,26 +27,22 @@ public final class ExtraConfig {
     public final int summarySeconds;
     /** Cap on individual hitch lines in the game log per summary window (all hitches still go to the CSV). */
     public final int maxHitchLogsPerSummary;
-    /** Write CPU-visible buffers directly at creation instead of via a GPU copy pass (fix from newer Metallum source). */
-    public volatile boolean directBufferUpload;
     /** With vsync off, skip presenting a frame instead of blocking when macOS has no swapchain image free. */
     public volatile boolean nonBlockingPresent;
     /** When the camera enters a new chunk section, update only the section slots that changed (vanilla rescans all). */
     public volatile boolean fastSectionRecenter;
     /** Sodium: empty its freed-buffer queue a little each frame instead of all at once after a GC cycle. */
     public volatile boolean spreadSodiumCleanup;
-    /** Distant Horizons: make it use its backend-neutral renderer on Metal. Read once at startup. */
-    public volatile boolean distantHorizonsSupport;
-    /** Let a render pass draw into several color targets at once (Metallum 0.0.23 supports one). File only; read once at startup. */
-    public volatile boolean multipleRenderTargets;
     /** Renumber samplers so shaders with textures in slots 16 and up compile (Metal has 16 sampler slots). File only; read once at startup. */
     public volatile boolean manyTextures;
-    /** Shine: make it use its backend-neutral (Vulkan-mode) renderer on Metal. Read once at startup. */
-    public volatile boolean shineSupport;
+    /** Voxy's far-distance LOD terrain, drawn through Metal instead of Voxy's own OpenGL renderer. File only. */
+    public volatile boolean voxyMetalRenderer;
     /** The built-in shader pipeline: own lighting, shadows, sky, water and bloom. Needs Sodium. */
     public volatile boolean shadersEnabled;
     /** A line in the chat when shaders are reloaded with the key. */
     public volatile boolean shaderMessages;
+    /** Draws the world smaller and scales it up with MetalFX (see {@link com.metallumextra.fx.Upscale}). */
+    public volatile com.metallumextra.fx.UpscaleMode upscaleMode;
     /** The shader pack in use: the file name of a ZIP in the shaderpacks folder, or {@code builtin}. Kept while shaders are off. */
     public volatile String shaderPack;
 
@@ -58,16 +54,14 @@ public final class ExtraConfig {
         this.hitchMultiplier = dbl(p, "profiler.hitchMultiplier", 4.0);
         this.summarySeconds = Math.max(1, (int) dbl(p, "profiler.summarySeconds", 10));
         this.maxHitchLogsPerSummary = Math.max(0, (int) dbl(p, "profiler.maxHitchLogsPerSummary", 10));
-        this.directBufferUpload = bool(p, "fix.directBufferUpload", true);
         this.nonBlockingPresent = bool(p, "fix.nonBlockingPresent", true);
         this.fastSectionRecenter = bool(p, "fix.fastSectionRecenter", true);
         this.spreadSodiumCleanup = bool(p, "fix.spreadSodiumCleanup", true);
-        this.distantHorizonsSupport = bool(p, "compat.distantHorizons", true);
-        this.multipleRenderTargets = bool(p, "compat.multipleRenderTargets", true);
         this.manyTextures = bool(p, "compat.manyTextures", true);
-        this.shineSupport = bool(p, "compat.shine", true);
+        this.voxyMetalRenderer = bool(p, "compat.voxyMetalRenderer", true);
         this.shadersEnabled = bool(p, "shaders.enabled", false);
         this.shaderMessages = bool(p, "shaders.messages", true);
+        this.upscaleMode = com.metallumextra.fx.UpscaleMode.of(p.getProperty("upscale.mode", "OFF"));
         String pack = p.getProperty("shaders.pack", "builtin").strip();
         this.shaderPack = pack.isEmpty() ? "builtin" : pack;
     }
@@ -91,6 +85,12 @@ public final class ExtraConfig {
         MetallumExtra.LOGGER.info("[Metallum Extra] shadersEnabled={}", value);
     }
 
+    public void setUpscaleMode(final com.metallumextra.fx.UpscaleMode value) {
+        this.upscaleMode = value;
+        save(file);
+        MetallumExtra.LOGGER.info("[Metallum Extra] upscaleMode={}", value);
+    }
+
     public void setShaderMessages(final boolean value) {
         this.shaderMessages = value;
         save(file);
@@ -103,12 +103,6 @@ public final class ExtraConfig {
     }
 
     /** Live toggles (from the in-game screen): take effect immediately and are written back to the file. */
-    public void setDirectBufferUpload(final boolean value) {
-        this.directBufferUpload = value;
-        save(file);
-        MetallumExtra.LOGGER.info("[Metallum Extra] directBufferUpload={}", value);
-    }
-
     public void setFastSectionRecenter(final boolean value) {
         this.fastSectionRecenter = value;
         save(file);
@@ -119,18 +113,6 @@ public final class ExtraConfig {
         this.spreadSodiumCleanup = value;
         save(file);
         MetallumExtra.LOGGER.info("[Metallum Extra] spreadSodiumCleanup={}", value);
-    }
-
-    public void setDistantHorizonsSupport(final boolean value) {
-        this.distantHorizonsSupport = value;
-        save(file);
-        MetallumExtra.LOGGER.info("[Metallum Extra] distantHorizonsSupport={} (takes effect after a restart)", value);
-    }
-
-    public void setShineSupport(final boolean value) {
-        this.shineSupport = value;
-        save(file);
-        MetallumExtra.LOGGER.info("[Metallum Extra] shineSupport={} (takes effect after a restart)", value);
     }
 
     public void setProfilerEnabled(final boolean value) {
@@ -198,10 +180,12 @@ public final class ExtraConfig {
                 # Say "Shaders reloaded" in the chat when the reload key is pressed.
                 shaders.messages=%s
 
+                # --- MetalFX upscaling (switches live) ---
+                # Draws the world at a smaller size and scales it up to the window with Apple's MetalFX spatial scaler;
+                # the menus and the HUD stay sharp. OFF, QUALITY (1.5x), BALANCED (1.7x), PERFORMANCE (2x) or ULTRA_PERFORMANCE (3x).
+                upscale.mode=%s
+
                 # --- Fixes ---
-                # Fill CPU-visible buffers directly when they are created, instead of
-                # breaking the frame for a GPU copy. (Same fix as newer Metallum source.)
-                fix.directBufferUpload=%s
                 # With vsync off, never stall the render thread waiting for the display. Frames that
                 # finish while macOS has no swapchain image free are not shown (the next one is).
                 # Has no effect with vsync on.
@@ -215,29 +199,22 @@ public final class ExtraConfig {
                 # over the following frames. No effect without Sodium.
                 fix.spreadSodiumCleanup=%s
 
-                # --- Mod compatibility (restart needed) ---
-                # Distant Horizons only knows OpenGL and Vulkan and crashes on Metal. This makes it use
-                # its Vulkan-style renderer, which is written against the game's own rendering API.
-                compat.distantHorizons=%s
-                # Shine only knows OpenGL and Vulkan and renders terrain without its own data on Metal.
-                # This makes it use its Vulkan-style renderer, which is written against the game's own
-                # rendering API.
-                compat.shine=%s
-
                 # --- Metallum limits lifted (file only, no in-game switch; restart needed) ---
                 # These do nothing unless a mod needs them, so they are always on. They are here only so
                 # one can be switched off if it ever causes trouble with some other mod.
-                # Metallum can only draw into one image at a time. Mods that draw into several at once
-                # (Shine does, for its bloom and rim-light masks) crash with "Render pass created with N
-                # color attachments but device only supports 1". This adds support for up to 8.
-                compat.multipleRenderTargets=%s
                 # Metal has 16 sampler slots per shader and Metallum numbers a sampler after its texture, so
                 # a shader whose textures go past number 15 fails to compile ("'sampler' attribute parameter
                 # is out of bounds"). This renumbers the samplers of such shaders. Others are untouched.
                 compat.manyTextures=%s
+
+                # --- Voxy (far-distance LOD terrain; file only, restart needed) ---
+                # Voxy's own renderer needs OpenGL, which does not exist under the Metal backend. When Voxy
+                # is installed, this draws its LOD terrain through Metal instead; Voxy's world ingest and
+                # storage keep running either way. Ignored without Voxy.
+                compat.voxyMetalRenderer=%s
                 """.formatted(profilerEnabled, hitchMinMs, hitchMultiplier, summarySeconds, maxHitchLogsPerSummary,
-                shadersEnabled, shaderPack.replace("\\", "\\\\"), shaderMessages, directBufferUpload, nonBlockingPresent, fastSectionRecenter, spreadSodiumCleanup,
-                distantHorizonsSupport, shineSupport, multipleRenderTargets, manyTextures);
+                shadersEnabled, shaderPack.replace("\\", "\\\\"), shaderMessages, upscaleMode.name(), nonBlockingPresent, fastSectionRecenter, spreadSodiumCleanup,
+                manyTextures, voxyMetalRenderer);
         try {
             Files.createDirectories(file.getParent());
             try (Writer w = Files.newBufferedWriter(file)) {

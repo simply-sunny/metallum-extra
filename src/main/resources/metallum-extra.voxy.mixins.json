@@ -1,0 +1,27 @@
+{
+  "required": true,
+  "package": "com.metallumextra.mixin.voxy",
+  "plugin": "com.metallumextra.mixin.ExtraMixinPlugin",
+  "compatibilityLevel": "JAVA_25",
+  "client": [
+    "VoxyClientInitMixin",
+    "VoxyRenderingDisabledMixin",
+    "LevelExtractorVoxyMixin",
+    "LevelRendererVoxyMixin",
+    "CapabilitiesMixin",
+    "GlBufferMixin",
+    "GlPersistentMappedBufferMixin",
+    "GlFenceMixin",
+    "GlTextureMixin",
+    "ModelStoreMixin",
+    "UploadStreamMixin",
+    "ModelFactoryPixelStoreMixin",
+    "ModelFactoryUploadMixin",
+    "SoftwareModelTextureBakeryMixin",
+    "SpriteContentsAccessor",
+    "TextureAtlasAccessor"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

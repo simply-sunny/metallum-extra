@@ -42,7 +42,7 @@ public final class IrisUniforms {
             new Uniform("sunPosition", "vec3"), new Uniform("moonPosition", "vec3"), new Uniform("shadowLightPosition", "vec3"),
             new Uniform("upPosition", "vec3"), new Uniform("fogColor", "vec3"), new Uniform("skyColor", "vec3"),
             new Uniform("eyeBrightness", "ivec2"), new Uniform("eyeBrightnessSmooth", "ivec2"),
-            new Uniform("eyeAltitude", "float"), new Uniform("sunAngle", "float"), new Uniform("shadowAngle", "float"),
+            new Uniform("eyeAltitude", "float"), new Uniform("sunAngle", "float"), new Uniform("timeAngle", "float"), new Uniform("shadowAngle", "float"),
             new Uniform("rainStrength", "float"), new Uniform("wetness", "float"), new Uniform("thunderStrength", "float"),
             new Uniform("frameTime", "float"), new Uniform("frameTimeCounter", "float"),
             new Uniform("viewWidth", "float"), new Uniform("viewHeight", "float"), new Uniform("aspectRatio", "float"),
@@ -65,6 +65,14 @@ public final class IrisUniforms {
             new Uniform("cameraPositionFract", "vec3"), new Uniform("previousCameraPositionFract", "vec3"), new Uniform("relativeEyePosition", "vec3"),
             new Uniform("lightningBoltPosition", "vec4"), new Uniform("playerMood", "float"), new Uniform("darknessLightFactor", "float"),
             new Uniform("fogStart", "float"), new Uniform("fogEnd", "float"),
+            new Uniform("centerDepthSmooth", "float"), new Uniform("eyePosition", "vec3"), new Uniform("playerBodyVector", "vec3"), new Uniform("playerLookVector", "vec3"),
+            new Uniform("isSpectator", "bool"), new Uniform("hideGUI", "bool"), new Uniform("firstPersonCamera", "bool"),
+            new Uniform("fogDensity", "float"), new Uniform("fogShape", "int"), new Uniform("fogMode", "int"),
+            new Uniform("biome", "int"), new Uniform("biome_category", "int"), new Uniform("biome_precipitation", "int"), new Uniform("rainfall", "float"), new Uniform("temperature", "float"),
+            new Uniform("ambientLight", "float"), new Uniform("bedrockLevel", "int"), new Uniform("cloudHeight", "float"), new Uniform("hasCeiling", "bool"), new Uniform("hasSkylight", "bool"),
+            new Uniform("heightLimit", "int"), new Uniform("logicalHeightLimit", "int"), new Uniform("constantMood", "float"),
+            new Uniform("currentDate", "ivec3"), new Uniform("currentTime", "ivec3"), new Uniform("currentYearTime", "ivec2"), new Uniform("textureFilteringMode", "int"),
+            new Uniform("endFlashPosition", "vec3"), new Uniform("endFlashIntensity", "float"), new Uniform("previousEndFlashIntensity", "float"),
             new Uniform("heldItemId", "int"), new Uniform("heldItemId2", "int"), new Uniform("heldBlockLightValue", "int"), new Uniform("heldBlockLightValue2", "int"),
             // What is being drawn right now: not one value for the frame, so the block holds the last one set (see IrisPipeline).
             new Uniform("entityId", "int", true), new Uniform("renderStage", "int", true), new Uniform("blockEntityId", "int", true), new Uniform("currentRenderedItemId", "int", true),
@@ -81,8 +89,7 @@ public final class IrisUniforms {
     public static synchronized void useCustom(final List<CustomUniforms.Def> defs) {
         Map<String, Uniform> map = new LinkedHashMap<>();
         for (CustomUniforms.Def def : defs) {
-            String type = def.type().equals("bool") ? "int" : def.type();
-            if (!BY_NAME.containsKey(def.name())) map.put(def.name(), new Uniform(def.name(), type));
+            if (!BY_NAME.containsKey(def.name())) map.put(def.name(), new Uniform(def.name(), def.type()));
         }
         custom = map;
         customLayout = computeLayout(allUniforms());
@@ -100,6 +107,11 @@ public final class IrisUniforms {
         customLayout = (Layout) state[1];
     }
 
+    /** Changes with the pack's custom uniforms: programs read while one set was in use are not valid for another (see {@link LoadCache}). */
+    static int customStamp() {
+        return custom.keySet().hashCode();
+    }
+
     /** Every uniform of the block: the standard ones, then the pack's own, in layout order. */
     public static List<Uniform> allUniforms() {
         List<Uniform> all = new ArrayList<>(ALL);
@@ -115,20 +127,14 @@ public final class IrisUniforms {
         for (String name : List.of("blendFunc")) {
             LATER.put(name, "the gbuffers programs, which are not run yet");
         }
-        for (String name : List.of("centerDepthSmooth", "eyePosition",
-                "playerBodyVector", "playerLookVector", "isSpectator", "hideGUI",
-                "fogDensity", "fogShape", "fogMode", "biome", "biome_category", "biome_precipitation", "rainfall", "temperature",
-                "ambientLight", "bedrockLevel", "cloudHeight", "hasCeiling", "hasSkylight", "heightLimit", "logicalHeightLimit", "constantMood", "firstPersonCamera",
-                "currentDate", "currentTime", "currentYearTime", "textureFilteringMode", "endFlashPosition", "endFlashIntensity", "previousEndFlashIntensity")) {
-            LATER.put(name, "this version");
-        }
     }
 
     /** Names of the gbuffers programs' own uniforms that are not in the block: they are written into the source as expressions (see {@code IrisTerrain}). */
     public static final Set<String> TERRAIN_MACROS = Set.of("chunkOffset", "textureMatrix", "alphaTestRef", "atlasSize");
 
     private static final Pattern LOOSE = Pattern.compile("(?m)^([ \\t]*)uniform\\s+(?:(?:highp|mediump|lowp)\\s+)?(\\w+)\\s+([\\w\\s,\\[\\]]+?)\\s*;[ \\t]*(//[^\\n]*)?$");
-    private static final Pattern HEADER_LINE = Pattern.compile("(?m)^\\s*(#version[^\\n]*|#extension[^\\n]*)$");
+    private static final Pattern INITIALIZED = Pattern.compile("(?m)^([ \\t]*)uniform\\s+(?:(?:highp|mediump|lowp)\\s+)?(float|int|uint|bool|[iub]?vec[234]|mat[234])\\s+(\\w+)\\s*=\\s*([^;\\n]+);");
+    private static final Pattern HEADER_LINE = Pattern.compile("(?m)^[ \\t]*(#version[^\\n]*|#extension[^\\n]*)$");
 
     private IrisUniforms() {
     }
@@ -138,7 +144,9 @@ public final class IrisUniforms {
      * declaration becomes a constant zero of the same type. (A name a program also uses for a local variable is then simply shadowed.)
      */
     public static String zeroUndefined(final String source) {
-        Matcher match = LOOSE.matcher(source);
+        // A uniform that starts with a value ("uniform bool isElytraFlying = false;") is nothing the game sets here: it is that value.
+        String initialized = INITIALIZED.matcher(source).replaceAll("$1const $2 $3 = $4;");
+        Matcher match = LOOSE.matcher(initialized);
         StringBuilder out = new StringBuilder();
         while (match.find()) {
             String type = match.group(2);
@@ -231,10 +239,16 @@ public final class IrisUniforms {
         String stripped = out.toString();
 
         StringBuilder block = new StringBuilder("layout(std140) uniform ").append(BLOCK).append(" {\n");
+        StringBuilder booleans = new StringBuilder();
         for (Uniform uniform : allUniforms()) {
-            block.append("    ").append(uniform.type).append(' ').append(declared.contains(uniform.name) ? uniform.name : "_mx_unused_" + uniform.name).append(";\n");
+            boolean isBool = uniform.type.equals("bool");
+            boolean used = declared.contains(uniform.name);
+            // SPIR-V has no boolean in a uniform block: it is held as an int, and the name the pack reads is that int compared with zero.
+            String name = isBool ? "_mx_bool_" + uniform.name : used ? uniform.name : "_mx_unused_" + uniform.name;
+            block.append("    ").append(isBool ? "int" : uniform.type).append(' ').append(name).append(";\n");
+            if (isBool && used) booleans.append("#define ").append(uniform.name).append(" (").append(name).append(" != 0)\n");
         }
-        block.append("};\n");
+        block.append("};\n").append(booleans);
 
         // After the last #version or #extension line.
         int at = 0;
@@ -266,7 +280,7 @@ public final class IrisUniforms {
 
     static int alignment(final String type) {
         return switch (type) {
-            case "float", "int" -> 4;
+            case "float", "int", "bool" -> 4;
             case "vec2", "ivec2" -> 8;
             default -> 16;
         };
@@ -276,7 +290,7 @@ public final class IrisUniforms {
 
     static int size(final String type) {
         return switch (type) {
-            case "float", "int" -> 4;
+            case "float", "int", "bool" -> 4;
             case "vec2", "ivec2" -> 8;
             case "vec3", "ivec3" -> 12;
             case "vec4", "ivec4" -> 16;

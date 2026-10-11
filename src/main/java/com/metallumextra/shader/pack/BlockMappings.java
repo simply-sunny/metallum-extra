@@ -29,12 +29,17 @@ public final class BlockMappings {
 
     /** @param properties the preprocessed {@code block.properties}, in file order; keys other than {@code block.<id>} are ignored here */
     public static BlockMappings parse(final Map<String, String> properties) {
+        return parse(properties, "block.");
+    }
+
+    /** The same rules for another kind of thing: {@code item.<id>=...} in {@code item.properties} names items, and {@code entity.<id>=...} entities. */
+    public static BlockMappings parse(final Map<String, String> properties, final String prefix) {
         List<Rule> rules = new ArrayList<>();
         for (Map.Entry<String, String> entry : properties.entrySet()) {
-            if (!entry.getKey().startsWith("block.")) continue;
+            if (!entry.getKey().startsWith(prefix)) continue;
             int id;
             try {
-                id = Integer.parseInt(entry.getKey().substring("block.".length()));
+                id = Integer.parseInt(entry.getKey().substring(prefix.length()));
             } catch (NumberFormatException e) {
                 continue;
             }

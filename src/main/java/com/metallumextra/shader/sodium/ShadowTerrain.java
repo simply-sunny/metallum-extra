@@ -4,16 +4,20 @@ import com.metallumextra.MetallumExtra;
 import com.metallumextra.shader.IrisPipeline;
 import com.metallumextra.shader.pack.IrisPlan;
 import com.metallumextra.mixin.shader.SodiumChunkRendererInvoker;
-import com.mojang.blaze3d.IndexType;
-import com.mojang.blaze3d.PrimitiveTopology;
-import com.mojang.blaze3d.pipeline.BindGroupLayout;
-import com.mojang.blaze3d.pipeline.ColorTargetState;
-import com.mojang.blaze3d.pipeline.DepthStencilState;
-import com.mojang.blaze3d.pipeline.RenderPipeline;
+import com.mojang.renderpearl.api.pipeline.IndexType;
+import com.mojang.renderpearl.api.pipeline.PrimitiveTopology;
+import com.mojang.renderpearl.api.pipeline.BindGroupLayout;
+import com.mojang.renderpearl.api.pipeline.ColorTargetState;
+import com.mojang.renderpearl.api.pipeline.DepthStencilState;
+import com.mojang.renderpearl.api.pipeline.RenderPipeline;
+import com.mojang.renderpearl.api.pipeline.UniformType;
+import net.caffeinemc.mods.sodium.client.render.chunk.DefaultChunkRenderer;
+import org.lwjgl.system.MemoryStack;
+import org.lwjgl.system.MemoryUtil;
 import com.mojang.blaze3d.pipeline.RenderTarget;
-import com.mojang.blaze3d.systems.RenderPass;
+import com.mojang.renderpearl.api.commands.RenderPass;
 import com.mojang.blaze3d.systems.RenderSystem;
-import com.mojang.blaze3d.textures.FilterMode;
+import com.mojang.renderpearl.api.textures.FilterMode;
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import it.unimi.dsi.fastutil.objects.Reference2ObjectOpenHashMap;
 import net.caffeinemc.mods.sodium.client.gpu.device.batch.MultiDrawBatch;
@@ -55,7 +59,7 @@ public final class ShadowTerrain {
     /** Lists unused for this many frames are dropped; their regions have most likely been unloaded. */
     private static final int LIST_LIFETIME = 600;
 
-    private static final BindGroupLayout BLOCK_TEXTURE = BindGroupLayout.builder().withSampler("u_BlockTex").build();
+    private static final BindGroupLayout BLOCK_TEXTURE = BindGroupLayout.builder().withUniform("u_BlockTex", UniformType.COMBINED_IMAGE_SAMPLER).build();
     private static final RenderPipeline SOLID = pipeline("shadow_terrain_solid", false);
     private static final RenderPipeline CUTOUT = pipeline("shadow_terrain_cutout", true);
 
@@ -90,7 +94,8 @@ public final class ShadowTerrain {
                 .withDepthStencilState(DepthStencilState.DEFAULT)
                 .withColorTargetState(ColorTargetState.DEFAULT)
                 .withPrimitiveTopology(PrimitiveTopology.QUADS)
-                .withVertexBinding(0, CompactChunkVertex.VERTEX_FORMAT);
+                .withVertexBinding(0, CompactChunkVertex.VERTEX_FORMAT)
+                .withPushConstantSize(DefaultChunkRenderer.PUSH_CONSTANT_RANGE);
         if (cutout) {
             builder.withBindGroupLayout(BLOCK_TEXTURE).withShaderDefine("ALPHA_CUTOUT", 0.5F);
         }
@@ -115,12 +120,14 @@ public final class ShadowTerrain {
                     .withFragmentShader(id)
                     .withCull(false)
                     // OpenGL depth: the map is cleared to 1 and what is nearest the light wins.
-                    .withDepthStencilState(new DepthStencilState(com.mojang.blaze3d.platform.CompareOp.LESS_THAN_OR_EQUAL, true))
+                    .withDepthStencilState(new DepthStencilState(com.mojang.renderpearl.api.pipeline.CompareOp.LESS_THAN_OR_EQUAL, true))
                     .withColorTargetState(ColorTargetState.DEFAULT)
                     .withPrimitiveTopology(PrimitiveTopology.QUADS)
                     .withVertexBinding(0, CompactChunkVertex.VERTEX_FORMAT)
+                    .withPushConstantSize(DefaultChunkRenderer.PUSH_CONSTANT_RANGE)
                     .withBindGroupLayout(BLOCK_TEXTURE);
             if (cutout) builder.withShaderDefine("ALPHA_CUTOUT", 0.5F);
+            com.metallumextra.shader.IrisWorld.declareShadowExtras(builder, plan, plan.shadowTerrainStep(cutout ? IrisPlan.Layer.CUTOUT : IrisPlan.Layer.SOLID));
             return builder.build();
         });
     }
@@ -183,16 +190,30 @@ public final class ShadowTerrain {
 
             if (!started) {
                 started = true;
-                pass.setPipeline(pipeline);
+                pass.setPipeline(RenderSystem.getCompiledPipeline(pipeline));
                 drawContext.setContext(pass, pipeline);
                 pass.setIndexBuffer(indices.getBufferObject(), IndexType.INT);
                 if (pipeline != SOLID) {
-                    pass.bindTexture("u_BlockTex", terrainPass.getAtlas(), RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST));
+                    pass.setUniform("u_BlockTex", terrainPass.getAtlas(), RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST));
                 }
             }
             pass.setVertexBuffer(0, resources.getGeometryBuffer().slice());
-            drawContext.updateData(region, camera);
+            pushRegion(pass, region, camera);
             batch.draw(drawContext);
+        }
+    }
+
+    /** What Sodium's own chunk renderer tells its shaders about a region before drawing it: where it is relative to the camera, how old it is, and which it is. */
+    private static void pushRegion(final RenderPass pass, final RenderRegion region, final CameraTransform camera) {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            java.nio.ByteBuffer data = stack.malloc(DefaultChunkRenderer.PUSH_CONSTANT_RANGE);
+            long address = MemoryUtil.memAddress(data);
+            MemoryUtil.memPutFloat(address, (float) (region.getOriginX() - camera.intX) - camera.fracX);
+            MemoryUtil.memPutFloat(address + 4L, (float) (region.getOriginY() - camera.intY) - camera.fracY);
+            MemoryUtil.memPutFloat(address + 8L, (float) (region.getOriginZ() - camera.intZ) - camera.fracZ);
+            MemoryUtil.memPutInt(address + 12L, Math.toIntExact(System.currentTimeMillis() - region.getCreationTime()));
+            MemoryUtil.memPutInt(address + 16L, region.getId());
+            pass.pushConstants(data);
         }
     }
 

@@ -17,10 +17,10 @@
     "modmenu": ["com.metallumextra.ModMenuIntegration"],
     "sodium:config_api_user": ["com.metallumextra.SodiumOptionsIntegration"]
   },
-  "mixins": ["metallum-extra.mixins.json"],
+  "mixins": ["metallum-extra.mixins.json", "metallum-extra.voxy.mixins.json"],
   "depends": {
     "fabricloader": ">=0.19.2",
-    "minecraft": "~26.2-",
+    "minecraft": "~26.3-",
     "java": ">=25",
     "metallum": ">=${metallum_version} <=${metallum_max_version}"
   },

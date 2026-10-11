@@ -29,8 +29,9 @@ dependencies {
 
 	// Metallum itself (from Modrinth). Needed at compile time because we hook its internals,
 	// and at runtime so `./gradlew runClient` launches with Metal.
-	// The dev client runs the oldest supported release unless told otherwise: -Pmetallum_run_version=0.0.24
+	// The dev client runs the oldest supported release unless told otherwise: -Pmetallum_run_version=<version>
 	compileOnly "maven.modrinth:metallum-mc:${project.metallum_version}"
+	compileOnly "io.github.kokodio:metal-jvm:${project.metal_jvm_version}"
 	runtimeOnly "maven.modrinth:metallum-mc:${project.findProperty('metallum_run_version') ?: project.metallum_version}"
 
 	// Optional: only for the in-game settings screen entry in Mod Menu. Not needed at runtime.
@@ -42,6 +43,11 @@ dependencies {
 	implementation "maven.modrinth:sodium:${project.sodium_version}"
 	runtimeOnly "maven.modrinth:fabric-api:${project.fabric_api_version}"
 	runtimeOnly "maven.modrinth:distanthorizons:${project.distant_horizons_version}"
+
+	// Voxy (optional at runtime): compiled against for the Metal far-terrain bridge, and on the dev
+	// client's classpath so the bridge can be exercised in ./gradlew runClient. Not bundled.
+	compileOnly files(project.voxy_jar)
+	runtimeOnly files(project.voxy_jar)
 }
 
 // A small deterministic test suite for the parts of the shader pipeline that do not need a running game.

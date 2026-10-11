@@ -69,10 +69,10 @@ public final class ArchitectureChecks {
         try {
             TranslationCache cache = new TranslationCache(folder);
             ByteBuffer shader = ByteBuffer.wrap(new byte[] {1, 2, 3, 4});
-            String key = TranslationCache.key("compiler-v1", shader, 0, Map.of("Position", "RGB32_FLOAT"), false);
-            String changedShader = TranslationCache.key("compiler-v1", ByteBuffer.wrap(new byte[] {1, 2, 3, 5}), 0,
-                    Map.of("Position", "RGB32_FLOAT"), false);
-            String changedSalt = TranslationCache.key("compiler-v2", shader, 0, Map.of("Position", "RGB32_FLOAT"), false);
+            String key = TranslationCache.key("compiler-v1", shader, "0", Map.of(0, "RGB32_FLOAT"), false);
+            String changedShader = TranslationCache.key("compiler-v1", ByteBuffer.wrap(new byte[] {1, 2, 3, 5}), "0",
+                    Map.of(0, "RGB32_FLOAT"), false);
+            String changedSalt = TranslationCache.key("compiler-v2", shader, "0", Map.of(0, "RGB32_FLOAT"), false);
 
             check("cache key changes when shader bytes change", !key.equals(changedShader));
             check("cache key changes when compiler/version salt changes", !key.equals(changedSalt));

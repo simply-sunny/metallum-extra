@@ -32,6 +32,79 @@ public final class SamplerSlots {
 
     private static volatile boolean logged;
 
+    /** Which sampler state each texture of a pipeline is bound with, when the pipeline has more textures than Metal has samplers (see {@link #assign}). */
+    public interface Kinds {
+        /** The kind of sampler each of the pipeline's textures is bound with (its name to a small number: the same number, the same sampler state); null when not known. */
+        java.util.@Nullable Map<String, Integer> kinds(String pipeline);
+    }
+
+    private static volatile Kinds kindSource = pipeline -> null;
+    /** The pipeline whose shaders are being converted on this thread. */
+    private static final ThreadLocal<String> PIPELINE = new ThreadLocal<>();
+
+    /** The Metal slot Metallum gave each binding of the shaders being converted on this thread (its {@code MetalIndices.byBinding}); null when not known. */
+    private static final ThreadLocal<int[]> METAL_SLOTS = new ThreadLocal<>();
+
+    public static void metalSlots(final int @Nullable [] byBinding) {
+        METAL_SLOTS.set(byBinding);
+    }
+
+    public static void kinds(final Kinds source) {
+        kindSource = source;
+    }
+
+    /** Called when the conversion of a pipeline's shaders starts on this thread. */
+    public static void converting(final String pipeline) {
+        PIPELINE.set(pipeline);
+    }
+
+    private static final java.util.regex.Pattern SAMPLER_PARAMETER = java.util.regex.Pattern.compile(",\\s*sampler\\s+(\\w+)\\s*\\[\\[sampler\\((\\d+)\\)\\]\\]");
+
+    /**
+     * The Metal shader of a pipeline whose textures share samplers: Metal wants every sampler of a function at a slot of its own, so the samplers that
+     * {@link #assign} put in one slot are one parameter, and what read the others reads that one.
+     */
+    public static String shareSamplers(final String metal) {
+        // Only the shader's entry function has its samplers placed in slots (the functions it calls take theirs as ordinary parameters, which must stay apart).
+        java.util.regex.Matcher entry = java.util.regex.Pattern.compile("(?m)^(?:fragment|vertex|kernel)\\s[^\\n]*\\bmain0\\(").matcher(metal);
+        if (!entry.find()) return metal;
+        String head = metal.substring(0, entry.start());
+        String body = metal.substring(entry.start());
+        java.util.regex.Matcher match = SAMPLER_PARAMETER.matcher(body);
+        java.util.Map<String, String> kept = new java.util.HashMap<>();
+        java.util.Map<String, String> renames = new java.util.LinkedHashMap<>();
+        StringBuilder out = new StringBuilder(body.length());
+        while (match.find()) {
+            String first = kept.putIfAbsent(match.group(2), match.group(1));
+            if (first == null) {
+                match.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(match.group()));
+            } else {
+                renames.put(match.group(1), first);
+                match.appendReplacement(out, "");
+            }
+        }
+        if (renames.isEmpty()) return metal;
+        match.appendTail(out);
+        String result = out.toString();
+        for (java.util.Map.Entry<String, String> rename : renames.entrySet()) {
+            result = result.replaceAll("\\b" + java.util.regex.Pattern.quote(rename.getKey()) + "\\b", rename.getValue());
+        }
+        return head + result;
+    }
+
+    /** Whether the shaders being converted on this thread are of a pipeline whose textures may share samplers. */
+    public static boolean sharing() {
+        String pipeline = PIPELINE.get();
+        return pipeline != null && kindSource.kinds(pipeline) != null;
+    }
+
+    /** What the conversion of the shaders on this thread depends on besides the shaders: empty for nearly every pipeline. */
+    public static String fingerprint() {
+        String pipeline = PIPELINE.get();
+        java.util.Map<String, Integer> kinds = pipeline == null ? null : kindSource.kinds(pipeline);
+        return kinds == null ? "" : new java.util.TreeMap<>(kinds).toString();
+    }
+
     private SamplerSlots() {
     }
 
@@ -73,17 +146,22 @@ public final class SamplerSlots {
             SpvcReflectedResource.Buffer images = SpvcReflectedResource.create(list.get(0), total);
             int[] bindings = new int[total];
             int[] sets = new int[total];
+            String[] names = new String[total];
             int count = 0;
             for (int i = 0; i < total; i++) {
                 SpvcReflectedResource image = images.get(i);
                 if (Spvc.spvc_type_get_image_dimension(Spvc.spvc_compiler_get_type_handle(compiler, image.type_id())) == SPV_DIM_BUFFER) continue;
                 bindings[count] = Spvc.spvc_compiler_get_decoration(compiler, image.id(), SPV_DECORATION_BINDING);
                 sets[count] = Spvc.spvc_compiler_get_decoration(compiler, image.id(), SPV_DECORATION_DESCRIPTOR_SET);
+                names[count] = image.nameString();
                 count++;
             }
             int[] sorted = Arrays.copyOf(bindings, count);
             Arrays.sort(sorted);
-            int[] slots = renumber(sorted);
+            String[] sortedNames = new String[count];
+            for (int i = 0; i < count; i++) sortedNames[Arrays.binarySearch(sorted, bindings[i])] = names[i];
+            String pipeline = PIPELINE.get();
+            int[] slots = assign(sorted, sortedNames, pipeline == null ? null : kindSource.kinds(pipeline));
             if (slots == null) {
                 if (count > METAL_SAMPLER_SLOTS) {
                     MetallumExtra.LOGGER.warn("[Metallum Extra] A shader uses {} textures in one stage; Metal allows {} samplers, so it will not compile", count, METAL_SAMPLER_SLOTS);
@@ -95,8 +173,11 @@ public final class SamplerSlots {
             SpvcMslResourceBinding binding = SpvcMslResourceBinding.calloc(stack);
             for (int i = 0; i < count; i++) {
                 Spvc.spvc_msl_resource_binding_init(binding);
+                // The texture keeps the slot Metallum gave it (what binds it at run time goes by that); only the sampler is moved.
+                int[] metal = METAL_SLOTS.get();
+                int own = metal != null && bindings[i] >= 0 && bindings[i] < metal.length ? metal[bindings[i]] : bindings[i];
                 binding.stage(stage).desc_set(sets[i]).binding(bindings[i])
-                        .msl_buffer(bindings[i]).msl_texture(bindings[i]).msl_sampler(slots[Arrays.binarySearch(sorted, bindings[i])]);
+                        .msl_buffer(own).msl_texture(own).msl_sampler(slots[Arrays.binarySearch(sorted, bindings[i])]);
                 Spvc.spvc_compiler_msl_add_resource_binding(compiler, binding);
             }
             if (!logged) {
@@ -111,10 +192,11 @@ public final class SamplerSlots {
      * The bind-time side of {@link #compact}, from the textures each stage of a pipeline uses.
      * Both arrays must be sorted ascending.
      */
-    public static byte @Nullable [] table(final int[] vertexBindings, final int[] fragmentBindings) {
+    public static byte @Nullable [] table(final int[] vertexBindings, final String[] vertexNames, final int[] fragmentBindings, final String[] fragmentNames, final String pipeline) {
         if (!ExtraConfig.get().manyTextures) return null;
-        int[] vertexSlots = renumber(vertexBindings);
-        int[] fragmentSlots = renumber(fragmentBindings);
+        java.util.Map<String, Integer> kinds = kindSource.kinds(pipeline);
+        int[] vertexSlots = assign(vertexBindings, vertexNames, kinds);
+        int[] fragmentSlots = assign(fragmentBindings, fragmentNames, kinds);
         if (vertexSlots == null && fragmentSlots == null) return null;
 
         int highest = Math.max(vertexBindings.length == 0 ? 0 : vertexBindings[vertexBindings.length - 1],
@@ -127,6 +209,26 @@ public final class SamplerSlots {
         fill(table, vertexBindings, vertexSlots, 0);
         fill(table, fragmentBindings, fragmentSlots, 1);
         return table;
+    }
+
+    /**
+     * The sampler slot of each texture of a stage (the textures' binding numbers sorted ascending, and their names). A stage that fits is left as it is unless a
+     * texture is numbered past 15, which are then numbered from 0. A stage with more textures than there are samplers shares them: textures that are bound with
+     * the same kind of sampler (the same filtering and wrapping) use the same slot, which is possible when the kinds are known (see {@link Kinds}).
+     */
+    static int @Nullable [] assign(final int[] sortedBindings, final String[] names, final java.util.@Nullable Map<String, Integer> kinds) {
+        int count = sortedBindings.length;
+        if (count <= METAL_SAMPLER_SLOTS) return renumber(sortedBindings);
+        if (kinds == null) return null;
+        java.util.Map<Integer, Integer> dense = new java.util.HashMap<>();
+        int[] slots = new int[count];
+        for (int i = 0; i < count; i++) {
+            Integer kind = kinds.get(names[i]);
+            // A texture of unknown kind keeps a slot to itself.
+            int key = kind != null ? kind : 1000 + i;
+            slots[i] = dense.computeIfAbsent(key, k -> dense.size());
+        }
+        return dense.size() > METAL_SAMPLER_SLOTS ? null : slots;
     }
 
     private static void fill(final byte[] table, final int[] bindings, final int @Nullable [] slots, final int stageOffset) {

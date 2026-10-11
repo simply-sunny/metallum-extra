@@ -44,9 +44,13 @@ float mx_shadow(vec3 position, vec3 normal) {
 
     // Look the point up a little way off the surface, or the surface shadows itself in stripes. A texel covers
     // more ground further from the player and when the light grazes the surface, so step further off there.
-    float squeeze = (distance_from_camera / range) * MX_SHADOW_BEND + (1.0 - MX_SHADOW_BEND);
+    // The map is bent (see shadow_bend.glsl): where it is at distance r from the middle (0 to 1), a texel is
+    // (r * BEND + 1 - BEND)^2 / (1 - BEND) times as wide as an unbent one, which is the slope of the bend. (Taking the
+    // factor without the square left a ring of stripes where the texels outgrew the step: worst when the moon is low.)
+    vec4 centre = shadowProjection * shadowModelView * vec4(position, 1.0);
+    float squeeze = length(centre.xy) * MX_SHADOW_BEND + (1.0 - MX_SHADOW_BEND);
     float texel = 1.0 / float(shadowMapResolution);
-    float texel_size = 2.0 * range * texel * squeeze;
+    float texel_size = 2.0 * range * texel * squeeze * squeeze / (1.0 - MX_SHADOW_BEND);
     vec3 lifted = position + normal * texel_size * (1.5 + 2.5 * (1.0 - facing));
 
     vec3 at = mx_shadow_coordinates(lifted);

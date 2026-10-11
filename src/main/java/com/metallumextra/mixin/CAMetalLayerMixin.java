@@ -1,6 +1,6 @@
 package com.metallumextra.mixin;
 
-import com.metallum.mtl.CAMetalLayer;
+import io.github.kokodio.metaljvm.quartzcore.CAMetalLayer;
 import com.metallumextra.FrameProfiler;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;

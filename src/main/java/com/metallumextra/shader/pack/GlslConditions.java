@@ -78,6 +78,8 @@ public final class GlslConditions {
 
     private static String process(final String source, final Set<String> options, final boolean keepOpen) {
         Map<String, String> defined = new HashMap<>();
+        // Names defined only where a condition that cannot be decided has them: they may or may not be, so a condition on one cannot be decided either.
+        Set<String> maybe = new java.util.HashSet<>();
         String[] lines = source.split("\n", -1);
         // The directive on each line, and the condition it belongs to (null for a line that is not part of one).
         Level[] owner = new Level[lines.length];
@@ -96,7 +98,7 @@ public final class GlslConditions {
                 case "ifdef", "ifndef", "if" -> {
                     Level level = new Level();
                     level.parentKept = kept;
-                    Boolean value = condition(kind, rest, defined, options);
+                    Boolean value = condition(kind, rest, defined, maybe);
                     level.open = value == null;
                     level.kept = value == null || value;
                     level.taken = value != null && value;
@@ -108,7 +110,7 @@ public final class GlslConditions {
                     Level level = stack.peek();
                     owner[i] = level;
                     if (level != null) {
-                        Boolean value = level.taken ? Boolean.FALSE : condition("if", rest, defined, options);
+                        Boolean value = level.taken ? Boolean.FALSE : condition("if", rest, defined, maybe);
                         level.open |= value == null;
                         level.kept = value == null || value;
                         level.taken |= value != null && value;
@@ -131,11 +133,24 @@ public final class GlslConditions {
                 case "define" -> {
                     if (kept) {
                         Matcher d = DEFINE_BODY.matcher(rest);
-                        if (d.matches()) defined.put(d.group(1), d.group(2));
+                        if (d.matches()) {
+                            boolean uncertain = false;
+                            for (Level level : stack) uncertain |= level.open;
+                            if (uncertain) maybe.add(d.group(1));
+                            else {
+                                defined.put(d.group(1), d.group(2));
+                                maybe.remove(d.group(1));
+                            }
+                        }
                     }
                 }
                 case "undef" -> {
-                    if (kept) defined.remove(rest);
+                    if (kept) {
+                        boolean uncertain = false;
+                        for (Level level : stack) uncertain |= level.open;
+                        if (uncertain) maybe.add(rest);
+                        else defined.remove(rest);
+                    }
                 }
                 default -> {
                 }
@@ -157,17 +172,33 @@ public final class GlslConditions {
     }
 
     /** True or false when the condition can be decided here, null when it depends on something the file does not say. */
-    private static Boolean condition(final String kind, final String text, final Map<String, String> defined, final Set<String> known) {
+    private static Boolean condition(final String kind, final String text, final Map<String, String> defined, final Set<String> maybe) {
         switch (kind) {
             case "ifdef":
-                return open(text) ? null : Boolean.valueOf(defined.containsKey(text));
+                return open(text) || maybe.contains(text) ? null : Boolean.valueOf(defined.containsKey(text));
             case "ifndef":
-                return open(text) ? null : Boolean.valueOf(!defined.containsKey(text));
+                return open(text) || maybe.contains(text) ? null : Boolean.valueOf(!defined.containsKey(text));
             default:
                 break;
         }
         try {
-            return PreprocessorExpression.evaluate(text.replaceAll("//.*$", "").replaceAll("/\\*.*?\\*/", " ").strip(), defined, PIPELINE_NAMES);
+            Set<String> openNames = new java.util.AbstractSet<>() {
+                @Override
+                public boolean contains(final Object name) {
+                    return PIPELINE_NAMES.contains(name) || maybe.contains(name);
+                }
+
+                @Override
+                public java.util.Iterator<String> iterator() {
+                    return PIPELINE.iterator();
+                }
+
+                @Override
+                public int size() {
+                    return PIPELINE.size();
+                }
+            };
+            return PreprocessorExpression.evaluate(text.replaceAll("//.*$", "").replaceAll("/\\*.*?\\*/", " ").strip(), defined, openNames);
         } catch (PreprocessorExpression.Open | PackException e) {
             return null;
         }

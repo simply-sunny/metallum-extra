@@ -3,17 +3,13 @@ package com.metallum.render;
 import com.metallumextra.ExtraConfig;
 import com.metallumextra.SamplerSlots;
 import com.metallumextra.shader.pack.TranslationCache;
-import com.mojang.blaze3d.GpuFormat;
-import com.mojang.blaze3d.buffers.GpuBuffer;
-import com.mojang.blaze3d.textures.GpuTexture;
-import com.mojang.blaze3d.textures.GpuTextureView;
+import com.mojang.renderpearl.api.GpuFormat;
+import com.mojang.renderpearl.api.buffers.GpuBuffer;
 import org.jspecify.annotations.Nullable;
 
-import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Map;
-import java.util.function.Supplier;
 
 /**
  * Lives in Metallum's package (inside the Metallum Extra jar) so it can reach Metallum's
@@ -25,66 +21,32 @@ public final class MetallumExtraBridge {
     private MetallumExtraBridge() {
     }
 
-    /**
-     * For Metallum 0.0.23. Mirrors MetalDevice.createBuffer(label, usage, data) from Metallum 0.0.24:
-     * if the new buffer lives in CPU-visible (shared) memory, copy the data straight in
-     * instead of recording a GPU blit. Returns null when the buffer is GPU-private, so the
-     * original code path (staging + blit) runs.
-     */
-    public static @Nullable GpuBuffer tryCreateBufferDirect(final Object device, final @Nullable Supplier<String> label, final int usage, final ByteBuffer data) {
-        int fullUsage = usage | GpuBuffer.USAGE_COPY_DST;
-        if (!isSharedMemory(fullUsage)) {
-            return null;
-        }
-        MetalDevice metalDevice = (MetalDevice) device;
-        MetalGpuBuffer buffer = (MetalGpuBuffer) metalDevice.createBuffer(label, fullUsage, data.remaining());
-        buffer.currentStorage().put(0, data, data.position(), data.remaining());
-        return buffer;
-    }
-
-    /** Same rule as MetalGpuBuffer.toMtlResourceOptions in Metallum 0.0.23 (Shared storage mode). */
-    private static boolean isSharedMemory(final int usage) {
-        boolean cpuAccessible = (usage & GpuBuffer.USAGE_MAP_READ) != 0
-                || (usage & GpuBuffer.USAGE_MAP_WRITE) != 0
-                || (usage & GpuBuffer.USAGE_HINT_CLIENT_STORAGE) != 0;
-        boolean dynamic = (usage & GpuBuffer.USAGE_UNIFORM) != 0 && (usage & GpuBuffer.USAGE_COPY_DST) != 0;
-        return cpuAccessible || dynamic;
-    }
-
-    /**
-     * Whether Metallum 0.0.24 itself writes a new buffer of this usage directly. Its rule is the one above, plus
-     * index buffers, which it keeps in shared memory. Only for the profiler's count.
-     */
-    public static boolean metallumWritesDirectly(final int usage) {
-        return (usage & GpuBuffer.USAGE_INDEX) != 0 || isSharedMemory(usage | GpuBuffer.USAGE_COPY_DST);
-    }
-
-    /** The Metal texture behind a view, or NULL for no view. For the extra color targets of a render pass. */
-    public static MemorySegment nativeHandle(final @Nullable GpuTextureView view) {
-        return view == null ? MemorySegment.NULL : ((MetalGpuTextureView) view).nativeHandle();
-    }
-
-    /** Draws a deferred clear of this texture now, the way Metallum does before a texture is used some other way. */
-    public static void flushPendingClear(final Object commandEncoder, final GpuTexture texture) {
-        ((MetalCommandEncoder) commandEncoder).flushPendingClear((MetalGpuTexture) texture);
-    }
-
-    /** Metallum calls this on every texture a render pass draws into, so a later clear is not skipped as redundant. */
-    public static void markContentsDirty(final GpuTexture texture) {
-        ((MetalGpuTexture) texture).markContentsDirty();
+    /** Whether Metallum wrote this buffer's initial data straight into CPU-visible memory instead of recording a GPU copy. Only for the profiler's count. */
+    public static boolean writtenDirectly(final GpuBuffer buffer) {
+        return ((MetalGpuBuffer) buffer).isCpuAccessible();
     }
 
     /** Which sampler slot each of a pipeline's textures uses in each stage; see {@link SamplerSlots}. */
-    public static byte @Nullable [] samplerSlots(final Object compiledPipeline) {
+    public static byte @Nullable [] samplerSlots(final Object compiledPipeline, final String pipelineName) {
         int[] vertex = new int[0];
         int[] fragment = new int[0];
+        String[] vertexNames = new String[0];
+        String[] fragmentNames = new String[0];
         // Metallum lists a pipeline's resources in binding order, so these come out sorted.
         for (MetalCompiledRenderPipeline.ResourceBinding resource : ((MetalCompiledRenderPipeline) compiledPipeline).resources()) {
             if (resource.kind() != MetalCompiledRenderPipeline.ResourceKind.SAMPLED_IMAGE) continue;
-            if ((resource.stageMask() & SamplerSlots.STAGE_VERTEX) != 0) vertex = append(vertex, resource.bindingIndex());
-            if ((resource.stageMask() & SamplerSlots.STAGE_FRAGMENT) != 0) fragment = append(fragment, resource.bindingIndex());
+            if ((resource.stageMask() & SamplerSlots.STAGE_VERTEX) != 0) {
+                vertex = append(vertex, resource.bindingIndex());
+                vertexNames = Arrays.copyOf(vertexNames, vertexNames.length + 1);
+                vertexNames[vertexNames.length - 1] = resource.name();
+            }
+            if ((resource.stageMask() & SamplerSlots.STAGE_FRAGMENT) != 0) {
+                fragment = append(fragment, resource.bindingIndex());
+                fragmentNames = Arrays.copyOf(fragmentNames, fragmentNames.length + 1);
+                fragmentNames[fragmentNames.length - 1] = resource.name();
+            }
         }
-        return SamplerSlots.table(vertex, fragment);
+        return SamplerSlots.table(vertex, vertexNames, fragment, fragmentNames, pipelineName);
     }
 
     /** Bit {@code i} is set when the pipeline's shaders use the uniform block or texture called {@code names[i]}. */
@@ -95,6 +57,12 @@ public final class MetallumExtraBridge {
             if (pipeline.resource(names[i]) != null) mask |= 1L << i;
         }
         return mask;
+    }
+
+    /** The number the game's frontend gives the uniform block or texture called {@code name} in this pipeline (the index its render pass binds it under). */
+    public static int uniformIndex(final Object compiledPipeline, final String name) {
+        MetalCompiledRenderPipeline.ResourceBinding resource = ((MetalCompiledRenderPipeline) compiledPipeline).resource(name);
+        return resource == null ? -1 : resource.bindingIndex();
     }
 
     private static int[] append(final int[] values, final int value) {
@@ -112,13 +80,15 @@ public final class MetallumExtraBridge {
 
     /**
      * Start of Metallum's {@code spirvToMsl}: the result of a conversion already done, read back from the disk cache
-     * (see {@link TranslationCache}), or null if SPIRV-Cross has to run.
+     * (see {@link TranslationCache}), or null if SPIRV-Cross has to run. {@code metalIndices} is Metallum's private
+     * record of where each resource goes in the Metal shader; it is part of what the conversion's text depends on.
      */
-    public static @Nullable Object cachedTranslation(final ByteBuffer spirv, final int pushConstantBinding, final Map<String, GpuFormat> attributeFormats,
+    public static @Nullable Object cachedTranslation(final ByteBuffer spirv, final Object metalIndices, final Map<Integer, GpuFormat> attributeFormats,
                                                      final boolean enableFragDepth) {
         PENDING_KEY.remove();
+        SamplerSlots.metalSlots(slotsOf(metalIndices));
         if (NO_MSL_CACHE) return null;
-        String key = TranslationCache.key(salt(), spirv, pushConstantBinding, attributeFormats, enableFragDepth);
+        String key = TranslationCache.key(salt() + SamplerSlots.fingerprint(), spirv, indicesOf(metalIndices), attributeFormats, enableFragDepth);
         TranslationCache.Msl cached = TranslationCache.shared().lookup(key);
         if (cached != null) {
             return new MetalCrossShaderCompiler.MslShader(cached.source(), cached.hasPushConstants(), cached.activeResources());
@@ -127,12 +97,44 @@ public final class MetallumExtraBridge {
         return null;
     }
 
-    /** End of {@code spirvToMsl}: keeps what SPIRV-Cross made, if {@link #cachedTranslation} found nothing. */
-    public static void storeTranslation(final @Nullable Object result) {
+    /** The Metal slot of each binding, from Metallum's private record. */
+    private static int @Nullable [] slotsOf(final Object metalIndices) {
+        try {
+            java.lang.reflect.Method byBinding = metalIndices.getClass().getDeclaredMethod("byBinding");
+            byBinding.setAccessible(true);
+            return (int[]) byBinding.invoke(metalIndices);
+        } catch (ReflectiveOperationException e) {
+            return null;
+        }
+    }
+
+    /** Text of {@code MetalIndices[byBinding, pushConstants]}: the record is private to Metallum, so it is read through reflection. */
+    private static String indicesOf(final Object metalIndices) {
+        try {
+            java.lang.reflect.Method byBinding = metalIndices.getClass().getDeclaredMethod("byBinding");
+            java.lang.reflect.Method pushConstants = metalIndices.getClass().getDeclaredMethod("pushConstants");
+            byBinding.setAccessible(true);
+            pushConstants.setAccessible(true);
+            return Arrays.toString((int[]) byBinding.invoke(metalIndices)) + "/" + pushConstants.invoke(metalIndices);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException("Metallum's resource numbering cannot be read", e);
+        }
+    }
+
+    /** End of {@code spirvToMsl}: keeps what SPIRV-Cross made, if {@link #cachedTranslation} found nothing. Returns the shader to use in its place when it had to be changed, else null. */
+    public static @Nullable Object storeTranslation(final @Nullable Object result) {
+        if (!(result instanceof MetalCrossShaderCompiler.MslShader converted)) return null;
+        MetalCrossShaderCompiler.MslShader use = converted;
+        if (SamplerSlots.sharing()) {
+            String shared = SamplerSlots.shareSamplers(converted.source());
+            if (!shared.equals(converted.source())) use = new MetalCrossShaderCompiler.MslShader(shared, converted.hasPushConstants(), converted.activeResources());
+        }
         String key = PENDING_KEY.get();
-        if (key == null || !(result instanceof MetalCrossShaderCompiler.MslShader converted)) return;
-        PENDING_KEY.remove();
-        TranslationCache.shared().store(key, new TranslationCache.Msl(converted.source(), converted.hasPushConstants(), converted.activeResources()));
+        if (key != null) {
+            PENDING_KEY.remove();
+            TranslationCache.shared().store(key, new TranslationCache.Msl(use.source(), use.hasPushConstants(), use.activeResources()));
+        }
+        return use == converted ? null : use;
     }
 
     /**

@@ -1,32 +1,27 @@
-package com.metallum.mtl;
+package com.metallumextra;
 
-import com.metallum.objc.Msg;
-import com.metallum.objc.ObjC;
-import com.metallumextra.ExtraConfig;
-import com.metallumextra.FrameProfiler;
+import io.github.kokodio.metaljvm.objc.AutoreleasePool;
+import io.github.kokodio.metaljvm.quartzcore.CAMetalDrawable;
+import io.github.kokodio.metaljvm.quartzcore.CAMetalLayer;
 
-import java.lang.foreign.MemorySegment;
-import java.lang.foreign.ValueLayout;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 
 /**
- * Non-blocking present. Lives in Metallum's package to reach CAMetalLayer.nextDrawable().
+ * Non-blocking present.
  * <p>
- * Metallum 0.0.23 calls nextDrawable on the render thread, which blocks whenever macOS has no swapchain image
+ * Metallum calls nextDrawable on the render thread, which blocks whenever macOS has no swapchain image
  * free, even with display sync off. Here a helper thread does the blocking call and parks one drawable in a slot.
  * The render thread takes it if it is there and otherwise skips presenting that frame (Metallum already handles a
  * null drawable), so the render thread never waits on the display. Only used when vsync is off.
  */
-public final class MetallumExtraPresent {
-    private static final Msg AUTORELEASE = Msg.of("autorelease", ValueLayout.ADDRESS);
-
+public final class NonBlockingPresent {
     private static final ExtraConfig CONFIG = ExtraConfig.get();
 
     private static volatile boolean displaySyncOff;
     private static Feeder feeder;
 
-    private MetallumExtraPresent() {
+    private NonBlockingPresent() {
     }
 
     /** Called when the swapchain is (re)configured. With vsync on, blocking on the display is the point. */
@@ -54,7 +49,7 @@ public final class MetallumExtraPresent {
         if (ready != null) {
             LockSupport.unpark(f.thread);
             // Hand our retain over to the caller's autorelease pool, matching what nextDrawable itself returns.
-            AUTORELEASE.sendPtr(ready.handle());
+            ready.autorelease();
             FrameProfiler.framePresented(true);
             return ready;
         }
@@ -74,7 +69,7 @@ public final class MetallumExtraPresent {
         Feeder(final CAMetalLayer layer) {
             this.layer = layer;
             // Keep the layer alive for as long as this thread may call into it.
-            ObjC.retain(layer.handle());
+            layer.retain();
             this.thread = new Thread(this, "metallum-extra-drawables");
             this.thread.setDaemon(true);
             this.thread.start();
@@ -92,20 +87,17 @@ public final class MetallumExtraPresent {
                     LockSupport.parkNanos(50_000_000L);
                     continue;
                 }
-                MemorySegment pool = ObjC.autoreleasePoolPush();
-                try {
+                try (AutoreleasePool _ = AutoreleasePool.push()) {
                     CAMetalDrawable drawable = layer.nextDrawable();
                     if (drawable != null) {
-                        ObjC.retain(drawable.handle());
+                        drawable.retain();
                         slot.set(drawable);
                     }
-                } finally {
-                    ObjC.autoreleasePoolPop(pool);
                 }
             }
             CAMetalDrawable left = slot.getAndSet(null);
-            if (left != null) ObjC.release(left.handle());
-            ObjC.release(layer.handle());
+            if (left != null) left.release();
+            layer.release();
         }
     }
 }

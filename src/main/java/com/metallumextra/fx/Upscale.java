@@ -65,7 +65,7 @@ public final class Upscale {
     }
 
     private static boolean wanted() {
-        UpscaleMode mode = ExtraConfig.get().upscaleMode;
+        UpscaleMode mode = ExtraConfig.get().effectiveUpscaleMode();
         if (mode == UpscaleMode.OFF) {
             status = "off";
             return false;
@@ -91,7 +91,7 @@ public final class Upscale {
             release();
             return;
         }
-        UpscaleMode mode = ExtraConfig.get().upscaleMode;
+        UpscaleMode mode = ExtraConfig.get().effectiveUpscaleMode();
         int width = Math.max(1, Math.round(full.width * mode.scale));
         int height = Math.max(1, Math.round(full.height * mode.scale));
         if (target == null) {

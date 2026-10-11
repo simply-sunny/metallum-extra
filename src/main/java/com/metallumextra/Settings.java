@@ -66,8 +66,9 @@ public final class Settings {
         return new Choice<>("upscaling", "MetalFX Upscaling",
                 "Draws the world at a smaller size and scales it up to your window with Apple's MetalFX. Faster, a little softer; "
                         + "the menus and the HUD stay sharp. Quality 1.5x, Balanced 1.7x, Performance 2x, Ultra Performance 3x. "
-                        + "Works with shaders on or off. Changes apply immediately.",
-                Impact.HIGH, com.metallumextra.fx.UpscaleMode.class, () -> c.upscaleMode, c::setUpscaleMode, mode -> mode.label);
+                        + "Saved per shader pack and for no shader: what you pick here applies to the shader you have on "
+                        + "right now, and every shader starts at Off. Works with shaders on or off. Changes apply immediately.",
+                Impact.HIGH, com.metallumextra.fx.UpscaleMode.class, c::effectiveUpscaleMode, c::setUpscaleMode, mode -> mode.label);
     }
 
     public static Choice<Quality> shaderQuality() {

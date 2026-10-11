@@ -15,6 +15,7 @@ import java.util.Properties;
  */
 public final class ExtraConfig {
     private static final String FILE_NAME = "metallum-extra.properties";
+    private static final String UPSCALE_PACK_PREFIX = "upscale.mode.";
     private static ExtraConfig instance;
 
     /** Master switch for the frame-hitch profiler. */
@@ -41,6 +42,8 @@ public final class ExtraConfig {
     public volatile boolean shaderMessages;
     /** Draws the world smaller and scales it up with MetalFX (see {@link com.metallumextra.fx.Upscale}). */
     public volatile com.metallumextra.fx.UpscaleMode upscaleMode;
+    /** MetalFX per shader pack (file keys {@code upscale.mode.<pack>}); a pack without one of its own is Off. */
+    public final java.util.Map<String, com.metallumextra.fx.UpscaleMode> upscaleModeByPack = new java.util.concurrent.ConcurrentHashMap<>();
     /** The shader pack in use: the file name of a ZIP in the shaderpacks folder, or {@code builtin}. Kept while shaders are off. */
     public volatile String shaderPack;
 
@@ -59,6 +62,11 @@ public final class ExtraConfig {
         this.shadersEnabled = bool(p, "shaders.enabled", false);
         this.shaderMessages = bool(p, "shaders.messages", true);
         this.upscaleMode = com.metallumextra.fx.UpscaleMode.of(p.getProperty("upscale.mode", "OFF"));
+        for (final String key : p.stringPropertyNames()) {
+            if (key.startsWith(UPSCALE_PACK_PREFIX)) {
+                this.upscaleModeByPack.put(key.substring(UPSCALE_PACK_PREFIX.length()), com.metallumextra.fx.UpscaleMode.of(p.getProperty(key, "OFF")));
+            }
+        }
         String pack = p.getProperty("shaders.pack", "builtin").strip();
         this.shaderPack = pack.isEmpty() ? "builtin" : pack;
     }
@@ -83,9 +91,26 @@ public final class ExtraConfig {
     }
 
     public void setUpscaleMode(final com.metallumextra.fx.UpscaleMode value) {
-        this.upscaleMode = value;
+        if (this.shadersEnabled) {
+            final String key = packKey(this.shaderPack);
+            this.upscaleModeByPack.put(key, value);
+            MetallumExtra.LOGGER.info("[Metallum Extra] upscaleMode[{}]={}", key, value);
+        } else {
+            this.upscaleMode = value;
+            MetallumExtra.LOGGER.info("[Metallum Extra] upscaleMode={}", value);
+        }
         save(file);
-        MetallumExtra.LOGGER.info("[Metallum Extra] upscaleMode={}", value);
+    }
+
+    /** The MetalFX value for what is on right now: the pack's own while shaders are on, the no-shader one otherwise. */
+    public com.metallumextra.fx.UpscaleMode effectiveUpscaleMode() {
+        if (!this.shadersEnabled) return this.upscaleMode;
+        return this.upscaleModeByPack.getOrDefault(packKey(this.shaderPack), com.metallumextra.fx.UpscaleMode.OFF);
+    }
+
+    /** The name a shader pack is remembered under in the file. */
+    public static String packKey(final String pack) {
+        return pack.replaceAll("[^A-Za-z0-9._-]", "_");
     }
 
     public void setShaderMessages(final boolean value) {
@@ -148,6 +173,10 @@ public final class ExtraConfig {
     }
 
     private void save(final Path file) {
+        final StringBuilder packLines = new StringBuilder();
+        for (final var entry : new java.util.TreeMap<>(this.upscaleModeByPack).entrySet()) {
+            packLines.append(UPSCALE_PACK_PREFIX).append(entry.getKey()).append('=').append(entry.getValue().name()).append('\n');
+        }
         String text = """
                 # Metallum Extra configuration. Restart the game after editing this file.
                 # The same options are in game: Video Settings > Metallum Extra (with Sodium), or Mods > Metallum Extra
@@ -180,7 +209,10 @@ public final class ExtraConfig {
                 # --- MetalFX upscaling (switches live) ---
                 # Draws the world at a smaller size and scales it up to the window with Apple's MetalFX spatial scaler;
                 # the menus and the HUD stay sharp. OFF, QUALITY (1.5x), BALANCED (1.7x), PERFORMANCE (2x) or ULTRA_PERFORMANCE (3x).
+                # This value is the one for no shader. Each shader pack has its own, written below as upscale.mode.<pack>
+                # when set while that pack is on; a pack with none of its own is Off.
                 upscale.mode=%s
+                %s
 
                 # --- Fixes ---
                 # With vsync off, never stall the render thread waiting for the display. Frames that
@@ -204,7 +236,7 @@ public final class ExtraConfig {
                 # is out of bounds"). This renumbers the samplers of such shaders. Others are untouched.
                 compat.manyTextures=%s
                 """.formatted(profilerEnabled, hitchMinMs, hitchMultiplier, summarySeconds, maxHitchLogsPerSummary,
-                shadersEnabled, shaderPack.replace("\\", "\\\\"), shaderMessages, upscaleMode.name(), nonBlockingPresent, fastSectionRecenter, spreadSodiumCleanup,
+                shadersEnabled, shaderPack.replace("\\", "\\\\"), shaderMessages, upscaleMode.name(), packLines, nonBlockingPresent, fastSectionRecenter, spreadSodiumCleanup,
                 manyTextures);
         try {
             Files.createDirectories(file.getParent());

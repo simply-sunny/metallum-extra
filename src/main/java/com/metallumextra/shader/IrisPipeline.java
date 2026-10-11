@@ -128,7 +128,7 @@ public final class IrisPipeline {
         String version = net.fabricmc.loader.api.FabricLoader.getInstance().getModContainer(MetallumExtra.MOD_ID)
                 .map(c -> c.getMetadata().getVersion().getFriendlyString()).orElse("?");
         lines.add("[Metallum Extra] Version: " + version);
-        if (com.metallumextra.ExtraConfig.get().upscaleMode != com.metallumextra.fx.UpscaleMode.OFF) lines.add("[Metallum Extra] Upscaling: " + com.metallumextra.fx.Upscale.status());
+        if (com.metallumextra.ExtraConfig.get().effectiveUpscaleMode() != com.metallumextra.fx.UpscaleMode.OFF) lines.add("[Metallum Extra] Upscaling: " + com.metallumextra.fx.Upscale.status());
         IrisPlan current = plan;
         if (!inUse() || current == null) {
             lines.add("[Metallum Extra] Shaders: off");

@@ -26,7 +26,7 @@ public final class SodiumOptionsIntegration implements ConfigEntryPoint {
                                         .setImpact(OptionImpact.HIGH)
                                         .setDefaultValue(com.metallumextra.fx.UpscaleMode.OFF)
                                         .setElementNameProvider(mode -> Component.literal(mode.label))
-                                        .setBinding(ExtraConfig.get()::setUpscaleMode, () -> ExtraConfig.get().upscaleMode)
+                                        .setBinding(ExtraConfig.get()::setUpscaleMode, ExtraConfig.get()::effectiveUpscaleMode)
                                         .setStorageHandler(() -> {
                                         })))
                         .addOptionGroup(group(builder, "Smoothness", Settings.smoothness()))

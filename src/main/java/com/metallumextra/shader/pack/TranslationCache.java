@@ -72,17 +72,17 @@ public final class TranslationCache {
      *
      * @param salt             the versions and settings that apply to every conversion; see {@code MetallumExtraBridge}
      * @param spirv            the shader as SPIR-V, from its current position
-     * @param pushConstantBinding where Metallum puts the push constants
-     * @param attributeFormats vertex input name to its format, for the vertex stage
+     * @param resourceLayout   where Metallum puts each resource and the push constants in the Metal shader
+     * @param attributeFormats vertex input location to its format, for the vertex stage
      * @param fragDepth        whether the fragment depth output is kept
      */
-    public static String key(final String salt, final ByteBuffer spirv, final int pushConstantBinding,
-                             final Map<String, ?> attributeFormats, final boolean fragDepth) {
+    public static String key(final String salt, final ByteBuffer spirv, final String resourceLayout,
+                             final Map<Integer, ?> attributeFormats, final boolean fragDepth) {
         MessageDigest digest = sha256();
         update(digest, salt);
-        update(digest, Integer.toString(pushConstantBinding));
+        update(digest, resourceLayout);
         update(digest, Boolean.toString(fragDepth));
-        for (Map.Entry<String, ?> entry : new TreeMap<>(attributeFormats).entrySet()) {
+        for (Map.Entry<Integer, ?> entry : new TreeMap<>(attributeFormats).entrySet()) {
             update(digest, entry.getKey() + "=" + entry.getValue());
         }
         update(digest, "spirv");

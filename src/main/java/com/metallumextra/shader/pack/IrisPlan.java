@@ -1,6 +1,6 @@
 package com.metallumextra.shader.pack;
 
-import com.mojang.blaze3d.GpuFormat;
+import com.mojang.renderpearl.api.GpuFormat;
 import org.jspecify.annotations.Nullable;
 
 import java.util.ArrayList;
@@ -74,13 +74,32 @@ public final class IrisPlan {
      * @param inPlace per write: the buffer's flip is switched off, so the program draws into the texture that is read
      * @param uniforms the standard uniforms the program declares, in the order of {@link IrisUniforms#ALL}; they reach it in one block
      */
-    public record Step(ProgramSet.Program program, int[] writes, boolean[] inPlace, List<Input> inputs, List<String> uniforms) {
+    public record Step(ProgramSet.Program program, int[] writes, boolean[] inPlace, List<Input> inputs, List<String> uniforms, @Nullable Compute compute) {
+        public Step(final ProgramSet.Program program, final int[] writes, final boolean[] inPlace, final List<Input> inputs, final List<String> uniforms) {
+            this(program, writes, inPlace, inputs, uniforms, null);
+        }
+
         public boolean reads(final int colorBuffer) {
             for (Input input : inputs) {
                 if (input.colorBuffer == colorBuffer) return true;
             }
             return false;
         }
+    }
+
+    /** A picture a compute program reads or writes by name ({@code colorimg4}, or an image the pack's shaders.properties declares). */
+    public record Image(String name, String type, int buffer, @Nullable String custom, boolean writes) {
+    }
+
+    /**
+     * What a compute program asks of the machine that runs it.
+     *
+     * @param images the images it reads or writes
+     * @param groups how many work groups it runs, from {@code const ivec3 workGroups}; null when it scales with the screen
+     * @param render the share of the screen's width and height its threads cover, from {@code const vec2 workGroupsRender}; used when {@code groups} is null
+     * @param local the threads in a work group
+     */
+    public record Compute(List<Image> images, int @Nullable [] groups, float[] render, int[] local) {
     }
 
     /** The kinds of terrain Sodium draws, each with its own program (the game draws them in this order). */
@@ -113,8 +132,16 @@ public final class IrisPlan {
         /** The glowing parts of mobs (eyes of spiders and endermen, a charged creeper's glow). */
         EYES("gbuffers_spidereyes", "gbuffers_textured", "gbuffers_basic"),
         CLOUDS("gbuffers_clouds", "gbuffers_textured", "gbuffers_basic"),
+        /** The shimmer of an enchanted item or armour. */
+        GLINT("gbuffers_armor_glint", "gbuffers_textured", "gbuffers_basic"),
+        /** The beam of a beacon. */
+        BEACON("gbuffers_beaconbeam", "gbuffers_textured", "gbuffers_basic"),
+        /** A bolt of lightning (Iris falls back to the entities' program). */
+        LIGHTNING("gbuffers_lightning", "gbuffers_entities", "gbuffers_textured_lit", "gbuffers_textured", "gbuffers_basic"),
         /** The sky behind everything, drawn over the whole screen in place of the game's disc, sunrise fan and dark disc. */
         SKY("gbuffers_skybasic"),
+        /** The sun and the moon, textured quads the game draws on the sky; the program is told which with renderStage. */
+        SKY_TEXTURED("gbuffers_skytextured", "gbuffers_textured", "gbuffers_basic"),
         /** Mobs, items and block entities seen from the light, and moving blocks. */
         SHADOW_ENTITY("shadow_entities", "shadow"),
         SHADOW_BLOCK("shadow_block", "shadow");
@@ -163,6 +190,7 @@ public final class IrisPlan {
     private float sunPathRotation;
     private boolean translucentReadsColor;
     private boolean usesLightColors;
+    private boolean shadowColor1;
     private int shadowResolution = 1024;
     private float shadowDistance = 160.0F;
     private final Map<String, String> vertexSources = new TreeMap<>();
@@ -228,8 +256,8 @@ public final class IrisPlan {
     }
 
     /**
-     * The color buffers (other than 0) that any program drawing the world writes. Every pass that draws the world has them attached, in the
-     * attachment of the same number, so everything drawn into it agrees on where each output goes.
+     * The color buffers (other than 0) that any program drawing the world writes. Every pass that draws the world has them attached, one after
+     * the other in the order of their numbers (see {@link #attachment}), so everything drawn into it agrees on where each output goes.
      */
     public Set<Integer> worldBuffers() {
         return worldBuffers;
@@ -285,6 +313,11 @@ public final class IrisPlan {
     }
 
     /** Whether a program reads the grid of block light colors, which then has to be kept up to date. */
+    /** Whether the shadow map has a second color attachment ({@code shadowcolor1}): a shadow program writes it, or a program reads it. */
+    public boolean hasShadowColor1() {
+        return shadowColor1;
+    }
+
     public boolean usesLightColors() {
         return usesLightColors;
     }
@@ -292,6 +325,14 @@ public final class IrisPlan {
     /** Whether a program that draws translucent things reads {@code colortex0}, the world behind them. */
     public boolean translucentReadsColor() {
         return translucentReadsColor;
+    }
+
+    /** Whether the pack has a compute program. */
+    public boolean hasCompute() {
+        for (List<Step> list : stages) {
+            for (Step step : list) if (step.compute() != null) return true;
+        }
+        return false;
     }
 
     /** Whether the pack has a program that draws the shadow map. */
@@ -338,9 +379,29 @@ public final class IrisPlan {
         plan.usesBlockIds = !set.blockMappings().isEmpty();
         for (String name : set.unsupported()) plan.notes.add(name + " is not run yet");
 
+        // Reading a program takes a tenth of a second or more and the programs do not depend on one another: read them on every core. A program
+        // that cannot be read is reported by the pass below, in order.
+        com.metallumextra.ResourceLog.Step prefetch = com.metallumextra.ResourceLog.step("plan-read-programs", pack.name() + "/" + dimension);
+        set.runnable().parallelStream().forEach(program -> {
+            try {
+                if (program.isCompute()) {
+                    pack.load(program.compute());
+                } else {
+                    pack.load(program.vertex());
+                    pack.load(program.fragment());
+                }
+            } catch (RuntimeException ignored) {
+                // Said by the sequential pass.
+            }
+        });
+        prefetch.close();
         Map<String, String> fragments = new TreeMap<>();
         for (ProgramSet.Program program : set.runnable()) {
-            try {
+            try (var each = com.metallumextra.ResourceLog.step("plan-analyse-program", program.name())) {
+                if (program.isCompute()) {
+                    plan.addCompute(set, program, pack.load(program.compute()));
+                    continue;
+                }
                 String vertex = pack.load(program.vertex());
                 String fragment = pack.load(program.fragment());
                 fragments.put(program.name(), fragment);
@@ -370,6 +431,71 @@ public final class IrisPlan {
         if (match.find()) shadowDistance = Math.max(16.0F, Float.parseFloat(match.group(1)));
     }
 
+    private static final Pattern IMAGE = Pattern.compile("(?m)^[ \\t]*(?:layout\\s*\\([^)]*\\)\\s*)?((?:(?:writeonly|readonly|coherent|volatile|restrict|highp|mediump|lowp)\\s+)*)uniform\\s+((?:(?:writeonly|readonly|coherent|volatile|restrict|highp|mediump|lowp)\\s+)*)([iu]?image[123]D)\\s+(\\w+)\\s*;");
+    private static final Pattern WORK_GROUPS = Pattern.compile("const\\s+ivec3\\s+workGroups\\s*=\\s*ivec3\\s*\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)\\s*\\)\\s*;");
+    private static final Pattern WORK_GROUPS_RENDER = Pattern.compile("const\\s+vec2\\s+workGroupsRender\\s*=\\s*vec2\\s*\\(\\s*([\\d.]+)\\s*,\\s*([\\d.]+)\\s*\\)\\s*;");
+    private static final Pattern LOCAL_SIZE = Pattern.compile("local_size_([xyz])\\s*=\\s*(\\d+)");
+
+    /** A compute program: what it reads and writes, and how many threads it runs; it is planned like the programs that draw, and run in the place its name says. */
+    private void addCompute(final ProgramSet set, final ProgramSet.Program program, final String source) throws PackException {
+        Set<String> optionNames = new HashSet<>();
+        for (PackOption option : set.options()) optionNames.add(option.id());
+        String text = GlslConditions.strip(source, optionNames);
+        List<Input> inputs = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (Map.Entry<String, String> declared : ProgramSet.samplerTypes(text).entrySet()) {
+            String sampler = declared.getKey();
+            if (!seen.add(sampler)) continue;
+            String custom = set.customTexture(program.stage(), sampler);
+            if (custom != null && !ProgramSet.fits(custom, declared.getValue())) custom = null;
+            if (custom == null && sampler.equals("noisetex")) custom = "mx:noise";
+            if (custom != null) {
+                inputs.add(new Input(sampler, CUSTOM, -1, custom));
+                continue;
+            }
+            Input made = input(program, sampler);
+            if (made.colorBuffer >= 0) buffers.putIfAbsent(made.colorBuffer, null);
+            if (made.depthTexture >= 0) depthUsed[made.depthTexture] = true;
+            inputs.add(made);
+        }
+        List<Image> images = new ArrayList<>();
+        Set<Integer> written = new java.util.TreeSet<>();
+        Matcher image = IMAGE.matcher(COMMENTS.matcher(text).replaceAll(""));
+        while (image.find()) {
+            String qualifiers = image.group(1) + " " + image.group(2);
+            boolean writes = !qualifiers.contains("readonly");
+            String name = image.group(4);
+            Matcher color = Pattern.compile("colorimg(\\d+)").matcher(name);
+            if (color.matches()) {
+                int index = Integer.parseInt(color.group(1));
+                if (index >= COLOR_BUFFERS) throw new PackException(program.name() + " uses " + name + ", but there are only colorimg0 to colorimg" + (COLOR_BUFFERS - 1));
+                buffers.putIfAbsent(index, null);
+                if (writes) written.add(index);
+                images.add(new Image(name, image.group(3), index, null, writes));
+            } else if (set.property("image." + name) != null) {
+                images.add(new Image(name, image.group(3), -1, name, writes));
+            } else {
+                throw new PackException(program.name() + " uses the image " + name + ", which shaders.properties does not declare (image." + name + ")");
+            }
+        }
+        Matcher groups = WORK_GROUPS.matcher(text);
+        int[] counts = groups.find() ? new int[] {Integer.parseInt(groups.group(1)), Integer.parseInt(groups.group(2)), Integer.parseInt(groups.group(3))} : null;
+        Matcher render = WORK_GROUPS_RENDER.matcher(text);
+        float[] share = render.find() ? new float[] {Float.parseFloat(render.group(1)), Float.parseFloat(render.group(2))} : new float[] {1.0F, 1.0F};
+        int[] local = {1, 1, 1};
+        Matcher size = LOCAL_SIZE.matcher(text);
+        while (size.find()) local["xyz".indexOf(size.group(1).charAt(0))] = Integer.parseInt(size.group(2));
+        Set<String> both = new java.util.LinkedHashSet<>(IrisUniforms.declared(text));
+        List<String> uniforms = IrisUniforms.allUniforms().stream().map(IrisUniforms.Uniform::name).filter(both::contains).toList();
+        int[] writes = written.stream().mapToInt(Integer::intValue).toArray();
+        boolean[] inPlace = new boolean[writes.length];
+        java.util.Arrays.fill(inPlace, true);
+        for (Input input : inputs) {
+            if (input.colorBuffer >= 0) buffers.putIfAbsent(input.colorBuffer, null);
+        }
+        stages.get(program.stage().ordinal()).add(new Step(program, writes, inPlace, List.copyOf(inputs), uniforms, new Compute(List.copyOf(images), counts, share, local)));
+    }
+
     private void add(final ProgramSet set, final ProgramSet.Program program, final String vertexSource, final String fragmentSource) throws PackException {
         // What the program asks for is what the preprocessor would leave of it.
         Set<String> optionNames = new HashSet<>();
@@ -382,14 +508,19 @@ public final class IrisPlan {
         if (gbuffers) vertexSources.put(program.name(), vertex);
         List<Input> inputs = new ArrayList<>();
         Set<String> seen = new HashSet<>();
-        for (String sampler : ProgramSet.samplers(vertex + "\n" + fragment)) {
+        for (Map.Entry<String, String> declared : ProgramSet.samplerTypes(vertex + "\n" + fragment).entrySet()) {
+            String sampler = declared.getKey();
             if (!seen.add(sampler)) continue;
             String custom = set.customTexture(program.stage(), sampler);
+            // A texture the pack gives a name is read by the programs that declare that name as the kind of sampler it is (a program of the same stage may read the buffer of that name).
+            if (custom != null && !ProgramSet.fits(custom, declared.getValue())) custom = null;
             // The resource pack's normal and specular maps: there are none yet (every surface is flat and not shiny), as in Iris without one.
             if (custom == null && sampler.equals("normals")) custom = "mx:flat_normals";
             if (custom == null && sampler.equals("specular")) custom = "mx:no_specular";
+            // Iris gives noisetex a random picture when the pack names none.
+            if (custom == null && sampler.equals("noisetex")) custom = "mx:noise";
             if (custom != null) {
-                if (!custom.startsWith("mx:") && set.pack().bytes(custom) == null) throw new PackException(program.name() + " reads " + sampler + ", which shaders.properties gives the picture " + custom + ", but the pack has no such PNG");
+                if (!custom.startsWith("mx:") && !custom.matches("[a-z0-9_.-]+:.+") && set.pack().bytes(TextureSpec.pathOf(custom)) == null) throw new PackException(program.name() + " reads " + sampler + ", which shaders.properties gives the picture " + custom + ", but the pack has no such PNG");
                 Input made = new Input(sampler, CUSTOM, -1, custom);
                 if (gbuffers) slotFor(made);
                 inputs.add(made);
@@ -401,9 +532,7 @@ public final class IrisPlan {
             inputs.add(made);
         }
         int[] writes = program.stage() == ProgramSet.Stage.FINAL ? new int[0] : writes(program, fragment);
-        if (gbuffers && writes[0] != 0) {
-            throw new PackException(program.name() + " writes colortex" + writes[0] + " first, but this version draws the world into colortex0, so the first output must go there");
-        }
+        if (shadow && writes.length > 1) shadowColor1 = true;
         Set<Integer> flipsOff = set.flipsOff(program.name());
         boolean[] inPlace = new boolean[writes.length];
         for (int i = 0; i < writes.length; i++) {
@@ -419,6 +548,7 @@ public final class IrisPlan {
         for (Input input : inputs) {
             if (gbuffers && input.colorBuffer == 0 && !shadow && (program.name().equals("gbuffers_water") || program.name().equals("gbuffers_hand_water") || program.name().endsWith("_translucent"))) translucentReadsColor = true;
             if (input.colorBuffer == LIGHT_COLORS) usesLightColors = true;
+            if (input.colorBuffer == SHADOW_COLOR1) shadowColor1 = true;
             if (input.colorBuffer >= 0) buffers.putIfAbsent(input.colorBuffer, null);
             if (input.depthTexture >= 0) depthUsed[input.depthTexture] = true;
         }
@@ -445,6 +575,7 @@ public final class IrisPlan {
         if (sampler.equals("texture")) throw new PackException(program.name() + " names its atlas sampler 'texture', which is also a GLSL function; use gtexture");
         if (!shadow && sampler.matches("shadowtex[01]")) return new Input(sampler, SHADOW_DEPTH, -1);
         if (!shadow && sampler.equals("shadowcolor0")) return new Input(sampler, SHADOW_COLOR, -1);
+        if (!shadow && sampler.equals("shadowcolor1")) return new Input(sampler, SHADOW_COLOR1, -1);
         // Every program that draws the world may bind the depth of the world so far and the buffers the passes before it wrote, as in Iris.
         if (sampler.matches("depthtex[012]") || sampler.equals("gdepthtex")) return new Input(sampler, -1, 1);
         if (OLD_NAMES.containsKey(sampler)) return new Input(sampler, OLD_NAMES.get(sampler), -1);
@@ -460,6 +591,7 @@ public final class IrisPlan {
     /** {@link Input#colorBuffer} of the shadow map's depth and of its color. */
     public static final int SHADOW_DEPTH = -2;
     public static final int SHADOW_COLOR = -3;
+    public static final int SHADOW_COLOR1 = -6;
     /** The color grid of block light, which only the built-in shader pack reads. */
     public static final int LIGHT_COLORS = -4;
 
@@ -502,6 +634,7 @@ public final class IrisPlan {
         if (sampler.matches("depthtex[012]")) return new Input(sampler, -1, sampler.charAt(8) - '0');
         if (sampler.matches("shadowtex[01]")) return new Input(sampler, SHADOW_DEPTH, -1);
         if (sampler.equals("shadowcolor0")) return new Input(sampler, SHADOW_COLOR, -1);
+        if (sampler.equals("shadowcolor1")) return new Input(sampler, SHADOW_COLOR1, -1);
         throw new PackException(program.name() + " reads " + sampler + ", which this version cannot provide yet");
     }
 
@@ -571,12 +704,83 @@ public final class IrisPlan {
         }
         for (Step step : stages.get(ProgramSet.Stage.GBUFFERS.ordinal())) {
             for (int index : step.writes()) {
-                if (index != 0) {
-                    if (index >= MAX_OUTPUTS) throw new PackException(step.program().name() + " writes colortex" + index + ", but the programs that draw the world can only write colortex0 to colortex" + (MAX_OUTPUTS - 1));
-                    worldBuffers.add(index);
-                }
+                if (index != 0) worldBuffers.add(index);
             }
         }
+        // Metal draws into eight attachments at most: the buffers the programs of the world write, with colortex0, must fit (any of the sixteen may be among them).
+        if (worldBuffers.size() + 1 > MAX_OUTPUTS) {
+            throw new PackException("the programs that draw the world write " + (worldBuffers.size() + 1) + " different buffers (colortex0 and colortex" + worldBuffers
+                    + "), but Metal can draw into " + MAX_OUTPUTS + " at once");
+        }
+    }
+
+    /** What {@code blend.<program>} and {@code blend.<program>.colortexN} ask of a buffer: nothing said, no blending, or a function. */
+    public sealed interface BlendSetting permits BlendSetting.Default, BlendSetting.Off, BlendSetting.Func {
+        record Default() implements BlendSetting {
+        }
+
+        record Off() implements BlendSetting {
+        }
+
+        record Func(com.mojang.renderpearl.api.pipeline.BlendFunction function) implements BlendSetting {
+        }
+    }
+
+    private static final BlendSetting UNSET = new BlendSetting.Default();
+
+    /**
+     * The blending the pack asks for when {@code program} draws into {@code buffer}: {@code blend.<program>.colortexN} first, then {@code blend.<program>}.
+     * A function is four factors (colour source and destination, then alpha's), or two for both.
+     */
+    public BlendSetting blend(final String program, final int buffer) {
+        String value = programs.property("blend." + program + ".colortex" + buffer);
+        if (value == null) value = programs.property("blend." + program);
+        if (value == null) return UNSET;
+        String[] parts = value.trim().split("\\s+");
+        if (parts.length == 1 && parts[0].equalsIgnoreCase("off")) return new BlendSetting.Off();
+        try {
+            com.mojang.renderpearl.api.pipeline.BlendFactor[] f = new com.mojang.renderpearl.api.pipeline.BlendFactor[parts.length];
+            for (int i = 0; i < parts.length; i++) f[i] = com.mojang.renderpearl.api.pipeline.BlendFactor.valueOf(parts[i].toUpperCase(java.util.Locale.ROOT));
+            if (f.length == 2) return new BlendSetting.Func(new com.mojang.renderpearl.api.pipeline.BlendFunction(f[0], f[1]));
+            if (f.length == 4) return new BlendSetting.Func(new com.mojang.renderpearl.api.pipeline.BlendFunction(f[0], f[1], f[2], f[3]));
+        } catch (IllegalArgumentException e) {
+            // Falls through: a setting this version does not understand is left alone.
+        }
+        return UNSET;
+    }
+
+    /**
+     * What a program's alpha must be above for the pixel to be kept: Iris's tenth unless the pack says otherwise with {@code alphaTest.<program>}
+     * ({@code off}, or a test and a number: {@code GREATER 0.0001}). Zero means every pixel is kept.
+     */
+    public float alphaThreshold(final String program) {
+        String value = programs.property("alphaTest." + program);
+        if (value == null) return 0.1F;
+        String[] parts = value.trim().split("\\s+");
+        String test = parts[0].toUpperCase(java.util.Locale.ROOT);
+        if (test.equals("OFF") || test.equals("FALSE") || test.equals("ALWAYS")) return 0.0F;
+        if ((test.equals("GREATER") || test.equals("GEQUAL")) && parts.length > 1) {
+            try {
+                return Math.max(0.0F, Float.parseFloat(parts[1]));
+            } catch (NumberFormatException e) {
+                return 0.1F;
+            }
+        }
+        return 0.1F;
+    }
+
+    /**
+     * The attachment of the passes that draw the world that holds {@code buffer}: colortex0 is the first, the others follow in the order of their numbers
+     * (so the pack may use any of colortex0 to colortex15 as long as the world's programs write eight at most).
+     */
+    public int attachment(final int buffer) {
+        if (buffer == 0) return 0;
+        int at = 1;
+        for (int b : worldBuffers) {
+            if (b == buffer) return at;
+            at++;
+        }
+        return buffer;
     }
 
     private void settleBuffers(final Map<String, String> fragments) throws PackException {

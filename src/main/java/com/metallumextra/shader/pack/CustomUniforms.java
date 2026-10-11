@@ -44,7 +44,7 @@ public final class CustomUniforms {
         }
     }
 
-    private record Entry(String type, String name, Node expression, boolean variable) {
+    private record Entry(String type, String name, Node expression, boolean variable, Node[] components) {
     }
 
     private final List<Entry> entries = new ArrayList<>();
@@ -76,11 +76,32 @@ public final class CustomUniforms {
             String[] parts = key.split("\\.", 3);
             if (parts.length != 3) continue;
             String type = parts[1];
-            if (!List.of("float", "int", "bool").contains(type)) throw new PackException(key + ": the type " + type + " is not supported (float, int and bool are)");
+            boolean vector = type.matches("vec[234]");
+            if (!vector && !List.of("float", "int", "bool").contains(type)) throw new PackException(key + ": the type " + type + " is not supported (float, int, bool, vec2, vec3 and vec4 are)");
             try {
+                if (vector) {
+                    // vecN(a, b ...): each component is an expression of its own.
+                    String value = entry.getValue().trim();
+                    if (!value.startsWith(type + "(") || !value.endsWith(")")) throw new PackException("a " + type + " is written " + type + "(a, b ...)");
+                    String inside = value.substring(type.length() + 1, value.length() - 1);
+                    List<Node> nodes = new ArrayList<>();
+                    int depth = 0, from = 0;
+                    for (int i = 0; i <= inside.length(); i++) {
+                        char c = i < inside.length() ? inside.charAt(i) : ',';
+                        if (c == '(') depth++;
+                        else if (c == ')') depth--;
+                        else if (c == ',' && depth == 0) {
+                            nodes.add(new Parser(inside.substring(from, i), result, constant).parse());
+                            from = i + 1;
+                        }
+                    }
+                    if (nodes.size() != type.charAt(3) - '0') throw new PackException(type + " needs " + (type.charAt(3) - '0') + " components, not " + nodes.size());
+                    result.entries.add(new Entry(type, parts[2], nodes.get(0), variable, nodes.toArray(new Node[0])));
+                    continue;
+                }
                 Parser parser = new Parser(entry.getValue(), result, constant);
                 Node node = parser.parse();
-                result.entries.add(new Entry(type, parts[2], node, variable));
+                result.entries.add(new Entry(type, parts[2], node, variable, null));
             } catch (PackException e) {
                 throw new PackException(key + " = " + entry.getValue() + ": " + e.getMessage(), e);
             }
@@ -102,6 +123,13 @@ public final class CustomUniforms {
         Map<String, Double> custom = new HashMap<>();
         Context context = new Context(values, custom, dt, smoothed);
         for (Entry entry : entries) {
+            if (entry.components != null) {
+                double[] vector = new double[entry.components.length];
+                for (int i = 0; i < vector.length; i++) vector[i] = entry.components[i].eval(context);
+                custom.put(entry.name, vector[0]);
+                if (!entry.variable) values.put(entry.name, vector);
+                continue;
+            }
             double value = entry.expression.eval(context);
             if (entry.type.equals("int")) value = Math.floor(value);
             else if (entry.type.equals("bool")) value = value != 0.0 ? 1.0 : 0.0;
@@ -302,6 +330,16 @@ public final class CustomUniforms {
                 return function(name, arguments);
             }
             String component = null;
+            // A matrix's entry: gbufferModelView.2.1 is the third column's second row.
+            java.util.regex.Matcher entry = java.util.regex.Pattern.compile("\\.(\\d)\\.(\\d)").matcher(text);
+            if (entry.find(at) && entry.start() == at) {
+                at = entry.end();
+                int slot = (entry.group(1).charAt(0) - '0') * 4 + (entry.group(2).charAt(0) - '0');
+                return c -> {
+                    double[] value = c.values.get(name);
+                    return value != null && slot < value.length ? value[slot] : 0.0;
+                };
+            }
             if (at < text.length() && text.charAt(at) == '.' && at + 1 < text.length() && Character.isLetter(text.charAt(at + 1))) {
                 at++;
                 int s = at;
@@ -320,6 +358,7 @@ public final class CustomUniforms {
                 case "false":
                     return c -> 0.0;
                 case "PI":
+                case "pi":
                     return c -> Math.PI;
                 default:
                     break;
@@ -365,6 +404,11 @@ public final class CustomUniforms {
                         }
                         return 0.0;
                     };
+                }
+                case "equals" -> {
+                    // equals(a, b, tolerance): whether the two are within the tolerance of each other
+                    if (a.size() != 3) throw new PackException("equals needs two values and a tolerance");
+                    return c -> Math.abs(a.get(0).eval(c) - a.get(1).eval(c)) <= a.get(2).eval(c) ? 1.0 : 0.0;
                 }
                 case "clamp" -> {
                     if (a.size() != 3) throw new PackException("clamp needs a value, a minimum and a maximum");

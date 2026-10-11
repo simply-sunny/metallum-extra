@@ -10,8 +10,8 @@ import com.metallumextra.shader.pack.ProgramSet;
 import com.metallumextra.shader.pack.PackManager;
 import com.metallumextra.shader.pack.ProgramSet;
 import com.metallumextra.shader.pack.ShaderPack;
-import com.mojang.blaze3d.shaders.ShaderSource;
-import com.mojang.blaze3d.shaders.ShaderType;
+import com.mojang.renderpearl.api.pipeline.ShaderSource;
+import com.mojang.renderpearl.api.pipeline.ShaderType;
 import net.minecraft.resources.Identifier;
 import org.jspecify.annotations.Nullable;
 
@@ -19,6 +19,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.regex.Pattern;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -38,23 +39,44 @@ public final class ShaderSources {
     private static final @Nullable Path DUMP_DIR = dir("metallumextra.dumpShaders");
 
     /** What has been read from one pack. A new one replaces it whenever the pack changes, so a stale entry cannot outlive its pack. */
-    private record Lookup(ShaderPack pack, Map<String, Optional<String>> files) {
+    private record Lookup(ShaderPack pack, Map<String, Optional<String>> files, Map<String, String> numbered) {
     }
 
     private static final Map<String, Optional<String>> INTERNAL = new ConcurrentHashMap<>();
 
-    private static volatile Lookup lookup = new Lookup(new BuiltinPack(), new ConcurrentHashMap<>());
+    private static volatile Lookup lookup = new Lookup(new BuiltinPack(), new ConcurrentHashMap<>(), new ConcurrentHashMap<>());
 
     private ShaderSources() {
     }
 
     /** Wraps the source the game compiles from, so this mod's shaders are found first while shaders are on. */
     public static ShaderSource wrap(final ShaderSource original) {
-        return (id, type) -> {
+        return new ShaderSource() {
+            @Override
+            public ShaderSource.CachedIncludeSource getInclude(final Identifier id) {
+                return original.getInclude(id);
+            }
+
+            @Override
+            public void close() {
+                original.close();
+            }
+
+            @Override
+            public String getShader(final Identifier id, final ShaderType type) {
+                return shaderFor(original, id, type);
+            }
+        };
+    }
+
+    private static String shaderFor(final ShaderSource original, final Identifier id, final ShaderType type) {
+        {
             String ours = null;
             if (Shaders.active()) {
                 try {
-                    ours = get(id, type);
+                    try (var step = com.metallumextra.ResourceLog.step("adapt-source", id + " " + type)) {
+                        ours = withoutPipelineDefines(get(id, type));
+                    }
                 } catch (RuntimeException e) {
                     // A pack's program that cannot be made is never a crash: the pack is put aside and the game goes on without it.
                     ours = null;
@@ -64,10 +86,30 @@ public final class ShaderSources {
             }
             Identifier world = IrisWorld.originalOf(id, type == ShaderType.VERTEX);
             Identifier real = isTerrainProgram(id) ? Identifier.fromNamespaceAndPath("sodium", "blocks/block_layer_opaque") : world != null ? world : id;
-            if (DUMP_DIR != null) dump(id, type, ours != null ? ours : original.get(real, type));
+            if (DUMP_DIR != null) dump(id, type, ours != null ? ours : original.getShader(real, type));
             // A terrain pipeline made for a pack that has since gone (Sodium keeps them) compiles as Sodium's own shader until it is replaced.
-            return ours != null ? ours : original.get(real, type);
-        };
+            return ours != null ? ours : original.getShader(real, type);
+        }
+    }
+
+    /** The flags the game's pipelines define in their shaders; a pack that defines one of the names itself means something else by it. */
+    private static final java.util.List<String> PIPELINE_DEFINES = java.util.List.of("ALPHA_CUTOUT", "APPLY_TEXTURE_MATRIX", "DISSOLVE", "EMISSIVE", "IS_GRAYSCALE",
+            "IS_GUI", "IS_SEE_THROUGH", "NO_CARDINAL_LIGHTING", "NO_OVERLAY", "PER_FACE_LIGHTING");
+
+    /**
+     * The game inserts its pipeline's defines right after the first line, so a pack that defines the same name again (BSL has its own {@code EMISSIVE})
+     * is told off by the compiler for a macro defined twice, and would also see the game's flag as its own. The pack's own definition wins: the
+     * name is undefined on the second line, after the game's.
+     */
+    static @Nullable String withoutPipelineDefines(final @Nullable String source) {
+        if (source == null) return null;
+        StringBuilder undef = new StringBuilder();
+        for (String name : PIPELINE_DEFINES) {
+            if (Pattern.compile("(?m)^[ \\t]*#[ \\t]*define[ \\t]+" + name + "\\b").matcher(source).find()) undef.append("#undef ").append(name).append('\n');
+        }
+        if (undef.length() == 0) return source;
+        int firstLine = source.indexOf('\n');
+        return firstLine < 0 ? source : source.substring(0, firstLine + 1) + undef + source.substring(firstLine + 1);
     }
 
     private static boolean isStale(final Throwable error) {
@@ -85,7 +127,7 @@ public final class ShaderSources {
         Identifier world = IrisWorld.originalOf(id, type == ShaderType.VERTEX);
         Identifier real = isTerrainProgram(id) ? Identifier.fromNamespaceAndPath("sodium", "blocks/block_layer_opaque") : world != null ? world : id;
         try {
-            String source = original.get(real, type);
+            String source = original.getShader(real, type);
             if (source != null) return source;
         } catch (RuntimeException ignored) {
             // No program of the game's by that name: the empty one below.
@@ -113,12 +155,28 @@ public final class ShaderSources {
         String file = program == null ? null : type == ShaderType.VERTEX ? program.vertex() : program.fragment();
         if (file == null) return null;
         return current.files.computeIfAbsent(file, f -> {
-            String text = readExpanded(current.pack, f);
-            try {
+            String text;
+            try (var timer = com.metallumextra.ResourceLog.step("read-program", f)) {
+                text = readExpanded(current.pack, f);
+            }
+            try (var timer = com.metallumextra.ResourceLog.step("adapt-program", f)) {
                 if (text == null) return Optional.empty();
-                String adapted = IrisTerrain.adapt(IrisPlan.withoutBufferFormats(text), type == ShaderType.VERTEX, false, "true".equals(plan.programs().property("mx.blockTypes")), plan.usesBlockIds());
-                if (type != ShaderType.VERTEX) adapted = IrisWorldAdapter.remapOutputs(adapted, step.writes());
-                return Optional.of(IrisUniforms.rewrite(adapted, IrisUniforms.declared(adapted)));
+                String clean;
+                try (var t = com.metallumextra.ResourceLog.step("ad-buffer-formats", f)) {
+                    clean = IrisPlan.withoutBufferFormats(text);
+                }
+                String adapted;
+                try (var t = com.metallumextra.ResourceLog.step("ad-terrain-adapt", f)) {
+                    adapted = IrisTerrain.adapt(clean, type == ShaderType.VERTEX, false, "true".equals(plan.programs().property("mx.blockTypes")), plan.usesBlockIds());
+                }
+                if (type != ShaderType.VERTEX) adapted = IrisWorldAdapter.remapOutputs(adapted, step.writes(), plan, plan.alphaThreshold(program.name()));
+                java.util.List<String> declared;
+                try (var t = com.metallumextra.ResourceLog.step("ad-declared", f)) {
+                    declared = IrisUniforms.declared(adapted);
+                }
+                try (var t = com.metallumextra.ResourceLog.step("ad-rewrite", f)) {
+                    return Optional.of(IrisUniforms.rewrite(adapted, declared));
+                }
             } catch (PackException e) {
                 throw new IllegalStateException(e.getMessage(), e);
             }
@@ -133,13 +191,20 @@ public final class ShaderSources {
         String file = type == ShaderType.VERTEX ? program.vertex() : program.fragment();
         if (file == null) return null;
         return current.files.computeIfAbsent(id.getPath() + (type == ShaderType.VERTEX ? ".vsh" : ".fsh"), f -> {
-            String text = readExpanded(current.pack, file);
-            try {
+            String text;
+            try (var timer = com.metallumextra.ResourceLog.step("read-program", file)) {
+                text = readExpanded(current.pack, file);
+            }
+            try (var timer = com.metallumextra.ResourceLog.step("adapt-program", file)) {
                 if (text == null) return Optional.empty();
-                String source = IrisPlan.withoutBufferFormats(text);
+                String source = IrisWorldAdapter.withRenderStage(IrisPlan.withoutBufferFormats(text), entry.stage());
                 String adapted = entry.kind() == IrisWorld.Kind.SKY ? IrisWorldAdapter.adaptSky(source, type == ShaderType.VERTEX)
                         : IrisWorldAdapter.adapt(source, type == ShaderType.VERTEX, entry.format(), entry.kind() == IrisWorld.Kind.SHADOW);
-                if (type != ShaderType.VERTEX) adapted = IrisWorldAdapter.remapOutputs(adapted, entry.step().writes());
+                if (type != ShaderType.VERTEX) {
+                    IrisPlan plan = IrisPipeline.currentPlan();
+                    boolean shadowOutputs = entry.kind() == IrisWorld.Kind.SHADOW;
+                    adapted = IrisWorldAdapter.remapOutputs(adapted, entry.step().writes(), shadowOutputs ? null : plan, plan == null ? 0.1F : plan.alphaThreshold(program.name()));
+                }
                 return Optional.of(IrisUniforms.rewrite(adapted, IrisUniforms.declared(adapted)));
             } catch (PackException e) {
                 throw new IllegalStateException(e.getMessage(), e);
@@ -176,6 +241,23 @@ public final class ShaderSources {
     public static @Nullable String get(final Identifier id, final ShaderType type) {
         PackManager.start();
         Lookup current = lookup;
+        String text = unnumbered(current, id, type);
+        // The mod's own helper programs are written with their numbers; a program of a pack gets them from its two stages together.
+        if (text == null || id.getPath().startsWith("internal/")) return text;
+        return current.numbered.computeIfAbsent(id + (type == ShaderType.VERTEX ? ".vsh" : ".fsh"), key -> {
+            String other = null;
+            try {
+                other = unnumbered(current, id, type == ShaderType.VERTEX ? ShaderType.FRAGMENT : ShaderType.VERTEX);
+            } catch (RuntimeException e) {
+                // The other stage is missing or stale: this one is numbered on its own, and the compiler says what is wrong.
+            }
+            try (var step = com.metallumextra.ResourceLog.step("number-locations", id + " " + type)) {
+                return GlslLocations.fit(text, other, type == ShaderType.VERTEX);
+            }
+        });
+    }
+
+    private static @Nullable String unnumbered(final Lookup current, final Identifier id, final ShaderType type) {
         if (isTerrainProgram(id)) return terrain(current, id, type);
         if (id.getNamespace().equals("minecraft") && id.getPath().startsWith("iris_")) return world(current, id, type);
         String extension = type == ShaderType.VERTEX ? ".vsh" : ".fsh";
@@ -210,16 +292,49 @@ public final class ShaderSources {
             String text = readExpanded(current.pack, f);
             try {
                 // Loose standard uniforms become one block (see IrisUniforms), the same one in both stages of the program.
-                return Optional.ofNullable(text == null ? null : IrisUniforms.rewrite(IrisPlan.withoutBufferFormats(text), uniforms));
+                String rewritten = text == null ? null : IrisUniforms.rewrite(IrisPlan.withoutBufferFormats(text), uniforms);
+                return Optional.ofNullable(rewritten == null ? null : debugPatch(name, type, rewritten));
             } catch (PackException e) {
                 throw new IllegalStateException(e.getMessage(), e);
             }
         }).orElseThrow();
     }
 
+    /**
+     * Development aid: {@code -Dmetallumextra.patch=<program>:<code>} runs the code after the main function of that program's fragment stage, so a program can be made
+     * to show what it reads ({@code fragment_color = texelFetch(colortex1, ivec2(gl_FragCoord.xy), 0).rgb;}).
+     */
+    private static String debugPatch(final String program, final ShaderType type, final String text) {
+        String patch = System.getProperty("metallumextra.patch");
+        if (patch != null && patch.startsWith("@")) {
+            try {
+                patch = Files.readString(Path.of(patch.substring(1))).strip();
+            } catch (IOException e) {
+                return text;
+            }
+        }
+        if (patch == null || type != ShaderType.FRAGMENT || !patch.startsWith(program + ":")) return text;
+        java.util.regex.Matcher main = java.util.regex.Pattern.compile("\\bvoid\\s+main\\s*\\(\\s*(?:void)?\\s*\\)").matcher(text);
+        if (!main.find()) return text;
+        return main.replaceAll("void mx_patched_main()") + "\nvoid main() {\n    mx_patched_main();\n    " + patch.substring(program.length() + 1) + "\n}\n";
+    }
+
+    /** The text of a compute program, ready for the compiler: its includes and options in, the standard uniforms made one block. */
+    public static String computeSource(final ProgramSet.Program program, final java.util.List<String> uniforms) {
+        Lookup current = lookup;
+        String text = readExpanded(current.pack, program.compute());
+        if (text == null) throw new IllegalStateException("Shader pack " + current.pack.name() + " has no file " + program.compute());
+        try {
+            String rewritten = IrisUniforms.rewrite(IrisPlan.withoutBufferFormats(IrisWorldAdapter.declarationsWithoutComments(text)), uniforms);
+            return GlslLocations.vulkanize(rewritten);
+        } catch (PackException e) {
+            throw new IllegalStateException(e.getMessage(), e);
+        }
+    }
+
     /** Use this pack's files from now on. */
     public static void use(final ShaderPack pack) {
-        lookup = new Lookup(pack, new ConcurrentHashMap<>());
+        lookup = new Lookup(pack, new ConcurrentHashMap<>(), new ConcurrentHashMap<>());
     }
 
     /** Forget what was read, so the files are read again. */

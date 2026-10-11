@@ -1,4 +1,5 @@
 #version 330
+#extension GL_ARB_separate_shader_objects : require
 
 // Turns the game's depth into OpenGL depth (0 at the near plane, 1 at the far plane), which is what Iris shaders read.
 // The game's depth is -A + B / distance for the third and fourth entries A and B of its projection, so the distance
@@ -10,8 +11,8 @@ layout(std140) uniform DepthParams {
 
 uniform sampler2D u_Depth;
 
-in vec2 texcoord;
-out vec4 fragColor;
+layout(location = 0) in vec2 texcoord;
+layout(location = 0) out vec4 fragColor;
 
 void main() {
     float depth = texelFetch(u_Depth, ivec2(gl_FragCoord.xy), 0).r;

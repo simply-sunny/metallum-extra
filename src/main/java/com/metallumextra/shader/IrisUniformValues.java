@@ -78,11 +78,16 @@ public final class IrisUniformValues {
     /** The values of one frame, by name; matrices are 16 numbers in column-major order, vectors their components. */
     public Map<String, double[]> frame(final Inputs in) {
         Map<String, double[]> v = new HashMap<>();
-        Matrix4f projection = glProjection(in.gameProjection, in.baseProjection, in.far);
-        Matrix4f viewInverse = new Matrix4f(in.view).invert();
+        // View bobbing, the hurt shake and the portal wobble are in the game's projection (it multiplies them on). Iris has them in the view, so that
+        // everything a program works out from the view (where the sun is, which way is up, where a pixel is in the world) moves with the picture; the
+        // product of the two is the same as the game's. The projection is left plain.
+        Matrix4f shake = new Matrix4f(in.baseProjection).invert().mul(in.gameProjection);
+        Matrix4f view = new Matrix4f(shake).mul(in.view);
+        Matrix4f projection = glProjection(in.baseProjection, in.baseProjection, in.far);
+        Matrix4f viewInverse = new Matrix4f(view).invert();
         Matrix4f projectionInverse = new Matrix4f(projection).invert();
         if (!started) {
-            previousView.set(in.view);
+            previousView.set(view);
             previousProjection.set(projection);
             previousX = in.cameraX;
             previousY = in.cameraY;
@@ -92,7 +97,7 @@ public final class IrisUniformValues {
             smoothSky = in.eyeSkyLight * 16.0;
             started = true;
         }
-        put(v, "gbufferModelView", in.view);
+        put(v, "gbufferModelView", view);
         put(v, "gbufferModelViewInverse", viewInverse);
         put(v, "gbufferProjection", projection);
         put(v, "gbufferProjectionInverse", projectionInverse);
@@ -100,11 +105,11 @@ public final class IrisUniformValues {
         put(v, "gbufferPreviousProjection", previousProjection);
         // For the programs that draw the world: terrain has no model matrix of its own (chunk offsets are added to positions), and the
         // game's own projection, not the OpenGL one, is what its depth buffer was drawn with.
-        put(v, "modelViewMatrix", in.view);
+        put(v, "modelViewMatrix", view);
         put(v, "modelViewMatrixInverse", viewInverse);
-        put(v, "projectionMatrix", in.gameProjection);
-        put(v, "projectionMatrixInverse", new Matrix4f(in.gameProjection).invert());
-        org.joml.Matrix3f normal = new org.joml.Matrix3f(in.view).invert().transpose();
+        put(v, "projectionMatrix", in.baseProjection);
+        put(v, "projectionMatrixInverse", new Matrix4f(in.baseProjection).invert());
+        org.joml.Matrix3f normal = new org.joml.Matrix3f(view).invert().transpose();
         float[] nine = new float[9];
         normal.get(nine);
         double[] normalValues = new double[9];
@@ -122,13 +127,13 @@ public final class IrisUniformValues {
         v.put("darknessLightFactor", new double[] {in.darkness});
 
         float sunAngle = irisSunAngle(in.sunAngle);
-        Vector3f sun = viewDirection(in.view, celestialDirection(in.sunAngle, in.sunPathTilt));
-        Vector3f moon = viewDirection(in.view, celestialDirection(in.moonAngle, in.sunPathTilt));
+        Vector3f sun = viewDirection(view, celestialDirection(in.sunAngle, in.sunPathTilt));
+        Vector3f moon = viewDirection(view, celestialDirection(in.moonAngle, in.sunPathTilt));
         boolean day = sunAngle <= 0.5F;
         v.put("sunPosition", vec(sun));
         v.put("moonPosition", vec(moon));
         v.put("shadowLightPosition", vec(day ? sun : moon));
-        v.put("upPosition", vec(viewDirection(in.view, new Vector3f(0, 1, 0))));
+        v.put("upPosition", vec(viewDirection(view, new Vector3f(0, 1, 0))));
         v.put("sunAngle", new double[] {sunAngle});
         v.put("shadowAngle", new double[] {day ? sunAngle : sunAngle - 0.5F});
 
@@ -160,13 +165,15 @@ public final class IrisUniformValues {
         v.put("blindFactor", new double[] {Math.sqrt(Math.max(0.0, in.blindness))});
         v.put("darknessFactor", new double[] {in.darkness});
         v.put("worldTime", new double[] {Math.floorMod(in.clockTicks, 24000L)});
+        // OptiFine's timeAngle: the time of day as a fraction of a day (0 at sunrise, 0.25 at noon).
+        v.put("timeAngle", new double[] {Math.floorMod(in.clockTicks, 24000L) / 24000.0});
         v.put("worldDay", new double[] {Math.floorDiv(in.clockTicks, 24000L)});
         v.put("moonPhase", new double[] {in.moonPhase});
         v.put("isEyeInWater", new double[] {in.eyeInWater});
         v.put("fogColor", new double[] {in.fogRed, in.fogGreen, in.fogBlue});
         v.put("skyColor", new double[] {in.skyRed, in.skyGreen, in.skyBlue});
 
-        previousView.set(in.view);
+        previousView.set(view);
         previousProjection.set(projection);
         previousX = in.cameraX;
         previousY = in.cameraY;
@@ -205,7 +212,7 @@ public final class IrisUniformValues {
                 }
                 continue;
             }
-            boolean integer = uniform.type().startsWith("int") || uniform.type().startsWith("ivec");
+            boolean integer = uniform.type().startsWith("int") || uniform.type().startsWith("ivec") || uniform.type().equals("bool");
             for (int i = 0; i < value.length; i++) {
                 if (integer) out.putInt(at + 4 * i, (int) Math.round(value[i]));
                 else out.putFloat(at + 4 * i, (float) value[i]);

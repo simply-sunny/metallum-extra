@@ -102,11 +102,6 @@ Output:
   - `runtime-pipelines-<time>.txt`: pipelines that had to be compiled *during gameplay*.
     This list feeds the shader warm-up cache planned for 0.2.
 
-### Fix: direct buffer upload
-In Metallum 0.0.23, creating a buffer with initial data always records a GPU copy, and that copy ends the current
-render pass. For buffers in CPU-visible memory, Metallum Extra writes the data directly instead.
-Metallum 0.0.24 makes the same change itself, so on 0.0.24 this fix stands aside and its setting is greyed out.
-
 ### Fix: non-blocking present (`fix.nonBlockingPresent`)
 With vsync off, Metallum still stalls the render thread in `nextDrawable` whenever macOS has no swapchain
 image free. Metallum Extra asks for images on a helper thread; a frame that finishes while none is free is simply
@@ -126,33 +121,11 @@ and emptying it in one go stalls the render thread for 50-130 ms (seen every 25-
 Metallum Extra gives that work a small time budget per frame and leaves the rest for the next frames.
 The profiler summary reports `cleanup deferred N frames`.
 
-### Compatibility: Distant Horizons (`compat.distantHorizons`)
-Distant Horizons 3.3.x asks the game which graphics backend it is on and treats anything that is not "Vulkan" as
-OpenGL, so on Metallum it takes its OpenGL path and crashes. Its Vulkan path is written against the game's own
-rendering API, so Metallum Extra answers "Metal" the same way as "Vulkan". With that, DH starts, compiles all of
-its render pipelines on Metal and runs. Experimental; needs a restart to change.
-
-### Compatibility: multiple render targets (`compat.multipleRenderTargets`)
-Metallum tells the game it can draw into one color target per render pass, and it only ever attaches the
-first one. A mod that draws into several at once crashes with `Render pass created with 3 color attachments but
-device only supports 1`. Metallum Extra raises the limit to 8 (Metal's own limit) and attaches the extra targets,
-both in the render pass and in the pipelines that write them. A pass that leaves some of a pipeline's targets
-unattached gets its own pipeline variant, since Metal wants the two to match exactly.
-Passes and pipelines with a single target are untouched. Always on; can be switched off in the config file only.
-
 ### Compatibility: more textures per shader (`compat.manyTextures`)
 Metallum numbers a pipeline's uniform blocks and textures in one sequence and gives each texture's sampler the same
 number. Metal has 16 sampler slots per shader stage, so a shader whose textures are numbered 16 or higher fails to
 compile (`'sampler' attribute parameter is out of bounds`). For such a shader Metallum Extra renumbers the samplers
 0, 1, 2... Shaders that already fit are left as they are. Always on; can be switched off in the config file only.
-
-### Compatibility: Shine (`compat.shine`)
-Shine 3.1 picks its code path from the graphics backend's name and knows only OpenGL and Vulkan. On "Metal" it
-settles on "unknown" and its terrain shader never gets its data. Its Vulkan path goes through the game's own
-rendering API, so Metallum Extra answers "Metal" the same way as "Vulkan". Shine also relies on the two fixes
-above: it draws terrain into three color targets, and its terrain shader reads nine textures.
-Tested with Shine 3.1.1: it loads a world and renders without errors under Metal's API validation. How it looks has
-not been compared against Shine on Vulkan. Experimental; needs a restart to change.
 
 ## Settings in game
 The same settings appear in two places, with the same names:
@@ -167,13 +140,15 @@ The same settings appear in two places, with the same names:
 | Unlocked Frame Rate | `fix.nonBlockingPresent` |
 | Smooth Chunk Crossing | `fix.fastSectionRecenter` |
 | Smooth Memory Cleanup | `fix.spreadSodiumCleanup` |
-| Faster Small Uploads | `fix.directBufferUpload` |
-| Distant Horizons Support | `compat.distantHorizons` |
-| Shine Support | `compat.shine` |
 | Performance Logging | `profiler.enabled` (off by default) |
 
-Two more keys are in the config file only: `compat.multipleRenderTargets` and `compat.manyTextures`. They lift
-Metallum limits and do nothing unless a mod needs them, so they are always on and have no switch in game.
+One more key is in the config file only: `compat.manyTextures`. It lifts a Metallum limit and does nothing unless a
+mod needs it, so it is always on and has no switch in game.
+
+Metallum 0.0.25 does by itself what three older settings of this mod did, so they are gone: it writes a new buffer's
+data straight into CPU-visible memory (`fix.directBufferUpload`), draws into several color targets in one pass
+(`compat.multipleRenderTargets`), and makes Distant Horizons and Shine treat "Metal" like "Vulkan"
+(`compat.distantHorizons`, `compat.shine`). Old config files may still have those lines; they are ignored.
 
 ## Config
 `config/metallum-extra.properties` is created on first launch. Restart the game after you edit it.
@@ -182,13 +157,13 @@ The shader and smoothness settings switch on and off while the game is running a
 *Settings in game* above.
 
 ## Dev client
-`./gradlew runClient` launches a development client with Metallum loaded
-(Metallum 0.0.23; add `-Pmetallum_run_version=0.0.24` for the newer one).
+`./gradlew runClient` launches a development client with Metallum loaded (the oldest accepted version; add
+`-Pmetallum_run_version=<version>` to run another).
 
 ## Updating to a new Metallum release
 Metallum Extra hooks Metallum's internal classes, so each build only accepts the Metallum versions it has been
 checked against (`metallum_version` up to `metallum_max_version` in `gradle.properties`). The shaders
-also hook Sodium's chunk renderer and are written against Sodium 0.9.2.
+also hook Sodium's chunk renderer and are written against Sodium 0.9.3.
 `fabric.mod.json` enforces this: Fabric refuses to launch with any other Metallum and shows a clear message, so the
 game won't crash. To add a new release:
 1. Set `metallum_max_version` in `gradle.properties` to the new Modrinth version.
@@ -196,7 +171,7 @@ game won't crash. To add a new release:
    changed fails at startup with a mixin error naming the method.
 3. Update that hook so it works on every accepted version, and check `com/metallum/render/MetallumExtraBridge.java`
    against the new source. The mod is compiled against the oldest accepted version, so it must only call Metallum
-   methods that all of them have; where they differ, branch on `MetallumVersion`.
+   methods that all of them have; where they differ, branch on the installed Metallum version.
 4. Launch once more on the oldest version (`./gradlew runClient`).
 
 ### Shader packs

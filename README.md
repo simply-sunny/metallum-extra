@@ -2,7 +2,7 @@
 
 An add-on for [Metallum](https://modrinth.com/mod/metallum-mc), the Metal backend for Minecraft on macOS. It makes uncapped FPS steady on Apple Silicon and adds a built-in set of shaders that runs on Metal.
 
-**Requires:** Minecraft 26.2, Fabric, and Metallum 0.0.23 or 0.0.24. The shaders also need Sodium.
+**Requires:** Minecraft 26.3, Fabric, and Metallum 0.0.25. The shaders also need Sodium.
 
 ## Install
 Download the jar from [Releases](https://github.com/ohjey/metallum-extra/releases) and put it in your `mods` folder next to Metallum.
@@ -12,7 +12,6 @@ Download the jar from [Releases](https://github.com/ohjey/metallum-extra/release
 - **Unlocked frame rate:** with VSync off, the game no longer pauses to wait for the screen. Higher FPS and fewer small stutters.
 - **Smooth chunk crossing:** removes the freeze when you move into a new chunk at very high render distances.
 - **Smooth memory cleanup:** spreads Sodium's chunk-memory cleanup over many frames instead of one.
-- **Mod compatibility:** lets Distant Horizons and Shine run on Metallum.
 - **Performance logging** (off by default): records what caused each stutter.
 
 This fork adds experimental, partial Iris/OptiFine pack loading. See the [pack guide](docs/shader-packs.md), [compatibility table](docs/translation-table.md), and [demo](docs/renderer-demo.md). Run `./gradlew architectureTest` for checks without Minecraft.

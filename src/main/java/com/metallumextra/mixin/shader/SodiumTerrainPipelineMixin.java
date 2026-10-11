@@ -6,7 +6,7 @@ import com.llamalad7.mixinextras.sugar.Local;
 import com.metallumextra.shader.IrisPipeline;
 import com.metallumextra.shader.IrisWorld;
 import com.metallumextra.shader.pack.IrisPlan;
-import com.mojang.blaze3d.pipeline.RenderPipeline;
+import com.mojang.renderpearl.api.pipeline.RenderPipeline;
 import net.caffeinemc.mods.sodium.client.render.chunk.terrain.DefaultTerrainRenderPasses;
 import net.caffeinemc.mods.sodium.client.render.chunk.terrain.TerrainRenderPass;
 import net.minecraft.resources.Identifier;
@@ -28,7 +28,7 @@ public abstract class SodiumTerrainPipelineMixin {
     }
 
     @WrapOperation(method = "createShader", at = @At(value = "INVOKE",
-            target = "Lcom/mojang/blaze3d/pipeline/RenderPipeline$Builder;withVertexShader(Lnet/minecraft/resources/Identifier;)Lcom/mojang/blaze3d/pipeline/RenderPipeline$Builder;"))
+            target = "Lcom/mojang/renderpearl/api/pipeline/RenderPipeline$Builder;withVertexShader(Lnet/minecraft/resources/Identifier;)Lcom/mojang/renderpearl/api/pipeline/RenderPipeline$Builder;"))
     private RenderPipeline.Builder metallumExtra$vertexShader(final RenderPipeline.Builder builder, final Identifier id, final Operation<RenderPipeline.Builder> original,
                                                               @Local(argsOnly = true) final TerrainRenderPass pass) {
         Identifier ours = IrisPipeline.terrainShaderId(metallumExtra$layer(pass));
@@ -36,7 +36,7 @@ public abstract class SodiumTerrainPipelineMixin {
     }
 
     @WrapOperation(method = "createShader", at = @At(value = "INVOKE",
-            target = "Lcom/mojang/blaze3d/pipeline/RenderPipeline$Builder;withFragmentShader(Lnet/minecraft/resources/Identifier;)Lcom/mojang/blaze3d/pipeline/RenderPipeline$Builder;"))
+            target = "Lcom/mojang/renderpearl/api/pipeline/RenderPipeline$Builder;withFragmentShader(Lnet/minecraft/resources/Identifier;)Lcom/mojang/renderpearl/api/pipeline/RenderPipeline$Builder;"))
     private RenderPipeline.Builder metallumExtra$fragmentShader(final RenderPipeline.Builder builder, final Identifier id, final Operation<RenderPipeline.Builder> original,
                                                                 @Local(argsOnly = true) final TerrainRenderPass pass) {
         Identifier ours = IrisPipeline.terrainShaderId(metallumExtra$layer(pass));
@@ -44,7 +44,7 @@ public abstract class SodiumTerrainPipelineMixin {
     }
 
     @WrapOperation(method = "createShader", at = @At(value = "INVOKE",
-            target = "Lcom/mojang/blaze3d/pipeline/RenderPipeline$Builder;build()Lcom/mojang/blaze3d/pipeline/RenderPipeline;"))
+            target = "Lcom/mojang/renderpearl/api/pipeline/RenderPipeline$Builder;build()Lcom/mojang/renderpearl/api/pipeline/RenderPipeline;"))
     private RenderPipeline metallumExtra$build(final RenderPipeline.Builder builder, final Operation<RenderPipeline> original, @Local(argsOnly = true) final TerrainRenderPass pass) {
         IrisPlan.Layer layer = metallumExtra$layer(pass);
         IrisPlan plan = IrisPipeline.currentPlan();

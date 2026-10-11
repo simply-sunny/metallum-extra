@@ -19,7 +19,7 @@ import java.util.regex.Pattern;
 public final class IrisTerrain {
     /** The vertex inputs the prelude provides, by name. */
     private static final String[] INPUTS = {"vaPosition", "vaColor", "vaUV0", "vaUV2", "vaNormal", "mc_Entity", "mc_chunkFade", "mc_midTexCoord", "at_tangent", "at_midBlock"};
-    private static final Pattern HEADER_LINE = Pattern.compile("(?m)^\\s*(#version[^\\n]*|#extension[^\\n]*)$");
+    private static final Pattern HEADER_LINE = Pattern.compile("(?m)^[ \\t]*(#version[^\\n]*|#extension[^\\n]*)$");
     private static final String VERTEX_PRELUDE = InternalShaders.read("terrain_vertex.glsl");
     private static final String FRAGMENT_PRELUDE = InternalShaders.read("terrain_fragment.glsl");
 
@@ -52,7 +52,7 @@ public final class IrisTerrain {
 
     /** @param blockIds the pack gives blocks ids in block.properties (see {@link BlockIds}): {@code mc_Entity.x} is the id */
     public static String adapt(final String source, final boolean vertex, final boolean shadow, final boolean blockTypes, final boolean blockIds) throws PackException {
-        String text = source;
+        String text = IrisWorldAdapter.declarationsWithoutComments(source);
         if (vertex) {
             for (String name : INPUTS) {
                 text = Pattern.compile("(?m)^[ \\t]*(?:layout\\s*\\([^)]*\\)\\s*)?in\\s+(?:(?:highp|mediump|lowp)\\s+)?\\w+\\s+" + name + "\\s*;[ \\t]*$").matcher(text).replaceAll("");
@@ -77,7 +77,9 @@ public final class IrisTerrain {
             prelude.append("#define MX_SHADOW\n").append(IrisWorldAdapter.SHADOW_PRELUDE_TERRAIN);
         }
         if (atlas) prelude.append("uniform sampler2D u_BlockTex;\n#define gtexture u_BlockTex\n#define atlasSize textureSize(u_BlockTex, 0)\n");
-        if (light) prelude.append("uniform sampler2D u_LightTex;\n#define lightmap u_LightTex\n");
+        // The shadow map is drawn without a light map: a program that reads one gets a white texel.
+        if (light && shadow) prelude.append("uniform sampler2D ").append(ShaderBindings.WHITE).append(";\n#define lightmap ").append(ShaderBindings.WHITE).append('\n');
+        else if (light) prelude.append("uniform sampler2D u_LightTex;\n#define lightmap u_LightTex\n");
         prelude.append(vertex ? VERTEX_PRELUDE : FRAGMENT_PRELUDE).append('\n');
 
         int at = 0;

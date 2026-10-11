@@ -69,7 +69,7 @@ public final class ZipPack implements ShaderPack {
                 byte[] bytes = read(file, entry, budget);
                 budget -= bytes.length;
                 String relative = entryName.substring(SHADERS.length());
-                if (relative.endsWith(".png")) {
+                if (relative.matches("(?i).*\\.(png|dat|bin|raw)")) {
                     binary.put(relative, bytes);
                     continue;
                 }
@@ -94,12 +94,12 @@ public final class ZipPack implements ShaderPack {
 
     @Override
     public @Nullable String read(final String path) {
-        return files.get(path);
+        return files.get(path.startsWith("/") ? path.substring(1) : path);
     }
 
     @Override
     public byte @Nullable [] bytes(final String path) {
-        return binary.get(path);
+        return binary.get(path.startsWith("/") ? path.substring(1) : path);
     }
 
     @Override

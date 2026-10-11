@@ -4,7 +4,7 @@ import com.metallumextra.shader.pack.IrisPlan;
 import com.metallumextra.shader.sodium.ShadowTerrain;
 import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.vertex.PoseStack;
-import com.mojang.blaze3d.systems.RenderPass;
+import com.mojang.renderpearl.api.commands.RenderPass;
 import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
@@ -159,17 +159,22 @@ public final class ShadowPass {
         int size = IrisPipeline.targets().shadowResolution();
         if (target == null || cache == null) return;
         Shaders.setPhase(Shaders.PHASE_SHADOW);
+        RenderTarget second = IrisPipeline.targets().shadow1();
+        RenderTarget secondCache = IrisPipeline.targets().shadowCache1();
         if (refresh) {
             clear(target, 1.0);
+            if (second != null) IrisTargets.clear(second, new float[] {0, 0, 0, 0});
             // The terrain's positions are relative to the camera it is drawn from, so its programs see the light's view as it is there.
             IrisPipeline.writeShadowUniforms(true);
             ShadowTerrain.render(target, camera, LIGHT_VIEW, TO_LIGHT, range, depth);
             copy(target, cache, size);
+            if (second != null && secondCache != null) copyColor(second, secondCache, size);
             cached = true;
             refresh = false;
             refreshes++;
         } else {
             copy(cache, target, size);
+            if (second != null && secondCache != null) copyColor(secondCache, second, size);
             reuses++;
         }
         IrisPipeline.writeShadowUniforms(false);
@@ -178,17 +183,24 @@ public final class ShadowPass {
         // replaced model shaders place their vertices where the light sees them in this phase, and
         // ShaderBindings.skipsDraws drops whatever is drawn with any other shader (text, lines, outlines).
         // The translucent phase matters: a player's skin is drawn as a translucent model, for its outer layer.
-        RenderSystem.outputColorTextureOverride = target.getColorTextureView();
-        RenderSystem.outputDepthTextureOverride = target.getDepthTextureView();
-        try {
-            features.executeSolid();
-            features.executeTranslucent();
-            drawPlayer();
+        // Preparing what is to be drawn can load textures, which cannot be done while a pass is open.
+        FeatureRenderDispatcher.PreparedFrame player = preparePlayer();
+        try (RenderPass pass = RenderSystem.getDevice().createCommandEncoder().createRenderPass(() -> "Metallum Extra shadow models",
+                target.getColorTextureView(), Optional.empty(), target.getDepthTextureView(), OptionalDouble.empty())) {
+            features.executeSolid(pass);
+            features.executeTranslucent(pass);
+            if (player != null) {
+                player.executeSolid(pass);
+                player.executeTranslucent(pass);
+            }
         } finally {
-            RenderSystem.outputColorTextureOverride = null;
-            RenderSystem.outputDepthTextureOverride = null;
+            if (player != null) player.close();
         }
         Shaders.setPhase(Shaders.PHASE_WORLD);
+    }
+
+    private static void copyColor(final RenderTarget from, final RenderTarget to, final int size) {
+        RenderSystem.getDevice().createCommandEncoder().copyTextureToTexture(from.getColorTexture(), to.getColorTexture(), 0, 0, 0, 0, 0, size, size);
     }
 
     private static void copy(final RenderTarget from, final RenderTarget to, final int size) {
@@ -202,10 +214,10 @@ public final class ShadowPass {
      * shadow. Here the player is extracted and drawn the way any mob is, into the shadow map only, with a
      * feature dispatcher of this mod's own: the game's is busy with the frame being drawn.
      */
-    private static void drawPlayer() {
+    private static FeatureRenderDispatcher.@Nullable PreparedFrame preparePlayer() {
         Minecraft minecraft = Minecraft.getInstance();
         LocalPlayer player = minecraft.player;
-        if (player == null || minecraft.gameRenderer.mainCamera().isDetached() || player.isSleeping()) return;
+        if (player == null || minecraft.gameRenderer.mainCamera().isDetached() || player.isSleeping()) return null;
         if (playerFeatures == null) {
             playerBuffers = new RenderBuffers(0);
             playerFeatures = new FeatureRenderDispatcher(playerBuffers, minecraft.getModelManager(), minecraft.getAtlasManager(), minecraft.font, minecraft.gameRenderer.gameRenderState());
@@ -216,7 +228,7 @@ public final class ShadowPass {
         CameraRenderState cameraState = minecraft.gameRenderer.gameRenderState().levelRenderState.cameraRenderState;
         Vec3 cameraPos = cameraState.pos;
         entities.submit(state, cameraState, state.x - cameraPos.x, state.y - cameraPos.y, state.z - cameraPos.z, new PoseStack(), PLAYER_SUBMITS);
-        playerFeatures.renderAllFeatures(PLAYER_SUBMITS);
+        return playerFeatures.prepareFrame(PLAYER_SUBMITS);
     }
 
     /** End of the frame: the player's vertex buffers are rotated the way the game rotates its own. */

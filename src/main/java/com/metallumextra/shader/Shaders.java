@@ -55,6 +55,9 @@ public final class Shaders {
         default -> 0.0F;
     };
 
+    private static final boolean HAND_LOG = Boolean.getBoolean("metallumextra.logHand");
+    /** Unfinished: drawing the held item before the deferred programs (see HandSource) draws nothing yet, so it is off unless asked for. */
+    private static final boolean EARLY_HAND = !"false".equals(System.getProperty("metallumextra.earlyHand"));
     private static final ShaderGlobals GLOBALS = new ShaderGlobals();
     private static final LightColorGrid LIGHT_COLORS = new LightColorGrid();
 
@@ -117,6 +120,7 @@ public final class Shaders {
 
     /** Start of every frame, before anything is drawn. Applies a change of the on/off setting. */
     public static void beginFrame() {
+        PackManager.sayWaiting();
         // The shaders reach into Metallum's render pass, so they exist on the Metal backend only.
         String reason = unavailableReason();
         if (reason == null && !"Metal".equals(RenderSystem.getDevice().getDeviceInfo().backendName())) {
@@ -139,6 +143,7 @@ public final class Shaders {
             }
         }
         TranslationCache.logIfSettled();
+        com.metallumextra.ResourceLog.tick();
         ShaderKeys.tick(Minecraft.getInstance());
         if (active) {
             LIGHT_COLORS.ensure();
@@ -155,7 +160,7 @@ public final class Shaders {
         ShaderSources.clear();
         ShadowPass.invalidate();
         IrisPipeline.forget();
-        RenderSystem.getDevice().clearPipelineCache();
+        clearPipelineCache();
         if (!value) {
             ShadowPass.close();
             LIGHT_COLORS.close();
@@ -171,11 +176,21 @@ public final class Shaders {
      * they are first needed. What was converted to Metal text before stays in the disk cache. Chunk meshes are kept;
      * they do not depend on the pack.
      */
+    /** The game's compiled pipelines are thrown away; each is compiled again, from the shaders now in use, the next time it is drawn with. */
+    private static void clearPipelineCache() {
+        var current = com.metallumextra.mixin.RenderSystemAccessor.metallumExtra$currentPipelineCache();
+        if (current != null) current.clear();
+        var fallback = com.metallumextra.mixin.RenderSystemAccessor.metallumExtra$fallbackPipelineCache();
+        if (fallback != null) fallback.clear();
+    }
+
     private static void switchPack() {
+        com.metallumextra.ResourceLog.event("pack changed: " + PackManager.activeId() + " (pipelines and shader text are thrown away)");
+        com.metallumextra.ResourceLog.snapshot("before pack change");
         ShadowPass.invalidate();
         IrisPipeline.forget();
         ShaderSources.clear();
-        RenderSystem.getDevice().clearPipelineCache();
+        clearPipelineCache();
     }
 
     /** The pack in use has had its own options changed: its shaders are read and compiled again with the new values. */
@@ -192,7 +207,7 @@ public final class Shaders {
         ShadowPass.invalidate();
         IrisPipeline.forget();
         ShaderSources.clear();
-        RenderSystem.getDevice().clearPipelineCache();
+        clearPipelineCache();
     }
 
     /** Just before the level is drawn. {@code projection} is the matrix the level is drawn with. */
@@ -211,9 +226,25 @@ public final class Shaders {
         IrisPipeline.beforeWorld(features);
     }
 
+    /** Whether the shader pipeline has anything to do between the solid world and the translucent one (see {@link #beforeTranslucentTerrain}). */
+    public static boolean drawsBetweenSolidAndTranslucent() {
+        return active && drawingWorld && phase == PHASE_WORLD;
+    }
+
     /** Just before translucent terrain: what has been drawn so far is what water reflects and refracts. */
     public static void beforeTranslucentTerrain() {
         if (!active || !drawingWorld || phase != PHASE_WORLD) return;
+        // The held item is part of the world the pack's programs light, so it is drawn now, as Iris does (see HandSource); the game's own turn for it is skipped.
+        if (HAND_LOG) MetallumExtra.LOGGER.info("HANDDBG ready={} source={}", IrisPipeline.readyForHand(), Minecraft.getInstance().gameRenderer instanceof HandSource);
+        if (EARLY_HAND && IrisPipeline.readyForHand() && Minecraft.getInstance().gameRenderer instanceof HandSource hand) {
+            setPhase(PHASE_HAND);
+            try {
+                hand.metallumExtra$drawHandNow();
+                IrisPipeline.handDrawn(hand.metallumExtra$handDepth());
+            } finally {
+                setPhase(PHASE_WORLD);
+            }
+        }
         IrisPipeline.beforeTranslucent();
     }
 
@@ -224,7 +255,15 @@ public final class Shaders {
         setPhase(PHASE_HAND);
     }
 
+    /** The held item has been drawn (or is not drawn at all): the pack's composite programs and its final one finish the picture. */
+    public static void afterHand() {
+        if (!active || !drawingWorld) return;
+        IrisPipeline.afterHand();
+    }
+
     public static void endWorld() {
+        // If the held item's pass did not report (it is skipped in some views) the picture is finished here.
+        afterHand();
         if (!active || !drawingWorld) return;
         drawingWorld = false;
         setPhase(PHASE_NONE);
@@ -301,17 +340,17 @@ public final class Shaders {
         }
 
         // The game's own sky and fog colors already follow the time of day, the weather and the biome.
-        int skyColor = sky.skyColor;
-        ShaderGlobals.setLinear(g.skyZenith, ARGB.redFloat(skyColor), ARGB.greenFloat(skyColor), ARGB.blueFloat(skyColor), 1.0F);
+        org.joml.Vector3fc skyColor = sky.skyColor != null ? sky.skyColor : new org.joml.Vector3f();
+        ShaderGlobals.setLinear(g.skyZenith, skyColor.x(), skyColor.y(), skyColor.z(), 1.0F);
         g.skyZenith.w = sky.starBrightness;
         ShaderGlobals.setLinear(g.skyHorizon, camera.fogData.color.x, camera.fogData.color.y, camera.fogData.color.z, 1.0F);
         // NONE: the camera is in air, not in water, lava or powder snow.
         boolean atmosphere = celestialLight && camera.fogType == FogType.NONE && !camera.entityRenderState.doesMobEffectBlockSky;
         g.skyHorizon.w = atmosphere ? 0.0F : 1.0F;
 
-        int sunset = sky.sunriseAndSunsetColor;
-        ShaderGlobals.setLinear(g.sunsetColor, ARGB.redFloat(sunset), ARGB.greenFloat(sunset), ARGB.blueFloat(sunset), 1.0F);
-        g.sunsetColor.w = celestialLight ? ARGB.alphaFloat(sunset) : 0.0F;
+        org.joml.Vector4fc sunset = sky.sunriseAndSunsetColor != null ? sky.sunriseAndSunsetColor : new org.joml.Vector4f();
+        ShaderGlobals.setLinear(g.sunsetColor, sunset.x(), sunset.y(), sunset.z(), 1.0F);
+        g.sunsetColor.w = celestialLight ? sunset.w() : 0.0F;
 
         // Light from the open sky: the sky's own color with a little of the color taken out (a deep blue light would
         // turn grass and leaves murky), and a floor so that a moonless night is dark blue instead of black.

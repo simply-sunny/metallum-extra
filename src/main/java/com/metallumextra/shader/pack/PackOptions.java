@@ -42,6 +42,13 @@ public final class PackOptions {
         }
     }
 
+    private static volatile int version;
+
+    /** Changes whenever any option is set or reset: what was read with the old values (see {@link LoadCache}) is out of date. */
+    static int version() {
+        return version;
+    }
+
     private static String key(final String pack, final PackOption option) {
         return pack + "/" + option.id();
     }
@@ -60,6 +67,7 @@ public final class PackOptions {
         } else {
             CHOSEN.setProperty(key(pack, option), option.values().get(index));
         }
+        version++;
         save();
     }
 
@@ -67,6 +75,7 @@ public final class PackOptions {
     public static synchronized void reset(final String pack, final Iterable<PackOption> options) {
         load();
         for (PackOption option : options) CHOSEN.remove(key(pack, option));
+        version++;
         save();
     }
 

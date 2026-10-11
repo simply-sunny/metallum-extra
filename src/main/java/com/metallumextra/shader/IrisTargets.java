@@ -3,12 +3,12 @@ package com.metallumextra.shader;
 import com.metallumextra.MetallumExtra;
 import com.metallumextra.shader.pack.IrisPlan;
 import com.metallumextra.shader.pack.ProgramSet;
-import com.mojang.blaze3d.GpuFormat;
+import com.mojang.renderpearl.api.GpuFormat;
 import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.pipeline.TextureTarget;
-import com.mojang.blaze3d.systems.RenderPass;
+import com.mojang.renderpearl.api.commands.RenderPass;
 import com.mojang.blaze3d.systems.RenderSystem;
-import com.mojang.blaze3d.textures.GpuTextureView;
+import com.mojang.renderpearl.api.textures.GpuTextureView;
 import org.joml.Vector4f;
 import org.jspecify.annotations.Nullable;
 
@@ -40,6 +40,9 @@ final class IrisTargets {
     private @Nullable TextureTarget shadow;
     /** The terrain part of the shadow map, kept between frames; see {@link ShadowPass}. */
     private @Nullable TextureTarget shadowCache;
+    /** The second color attachment of the shadow map ({@code shadowcolor1}) and the cached terrain part of it; null when no program uses it. */
+    private @Nullable TextureTarget shadow1;
+    private @Nullable TextureTarget shadowCache1;
     /** One empty texel, read in place of the shadow map while the shadow map is the image being drawn into, and when there is none. */
     private @Nullable TextureTarget emptyShadow;
     private int shadowResolution;
@@ -75,6 +78,10 @@ final class IrisTargets {
         if (shadowResolution > 0) {
             shadow = createShadow("shadow map", shadowResolution);
             shadowCache = createShadow("shadow terrain", shadowResolution);
+            if (newPlan.hasShadowColor1()) {
+                shadow1 = create("shadowcolor1", GpuFormat.RGBA8_UNORM, shadowResolution, shadowResolution);
+                shadowCache1 = create("shadowcolor1 terrain", GpuFormat.RGBA8_UNORM, shadowResolution, shadowResolution);
+            }
         }
         emptyShadow = createShadow("empty shadow map", 1);
         if (newPlan.usesDepth(1) || newPlan.usesDepth(2)) depthWithoutTranslucent = createDepth("depthtex1");
@@ -103,7 +110,7 @@ final class IrisTargets {
     }
 
     private TextureTarget create(final String name, final GpuFormat format, final int w, final int h) {
-        TextureTarget target = new TextureTarget("Metallum Extra " + name, w, h, false, format);
+        TextureTarget target = new TextureTarget("Metallum Extra " + name, w, h, format, null);
         textures++;
         created++;
         bytes += (long) w * h * bytesPerPixel(format);
@@ -113,7 +120,7 @@ final class IrisTargets {
 
     /** The shadow map: color for {@code shadowcolor0} and depth for {@code shadowtex0}, which is OpenGL depth (0 nearest the light) and starts empty (1). */
     private TextureTarget createShadow(final String name, final int size) {
-        TextureTarget target = new TextureTarget("Metallum Extra " + name, size, size, true, GpuFormat.RGBA8_UNORM);
+        TextureTarget target = new TextureTarget("Metallum Extra " + name, size, size, GpuFormat.RGBA8_UNORM, GpuFormat.D32_FLOAT);
         textures++;
         created++;
         bytes += (long) size * size * 8;
@@ -122,7 +129,7 @@ final class IrisTargets {
     }
 
     private TextureTarget createDepth(final String name) {
-        TextureTarget target = new TextureTarget("Metallum Extra " + name, width, height, true, GpuFormat.R8_UNORM);
+        TextureTarget target = new TextureTarget("Metallum Extra " + name, width, height, GpuFormat.R8_UNORM, GpuFormat.D32_FLOAT);
         textures++;
         created++;
         bytes += (long) width * height * 5;
@@ -130,10 +137,7 @@ final class IrisTargets {
     }
 
     static int bytesPerPixel(final GpuFormat format) {
-        String name = format.name();
-        int channels = name.startsWith("RGBA") ? 4 : name.startsWith("RGB") ? 3 : name.startsWith("RG") ? 2 : 1;
-        int bits = name.contains("32") ? 4 : name.contains("16") ? 2 : 1;
-        return channels * bits;
+        return format.blockSize();
     }
 
     /** The color buffers' main textures are cleared the way their settings say, which is at the start of every frame. */
@@ -200,6 +204,14 @@ final class IrisTargets {
         return shadow;
     }
 
+    @Nullable TextureTarget shadow1() {
+        return shadow1;
+    }
+
+    @Nullable TextureTarget shadowCache1() {
+        return shadowCache1;
+    }
+
     @Nullable TextureTarget shadowCache() {
         return shadowCache;
     }
@@ -254,11 +266,13 @@ final class IrisTargets {
         if (depthWithoutTranslucent != null) depthWithoutTranslucent.destroyBuffers();
         depthAll = null;
         depthWithoutTranslucent = null;
-        for (TextureTarget target : new TextureTarget[] {shadow, shadowCache, emptyShadow}) {
+        for (TextureTarget target : new TextureTarget[] {shadow, shadowCache, emptyShadow, shadow1, shadowCache1}) {
             if (target != null) target.destroyBuffers();
         }
         shadow = null;
         shadowCache = null;
+        shadow1 = null;
+        shadowCache1 = null;
         emptyShadow = null;
         shadowResolution = 0;
         plan = null;

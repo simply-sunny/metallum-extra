@@ -43,6 +43,11 @@ public interface ShaderPack {
      * @throws IllegalStateException if the file or something it includes is not in the pack
      */
     default String load(final String path) {
+        return LoadCache.get(this, path);
+    }
+
+    /** {@link #load} without the memory of earlier loads. */
+    default String loadUncached(final String path) {
         String text = read(path);
         if (text == null) throw new IllegalStateException("Shader pack " + name() + " has no " + path);
         StringBuilder out = new StringBuilder(text.length() + 4096);
@@ -50,7 +55,7 @@ public interface ShaderPack {
         List<PackOption> options = options();
         String text2 = options.isEmpty() ? out.toString() : StandardOptions.apply(out.toString(), name(), options);
         boolean vertex = path.endsWith(".vsh");
-        if (!vertex && !path.endsWith(".fsh")) return text2;
+        if (!vertex && !path.endsWith(".fsh") && !path.endsWith(".csh")) return text2;
         // The branches the options and macros decide are decided now, so that nothing downstream reads code the compiler would never see.
         Set<String> optionNames = new HashSet<>();
         for (PackOption option : options) optionNames.add(option.id());
@@ -112,15 +117,36 @@ public interface ShaderPack {
                 String name = includePath(file, trimmed.substring(open + 1, close));
                 char stage = '-';
                 for (char c : stages) if (c != '-') { stage = c; break; }
-                if (!included.add(name + "@" + stage)) continue;
+                if (included.contains("active:" + name)) continue;
                 String library = read(name);
                 if (library == null) throw new IllegalStateException("Missing shader include " + name + " (from " + file + ")");
+                // A library with its own include guard (#ifndef INCLUDE_X at the top) goes in wherever it is asked for, as in OptiFine; the guard keeps it from being
+                // defined twice, and which of its asks is in a branch that is on is not known yet. A library without one cannot be included twice (its
+                // definitions would clash), so it goes in once for each stage.
+                // One that is asked for inside a condition may be in a branch that is off, so it does not count as taken: another ask (in the branch that is on) still gets it.
+                if (!hasGuard(library)) {
+                    String once = "once:" + name + "@" + stage;
+                    if (stages.isEmpty() ? !included.add(once) : included.contains(once)) continue;
+                }
+                included.add("active:" + name);
                 expand(library, name, out, included, stages);
+                included.remove("active:" + name);
             } else {
                 if (trimmed.startsWith("#")) trackStage(trimmed, stages);
                 out.append(line).append('\n');
             }
         }
+    }
+
+
+    /** Whether a file starts (after comments and blank lines) with an include guard. */
+    private static boolean hasGuard(final String text) {
+        for (String line : text.split("\n")) {
+            String trimmed = line.strip();
+            if (trimmed.isEmpty() || trimmed.startsWith("//")) continue;
+            return trimmed.matches("^#\\s*(ifndef\\s+\\w+.*|if\\s+!\\s*defined\\s*\\(?\\s*\\w+.*)");
+        }
+        return false;
     }
 
     private static void trackStage(final String directive, final java.util.Deque<Character> stages) {

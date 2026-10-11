@@ -85,7 +85,10 @@ public final class LegacyGlsl {
         StringBuilder declarations = new StringBuilder();
         result = renameInputs(result, vertex, macros);
         provide(uses, vertex, kind, fragmentOutputs, macros, declarations);
-        result = VERSION.matcher(result).replaceFirst("#version 330 core");
+        // The program's own version stays when it is one the compiler knows (400's implicit int to uint, 430's compute and images); older ones become 330.
+        Matcher declared = VERSION.matcher(source);
+        int number = declared.find() ? Math.max(330, Math.min(460, Integer.parseInt(declared.group(1)))) : 330;
+        result = VERSION.matcher(result).replaceFirst("#version " + number + " core");
         if (!VERSION.matcher(source).find()) result = "#version 330 core\n" + result;
         int at = 0;
         Matcher header = HEADER_LINE.matcher(result);
@@ -96,17 +99,46 @@ public final class LegacyGlsl {
     }
 
     /** Words that GLSL leaves free but C++ (and so Metal Shading Language) reserves: a pack may name a variable {@code new}. */
-    private static final Pattern CPP_KEYWORDS = Pattern.compile("\\b(new|delete|operator|private|protected|friend|try|catch|throw|virtual|mutable|explicit|typename|export|and|or|not|xor|bitand|bitor|compl|nullptr|constexpr|decltype|alignas|alignof|wchar_t|char|signed|static_cast|dynamic_cast|reinterpret_cast|const_cast|thread_local)\\b");
+    private static final Pattern CPP_KEYWORDS = Pattern.compile("\\b(sampler|new|delete|operator|private|protected|friend|try|catch|throw|virtual|mutable|explicit|typename|export|and|or|not|xor|bitand|bitor|compl|nullptr|constexpr|decltype|alignas|alignof|wchar_t|char|signed|static_cast|dynamic_cast|reinterpret_cast|const_cast|thread_local)\\b");
 
     /** Every variable or function the pack names with a word of {@link #CPP_KEYWORDS} gets a prefix, in code only (never in a comment). */
     public static String cppKeywords(final String source) {
-        if (!CPP_KEYWORDS.matcher(code(source)).find()) return source;
-        StringBuilder out = new StringBuilder(source.length() + 64);
-        scan(source, (start, end, isCode) -> {
-            String part = source.substring(start, end);
+        String text = metalFunctions(source);
+        if (!CPP_KEYWORDS.matcher(code(text)).find()) return text;
+        StringBuilder out = new StringBuilder(text.length() + 64);
+        final String whole = text;
+        scan(whole, (start, end, isCode) -> {
+            String part = whole.substring(start, end);
             out.append(isCode ? CPP_KEYWORDS.matcher(part).replaceAll("mx_kw_$1") : part);
         });
         return out.toString();
+    }
+
+    /**
+     * Functions of Metal's standard library that GLSL does not have: a pack that writes one of its own with the same name and arguments ({@code saturate},
+     * {@code length_squared}) makes every call of it ambiguous in the Metal Shading Language.
+     */
+    private static final java.util.List<String> METAL_FUNCTIONS = java.util.List.of("saturate", "length_squared", "distance_squared", "rsqrt", "select", "mad", "copysign", "fmod",
+            "fmin", "fmax", "fabs", "isnormal", "isfinite", "isunordered", "signbit", "rint", "powr", "exp10", "log10", "sinpi", "cospi", "tanpi", "clz", "ctz", "popcount", "rotate",
+            "median3", "max3", "min3", "absdiff", "addsat", "subsat", "hadd", "rhadd", "mulhi", "mad24", "mul24", "sincos", "atan2", "lerp", "step_fast", "fdim", "nextafter", "ldexp", "frexp", "modf");
+
+    /** A function of the pack's with the name of one of Metal's gets another name, in code only. */
+    static String metalFunctions(final String source) {
+        String text = source;
+        for (String name : METAL_FUNCTIONS) {
+            if (!text.contains(name)) continue;
+            Pattern declared = Pattern.compile("(?m)^[ \\t]*(?:const[ \\t]+|highp[ \\t]+|mediump[ \\t]+|lowp[ \\t]+)*(?:void|float|int|uint|bool|[iub]?vec[234]|mat[234](?:x[234])?)[ \\t]+" + name + "[ \\t]*\\(");
+            if (!declared.matcher(code(text)).find()) continue;
+            Pattern word = Pattern.compile("\\b" + name + "\\b");
+            StringBuilder out = new StringBuilder(text.length() + 16);
+            final String current = text;
+            scan(current, (start, end, isCode) -> {
+                String part = current.substring(start, end);
+                out.append(isCode ? word.matcher(part).replaceAll("mx_fn_" + name) : part);
+            });
+            text = out.toString();
+        }
+        return text;
     }
 
     /**

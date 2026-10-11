@@ -61,6 +61,15 @@ public final class Settings {
     }
 
     /** The shader quality preset. */
+    public static Choice<com.metallumextra.fx.UpscaleMode> upscaling() {
+        ExtraConfig c = ExtraConfig.get();
+        return new Choice<>("upscaling", "MetalFX Upscaling",
+                "Draws the world at a smaller size and scales it up to your window with Apple's MetalFX. Faster, a little softer; "
+                        + "the menus and the HUD stay sharp. Quality 1.5x, Balanced 1.7x, Performance 2x, Ultra Performance 3x. "
+                        + "Works with shaders on or off. Changes apply immediately.",
+                Impact.HIGH, com.metallumextra.fx.UpscaleMode.class, () -> c.upscaleMode, c::setUpscaleMode, mode -> mode.label);
+    }
+
     public static Choice<Quality> shaderQuality() {
         ExtraConfig c = ExtraConfig.get();
         return new Choice<>("shader_quality", "Shader Quality",
@@ -126,7 +135,6 @@ public final class Settings {
     /** Stutter and frame-rate fixes. All of these switch on and off immediately. */
     public static List<Toggle> smoothness() {
         ExtraConfig c = ExtraConfig.get();
-        boolean builtIn = MetallumVersion.WRITES_BUFFERS_DIRECTLY;
         return List.of(
                 new Toggle("non_blocking_present", "Unlocked Frame Rate",
                         "With VSync off, stops the game from pausing to wait for your screen. Gives higher FPS and "
@@ -142,12 +150,7 @@ public final class Settings {
                         "Removes a stutter that shows up every 20-30 seconds while lots of chunks are loading. "
                                 + "Sodium tidies up used chunk memory all in one frame; this spreads that work over "
                                 + "many frames so you do not feel it.",
-                        Impact.MEDIUM, false, () -> c.spreadSodiumCleanup, c::setSpreadSodiumCleanup),
-                new Toggle("direct_buffer_upload", "Faster Small Uploads",
-                        (builtIn ? "NOT NEEDED: this version of Metallum does this by itself. " : "")
-                                + "Sends small pieces of render data straight to memory instead of through an extra GPU "
-                                + "step. A small improvement; safe to leave on.",
-                        Impact.LOW, false, () -> c.directBufferUpload, c::setDirectBufferUpload, !builtIn));
+                        Impact.MEDIUM, false, () -> c.spreadSodiumCleanup, c::setSpreadSodiumCleanup));
     }
 
     /** Diagnostics. Read once at startup. */
@@ -160,21 +163,5 @@ public final class Settings {
                                 + "folder in your game directory every time you play. It does not make the game "
                                 + "faster. Restart the game after changing it.",
                         Impact.LOW, true, () -> c.profilerEnabled, c::setProfilerEnabled));
-    }
-
-    /** Getting other mods to run on Metallum. These are read once at startup. */
-    public static List<Toggle> compatibility() {
-        ExtraConfig c = ExtraConfig.get();
-        return List.of(
-                new Toggle("distant_horizons", "Distant Horizons Support",
-                        "Lets Distant Horizons run on Metallum instead of crashing. Distant Horizons only knows "
-                                + "about OpenGL and Vulkan; this tells it to use its Vulkan-style renderer, which "
-                                + "also works on Metal. Experimental. Restart the game after changing it.",
-                        Impact.VARIES, true, () -> c.distantHorizonsSupport, c::setDistantHorizonsSupport),
-                new Toggle("shine", "Shine Support",
-                        "Lets Shine run on Metallum. Shine only knows about OpenGL and Vulkan; this tells it to "
-                                + "use its Vulkan-style renderer, which also works on Metal. Experimental. "
-                                + "Restart the game after changing it.",
-                        Impact.VARIES, true, () -> c.shineSupport, c::setShineSupport));
     }
 }

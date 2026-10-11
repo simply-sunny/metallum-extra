@@ -14,10 +14,10 @@ import net.minecraft.client.gui.components.ObjectSelectionList;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
-import org.lwjgl.glfw.GLFW;
+import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.Component;
-import net.minecraft.util.Util;
+import com.mojang.blaze3d.Blaze3D;
 import org.jspecify.annotations.Nullable;
 
 import java.io.IOException;
@@ -159,7 +159,7 @@ public final class ShaderPackScreen extends Screen {
     private void openFolder() {
         try {
             Files.createDirectories(PackManager.folder());
-            Util.getPlatform().openPath(PackManager.folder());
+            Blaze3D.openPath(PackManager.folder());
         } catch (IOException e) {
             MetallumExtra.LOGGER.warn("[Metallum Extra] Could not open {}", PackManager.folder(), e);
         }
@@ -227,7 +227,7 @@ public final class ShaderPackScreen extends Screen {
 
     @Override
     public boolean keyReleased(final KeyEvent event) {
-        if (event.key() == GLFW.GLFW_KEY_ESCAPE) {
+        if (event.key() == InputConstants.KEY_ESCAPE) {
             onClose();
             return true;
         }
@@ -237,7 +237,7 @@ public final class ShaderPackScreen extends Screen {
     @Override
     public boolean keyPressed(final KeyEvent event) {
         // Taken here, acted on at the release (above).
-        return event.key() == GLFW.GLFW_KEY_ESCAPE || super.keyPressed(event);
+        return event.key() == InputConstants.KEY_ESCAPE || super.keyPressed(event);
     }
 
     /**

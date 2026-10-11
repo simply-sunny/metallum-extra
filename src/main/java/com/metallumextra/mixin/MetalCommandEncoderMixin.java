@@ -1,58 +1,31 @@
 package com.metallumextra.mixin;
 
-import com.metallum.mtl.MTLCommandBuffer;
-import com.metallum.mtl.MTLCommandEncoder;
-import com.metallum.mtl.MTLFence;
-import com.metallum.mtl.MTLRenderCommandEncoder;
-import com.metallum.mtl.MTLRenderStages;
-import com.metallum.mtl.MetallumExtraTargets;
-import com.metallum.render.MetallumExtraBridge;
+import com.metallum.render.MetallumExtraUpscale;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.metallumextra.FrameProfiler;
-import com.metallumextra.MetallumExtra;
-import com.metallumextra.MultiTarget;
-import com.mojang.blaze3d.systems.RenderPassBackend;
-import com.mojang.blaze3d.systems.RenderPassDescriptor;
-import com.mojang.blaze3d.textures.GpuTexture;
-import com.mojang.blaze3d.textures.GpuTextureView;
+import com.metallumextra.GpuTimed;
+import io.github.kokodio.metaljvm.metal.MTLCommandBuffer;
+import com.mojang.renderpearl.api.commands.RenderPassDescriptor;
+import com.mojang.renderpearl.api.textures.GpuTexture;
+import com.mojang.renderpearl.backend.api.RenderPassBackend;
 import org.joml.Vector4fc;
-import org.jspecify.annotations.Nullable;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
-import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-import java.lang.foreign.MemorySegment;
-import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 /**
- * Time the CPU spends blocked waiting for the GPU to finish older frames (or fences), plus multiple render
- * targets: Metallum starts every render pass with color target 0 only.
+ * Time the CPU spends blocked waiting for the GPU to finish older frames (or fences), and what the shader pipeline
+ * and the upscaler need to know about the frame being recorded.
  */
 @Mixin(targets = "com.metallum.render.MetalCommandEncoder", remap = false)
-public abstract class MetalCommandEncoderMixin implements MultiTarget.Encoder {
-    @Shadow private MTLCommandEncoder currentEncoder;
-    @Shadow private MemorySegment renderColorAttachment;
-    @Shadow private MemorySegment renderDepthAttachment;
-    @Shadow @Final private MTLFence fence;
+public abstract class MetalCommandEncoderMixin implements com.metallumextra.fx.PendingClearSource {
     @Shadow @Final private Map<GpuTexture, Vector4fc> pendingColorClears;
-
-    /** The extra color targets of the Metal encoder that is open now; null while it has only target 0. */
-    @Unique
-    private MemorySegment @Nullable [] metallumExtra$encoderExtraTargets;
-    @Unique
-    private boolean metallumExtra$loggedExtraTargets;
-
-    @Shadow
-    abstract void endEncoder();
-
-    @Shadow
-    abstract MTLCommandBuffer commandBuffer();
 
     /** Every buffer/texture upload or copy goes through here (Metallum gives each one its own copy pass). */
     @Inject(method = "blitCommandEncoder", at = @At("HEAD"))
@@ -70,132 +43,22 @@ public abstract class MetalCommandEncoderMixin implements MultiTarget.Encoder {
         FrameProfiler.gpuWaitEnd();
     }
 
-    /** Shaders: while the world is drawn, a pass into the game's image gets the other buffers a standard pack's programs write as color targets. */
+    /** The command buffer of a finished frame is let go of here, with its timestamps final. */
+    @WrapOperation(method = "submit",
+            at = @At(value = "INVOKE", target = "Lio/github/kokodio/metaljvm/metal/MTLCommandBuffer;release()V"))
+    private void metallumExtra$readGpuTimes(final MTLCommandBuffer buffer, final Operation<Void> original) {
+        ((GpuTimed) buffer).metallumExtra$readGpuTimes();
+        original.call(buffer);
+    }
+
+    /** The upscaler records into the command buffer of the frame being drawn, which it learns of here. */
     @Inject(method = "createRenderPass", at = @At("HEAD"))
-    private void metallumExtra$worldTargets(final RenderPassDescriptor descriptor, final CallbackInfoReturnable<RenderPassBackend> cir) {
-        com.metallumextra.shader.IrisPipeline.attachWorldTargets(descriptor);
-    }
-
-    /**
-     * Metallum has built the pass from color target 0 and the depth target. Hand it the rest, treating each one's
-     * deferred clear the way Metallum 0.0.23 treats target 0's. (0.0.24 limits a pass's clears to its render
-     * area; a pass with extra targets still clears whole textures, on either release.)
-     */
-    @Inject(method = "createRenderPass", at = @At("RETURN"))
-    private void metallumExtra$attachExtraTargets(final RenderPassDescriptor descriptor, final CallbackInfoReturnable<RenderPassBackend> cir) {
-        List<RenderPassDescriptor.Attachment<Optional<Vector4fc>>> attachments = descriptor.colorAttachments();
-        int count = Math.min(attachments.size(), MetallumExtraTargets.MAX_COLOR_TARGETS);
-        if (count < 2) return;
-
-        GpuTextureView[] targets = new GpuTextureView[count - 1];
-        Vector4fc[] clears = new Vector4fc[count - 1];
-        boolean any = false;
-        for (int i = 1; i < count; i++) {
-            RenderPassDescriptor.Attachment<Optional<Vector4fc>> attachment = attachments.get(i);
-            if (attachment == null) continue;
-            GpuTextureView view = attachment.textureView();
-            GpuTexture texture = view.texture();
-            Vector4fc clear = attachment.clearValue().orElse(null);
-            Vector4fc pending = this.pendingColorClears.get(texture);
-            if (pending != null && clear == null) {
-                if (metallumExtra$isFullTextureView(view)) {
-                    this.pendingColorClears.remove(texture);
-                    clear = pending;
-                } else {
-                    MetallumExtraBridge.flushPendingClear(this, texture);
-                }
-            } else {
-                this.pendingColorClears.remove(texture);
-            }
-            MetallumExtraBridge.markContentsDirty(texture);
-            targets[i - 1] = view;
-            clears[i - 1] = clear;
-            any = true;
-        }
-        if (any) {
-            ((MultiTarget.Pass) cir.getReturnValue()).metallumExtra$setExtraTargets(this, targets, clears);
-            if (!this.metallumExtra$loggedExtraTargets) {
-                this.metallumExtra$loggedExtraTargets = true;
-                MetallumExtra.LOGGER.info("[Metallum Extra] Multiple render targets in use: first pass with {} color targets is '{}'", count, descriptor.label().get());
-            }
-        }
-    }
-
-    /**
-     * Metallum keeps one Metal encoder open across passes that draw into the same color and depth targets. It
-     * does not know about the extra targets, so a pass without them must not carry on in an encoder that has them.
-     */
-    @Inject(method = "renderCommandEncoder", at = @At("HEAD"))
-    private void metallumExtra$leaveMultiTargetEncoder(final CallbackInfoReturnable<MTLRenderCommandEncoder> cir) {
-        if (this.metallumExtra$encoderExtraTargets != null) this.endEncoder();
-    }
-
-    @Inject(method = "endEncoder", at = @At("TAIL"))
-    private void metallumExtra$encoderEnded(final CallbackInfo ci) {
-        // Development aid: -Dmetallumextra.traceEnd=<n> logs where the first n encoders with extra targets were ended.
-        if (this.metallumExtra$encoderExtraTargets != null && TRACE_END > 0 && TRACE_ENDED++ < TRACE_END) {
-            MetallumExtra.LOGGER.info("[Metallum Extra] an encoder with {} extra targets ended", this.metallumExtra$encoderExtraTargets.length, new Throwable("ended here"));
-        }
-        this.metallumExtra$encoderExtraTargets = null;
+    private void metallumExtra$frameRecorded(final RenderPassDescriptor descriptor, final CallbackInfoReturnable<RenderPassBackend> cir) {
+        MetallumExtraUpscale.capture(this);
     }
 
     @Override
-    public MTLRenderCommandEncoder metallumExtra$multiTargetEncoder(final GpuTextureView color, final @Nullable GpuTextureView depth, final @Nullable GpuTextureView[] extraTargets,
-                                                                    final @Nullable Vector4fc clearColor, final @Nullable Double clearDepth, final @Nullable Vector4fc @Nullable [] extraClears) {
-        MemorySegment colorHandle = MetallumExtraBridge.nativeHandle(color);
-        MemorySegment depthHandle = MetallumExtraBridge.nativeHandle(depth);
-        MemorySegment[] open = this.metallumExtra$encoderExtraTargets;
-        // Metallum clears inside an open encoder by drawing a quad; here a clear simply starts a new encoder.
-        if (open != null && clearColor == null && clearDepth == null && extraClears == null
-                && this.currentEncoder instanceof MTLRenderCommandEncoder encoder
-                && metallumExtra$same(this.renderColorAttachment, colorHandle)
-                && metallumExtra$same(this.renderDepthAttachment, depthHandle)
-                && metallumExtra$sameTargets(open, extraTargets)) {
-            return encoder;
-        }
-
-        this.endEncoder();
-        MemorySegment[] handles = new MemorySegment[extraTargets.length];
-        for (int i = 0; i < handles.length; i++) {
-            handles[i] = MetallumExtraBridge.nativeHandle(extraTargets[i]);
-        }
-        MTLRenderCommandEncoder encoder = MetallumExtraTargets.makeRenderCommandEncoder(this.commandBuffer(), colorHandle, clearColor, handles, extraClears,
-                depthHandle, clearDepth, color.getWidth(0), color.getHeight(0));
-        encoder.waitForFence(this.fence, MTLRenderStages.VertexAndFragment);
-        this.currentEncoder = encoder;
-        this.renderColorAttachment = colorHandle;
-        this.renderDepthAttachment = depthHandle;
-        this.metallumExtra$encoderExtraTargets = handles;
-        return encoder;
-    }
-
-    /**
-     * Whether a view covers its whole texture, so that a deferred clear of the texture can be done as the pass
-     * starts. Metallum 0.0.23 has this as a private method of its own; 0.0.24 dropped it.
-     */
-    @Unique
-    private static final int TRACE_END = Integer.getInteger("metallumextra.traceEnd", 0);
-    @Unique
-    private static int TRACE_ENDED;
-
-    @Unique
-    private static boolean metallumExtra$isFullTextureView(final GpuTextureView view) {
-        return view.baseMipLevel() == 0
-                && view.mipLevels() >= view.texture().getMipLevels()
-                && view.texture().getDepthOrLayers() == 1;
-    }
-
-    @Unique
-    private static boolean metallumExtra$sameTargets(final MemorySegment[] open, final @Nullable GpuTextureView[] wanted) {
-        if (open.length != wanted.length) return false;
-        for (int i = 0; i < open.length; i++) {
-            if (!metallumExtra$same(open[i], MetallumExtraBridge.nativeHandle(wanted[i]))) return false;
-        }
-        return true;
-    }
-
-    @Unique
-    private static boolean metallumExtra$same(final MemorySegment a, final MemorySegment b) {
-        return a.address() == b.address();
+    public Vector4fc metallumExtra$pendingClear(final GpuTexture texture) {
+        return this.pendingColorClears.get(texture);
     }
 }

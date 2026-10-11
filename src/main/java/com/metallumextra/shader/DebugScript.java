@@ -43,6 +43,8 @@ import java.util.List;
  * shot noon          saves the world image as noon.png next to the script
  * set shadows off    a shader setting: shaders, shadows, bloom, reflections, waving (on or off)
  * pos                logs where the player is
+ * walk on           holds the forward key (walk off lets go); the view only bobs on the ground, so use cmd gamemode survival
+ * bob on             view bobbing on (or off)
  * view back          third person from behind (front, or first to go back)
  * hud off            hides the HUD and chat (hud on shows them again)
  * screen settings    opens this mod's settings screen (screen packs: the shader menu, screen options: shader options; screen close closes whatever is open)
@@ -174,6 +176,11 @@ public final class DebugScript {
         resumeAt = System.nanoTime() + milliseconds * 1_000_000L;
     }
 
+    /** For test harnesses: runs one line of the script (pack, set, profile, packopt ...) as if it were in the script file. */
+    public static void execute(final String line) {
+        run(Minecraft.getInstance(), line.trim());
+    }
+
     private static void run(final Minecraft minecraft, final String step) {
         if (step.isEmpty() || step.startsWith("#")) return;
         int space = step.indexOf(' ');
@@ -220,13 +227,14 @@ public final class DebugScript {
                     case "colored" -> BuiltinOptions.set("COLORED_LIGHT", on);
                     case "edges" -> BuiltinOptions.set("SMOOTH_EDGES", on);
                     case "chat" -> config.shaderMessages = on;
+                    case "upscale" -> config.setUpscaleMode(com.metallumextra.fx.UpscaleMode.of(parts[1]));
                     case "quality" -> config.setShaderQuality(Quality.valueOf(parts[1].toUpperCase(java.util.Locale.ROOT)));
                     default -> MetallumExtra.LOGGER.warn("[Metallum Extra] debug script: unknown setting {}", parts[0]);
                 }
                 pause(100);
             }
             case "screen" -> {
-                minecraft.gui.setScreen(rest.equals("settings") ? new ExtraConfigScreen(null) : rest.equals("packs") ? new ShaderPackScreen(null) : rest.equals("options") ? new PackOptionsScreen(new ShaderPackScreen(null), null)
+                minecraft.gui.setScreen(rest.equals("settings") ? new ExtraConfigScreen(null) : rest.equals("packs") ? new ShaderPackScreen(null) : rest.equals("options") ? new PackOptionsScreen(new ShaderPackScreen(null), null) : rest.startsWith("options ") ? PackOptionsScreen.page(new ShaderPackScreen(null), rest.substring(8).strip())
                         : rest.equals("inventory") ? new net.minecraft.client.gui.screens.inventory.InventoryScreen(minecraft.player) : null);
                 pause(300);
             }
@@ -261,6 +269,16 @@ public final class DebugScript {
                 if (error != null) MetallumExtra.LOGGER.warn("[Metallum Extra] debug script: pack {} not chosen: {}", rest, error);
                 pause(300);
             }
+            case "profile" -> {
+                // profile <NAME>: applies one of the pack's profiles to the pack in use and compiles its shaders again.
+                var pack = PackManager.active();
+                var profiles = com.metallumextra.shader.pack.PackProfiles.of(com.metallumextra.shader.pack.ProgramSet.discover(pack, null));
+                for (String problem : com.metallumextra.shader.pack.PackProfiles.apply(pack.options(), profiles, rest.strip(), (option, index) -> com.metallumextra.shader.pack.PackOptions.set(pack.name(), option, index))) {
+                    MetallumExtra.LOGGER.warn("[Metallum Extra] debug script: profile {}: {}", rest, problem);
+                }
+                Shaders.packOptionsChanged();
+                pause(300);
+            }
             case "packopt" -> {
                 // packopt <ID> <index>: sets an option of the pack in use and compiles its shaders again.
                 String[] parts = rest.split("\\s+");
@@ -290,7 +308,7 @@ public final class DebugScript {
             case "resize" -> {
                 // resize <width>x<height>: sets the window's size and logs the buffer sizes a moment later.
                 String[] size = rest.split("x");
-                org.lwjgl.glfw.GLFW.glfwSetWindowSize(minecraft.getWindow().handle(), Integer.parseInt(size[0]), Integer.parseInt(size[1]));
+                org.lwjgl.sdl.SDLVideo.SDL_SetWindowSize(minecraft.getWindow().handle(), Integer.parseInt(size[0]), Integer.parseInt(size[1]));
                 pause(1500);
                 var main = minecraft.gameRenderer.mainRenderTarget();
                 MetallumExtra.LOGGER.info("[Metallum Extra] debug script: window is now {}x{}", main.width, main.height);
@@ -304,7 +322,13 @@ public final class DebugScript {
             }
             case "cache" -> MetallumExtra.LOGGER.info("[Metallum Extra] debug script: {}; {}", TranslationCache.summary(), ShadowPass.summary() + "; " + IrisPipeline.summary());
             case "pos" -> MetallumExtra.LOGGER.info("[Metallum Extra] debug script: player at {} looking {} / {}", minecraft.player.position(), minecraft.player.getYRot(), minecraft.player.getXRot());
+            case "walk" -> {
+                // walk on / walk off: holds the forward key (the player has to be on the ground for the view to bob: survival mode, or creative not flying).
+                minecraft.options.keyUp.setDown(rest.equals("on"));
+            }
+            case "bob" -> minecraft.options.bobView().set(!rest.equals("off"));
             case "view" -> minecraft.options.setCameraType(rest.equals("back") ? CameraType.THIRD_PERSON_BACK : rest.equals("front") ? CameraType.THIRD_PERSON_FRONT : CameraType.FIRST_PERSON);
+            case "f3" -> minecraft.debugEntries.setOverlayVisible(rest.isEmpty() || rest.equals("on"));
             case "hud" -> {
                 if (minecraft.gui.hud.isHidden() != rest.equals("off")) minecraft.gui.hud.toggle();
             }

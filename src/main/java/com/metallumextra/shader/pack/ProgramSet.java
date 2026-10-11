@@ -27,6 +27,8 @@ import java.util.regex.Pattern;
 public final class ProgramSet {
     /** The stages of a frame that run a program over the whole screen, in the order Iris runs them in. */
     public enum Stage {
+        /** Compute programs that run once, when the pack starts. */
+        SETUP,
         BEGIN, SHADOWCOMP, PREPARE, DEFERRED, COMPOSITE, FINAL,
         /** The programs that draw the world's geometry; the game draws with them, they are not run as full-screen passes. */
         GBUFFERS,
@@ -45,16 +47,28 @@ public final class ProgramSet {
     private static final Pattern NUMBERED = Pattern.compile("(begin|shadowcomp|prepare|deferred|composite)([1-9]\\d?)?");
     /** The gbuffers programs that can draw something this version draws with them: terrain, entities and items, moving blocks, particles, weather, and the programs Iris falls back to. */
     private static final Pattern TERRAIN_PROGRAM = Pattern.compile("gbuffers_(terrain|terrain_solid|terrain_cutout|water|textured_lit|textured|basic"
-            + "|entities|entities_translucent|block|block_translucent|particles|particles_translucent|weather|hand|hand_water|spidereyes|clouds|skybasic)|shadow|shadow_solid|shadow_cutout|shadow_entities|shadow_block");
+            + "|entities|entities_translucent|block|block_translucent|particles|particles_translucent|weather|hand|hand_water|spidereyes|clouds|skybasic|skytextured|armor_glint|beaconbeam|lightning)|shadow|shadow_solid|shadow_cutout|shadow_entities|shadow_block");
+    /** A compute program: a stage (and the number of one of its programs), then optionally the letter that puts it after that program. */
+    private static final Pattern COMPUTE_NAME = Pattern.compile("(setup|begin|shadowcomp|prepare|deferred|composite)([1-9]\\d?)?(?:_([a-z]))?");
     private static final Pattern FILE = Pattern.compile("(?:(world-?\\d+)/)?([a-z][a-z0-9_]*)\\.(vsh|fsh|gsh|csh|tcs|tes)");
     /** Every other name Iris defines, which this version finds and reports without running. */
     private static final Pattern OTHER = Pattern.compile("setup[1-9]?\\d?|shadow|shadow_[a-z]+|dh_shadow|(?:dh_)?gbuffers_[a-z_]+|(?:begin|shadowcomp|prepare|deferred|composite)[1-9]?\\d?_[a-z]");
-    private static final Pattern SAMPLER = Pattern.compile("(?m)^\\s*uniform\\s+(?:(?:highp|mediump|lowp)\\s+)?sampler2D\\s+(\\w+)\\s*;");
+    private static final Pattern SAMPLER = Pattern.compile("(?m)^[ \\t]*uniform\\s+(?:(?:highp|mediump|lowp)\\s+)?([ui]?sampler[123]D)\\s+(\\w+)\\s*;");
 
     /** One program: its stage, its number within the stage, and where its files are (a path inside the pack; null where it has none). */
-    public record Program(String name, Stage stage, int number, @Nullable String vertex, @Nullable String fragment, boolean geometry) {
+    public record Program(String name, Stage stage, int number, @Nullable String vertex, @Nullable String fragment, boolean geometry,
+                          @Nullable String compute, char letter) {
+        public Program(final String name, final Stage stage, final int number, final @Nullable String vertex, final @Nullable String fragment, final boolean geometry) {
+            this(name, stage, number, vertex, fragment, geometry, null, '\0');
+        }
+
+        /** A compute program: no vertex and fragment files, and a letter after its stage's own name ({@code deferred4_a}), or none. */
+        public boolean isCompute() {
+            return compute != null;
+        }
+
         public boolean complete() {
-            return vertex != null && fragment != null;
+            return compute != null || vertex != null && fragment != null;
         }
     }
 
@@ -107,14 +121,24 @@ public final class ProgramSet {
             } else if (name.equals("final") || NUMBERED.matcher(name).matches()) {
                 if (match.group(3).equals("vsh") || match.group(3).equals("fsh")) names.add(name);
                 else if (match.group(3).equals("csh")) computeOnly.add(name);
+            } else if (match.group(3).equals("csh") && COMPUTE_NAME.matcher(name).matches()) {
+                computeOnly.add(name);
             } else if (OTHER.matcher(name).matches() && !unsupported.contains(name)) {
                 unsupported.add(name);
             }
         }
-        for (String name : computeOnly) {
-            if (!names.contains(name)) unsupported.add(name + " (compute only)");
-        }
         List<Program> programs = new ArrayList<>();
+        for (String name : computeOnly) {
+            Matcher compute = COMPUTE_NAME.matcher(name);
+            String path = find(files, dimension, name, "csh");
+            if (!compute.matches() || path == null) {
+                if (!names.contains(name)) unsupported.add(name + " (compute only)");
+                continue;
+            }
+            Stage stage = Stage.valueOf(compute.group(1).toUpperCase(java.util.Locale.ROOT));
+            int number = compute.group(2) == null ? 0 : Integer.parseInt(compute.group(2));
+            programs.add(new Program(name, stage, number, null, null, false, path, compute.group(3) == null ? '\0' : compute.group(3).charAt(0)));
+        }
         for (String name : names) {
             Stage stage = stageOf(name);
             if (!stage.supported()) {
@@ -124,7 +148,7 @@ public final class ProgramSet {
             programs.add(new Program(name, stage, numberOf(name), find(files, dimension, name, "vsh"), find(files, dimension, name, "fsh"),
                     find(files, dimension, name, "gsh") != null));
         }
-        programs.sort(java.util.Comparator.comparing(Program::stage).thenComparingInt(Program::number));
+        programs.sort(java.util.Comparator.comparing(Program::stage).thenComparingInt(Program::number).thenComparingInt(Program::letter));
         unsupported.sort(String::compareTo);
         ProgramSet result = new ProgramSet(dimension == null ? "" : dimension, List.copyOf(programs), List.copyOf(unsupported), properties(pack),
                 StandardOptions.values(pack.name(), pack.options()), pack.options());
@@ -177,6 +201,22 @@ public final class ProgramSet {
         return BlockMappings.parse(PropertiesFile.parse(text, PropertiesFile.macros(optionValues)));
     }
 
+    /** The ids the pack's {@code item.properties} gives items ({@code heldItemId}); none when it has no such file. */
+    public BlockMappings itemMappings() {
+        return mappings("item.properties", "item.");
+    }
+
+    /** The ids the pack's {@code entity.properties} gives entities ({@code entityId}); none when it has no such file. */
+    public BlockMappings entityMappings() {
+        return mappings("entity.properties", "entity.");
+    }
+
+    private BlockMappings mappings(final String file, final String prefix) {
+        String text = pack().read(file);
+        if (text == null) return BlockMappings.none();
+        return BlockMappings.parse(PropertiesFile.parse(text, PropertiesFile.macros(optionValues)), prefix);
+    }
+
     /** The custom uniforms and variables the pack defines, ready to be evaluated; the constants (biomes) are supplied by the game. */
     public CustomUniforms customUniforms(final java.util.function.Function<String, @Nullable Double> constant) throws PackException {
         return CustomUniforms.parse(ordered, constant);
@@ -204,6 +244,7 @@ public final class ProgramSet {
      */
     public @Nullable String customTexture(final Stage stage, final String sampler) {
         String stageName = switch (stage) {
+            case SETUP -> "setup";
             case BEGIN -> "begin";
             case SHADOWCOMP -> "shadowcomp";
             case PREPARE -> "prepare";
@@ -213,10 +254,21 @@ public final class ProgramSet {
             case SHADOW -> "shadow";
         };
         String value = property("texture." + stageName + "." + sampler);
+        if (value == null) {
+            // OptiFine's texture.<stage>.<name>.<unit>: the unit says nothing here, the name is what the program reads.
+            String prefix = "texture." + stageName + "." + sampler + ".";
+            for (String key : properties.stringPropertyNames()) {
+                if (key.startsWith(prefix) && key.substring(prefix.length()).matches("\\d+")) {
+                    value = property(key);
+                    break;
+                }
+            }
+        }
         if (value == null && sampler.equals("noisetex")) value = property("texture.noise");
         if (value == null || value.isBlank()) return null;
-        String path = value.split("\\s+")[0];
-        return path.endsWith(".png") ? path : null;
+        String path = TextureSpec.pathOf(value);
+        // A picture, or a file of raw numbers that says how to read it.
+        return path.endsWith(".png") || TextureSpec.parse(value) != null ? value.trim() : null;
     }
 
     /** The programs of the pack that can be run here, in the order they run in, with their files present and not switched off. */
@@ -294,10 +346,22 @@ public final class ProgramSet {
 
     /** The names of the {@code sampler2D} uniforms a shader declares. */
     public static List<String> samplers(final String source) {
-        List<String> result = new ArrayList<>();
+        return new ArrayList<>(samplerTypes(source).keySet());
+    }
+
+    /** The samplers a shader declares, with their types ({@code sampler2D}, {@code sampler3D}, ...), in the order they are declared. */
+    public static java.util.Map<String, String> samplerTypes(final String source) {
+        java.util.Map<String, String> result = new java.util.LinkedHashMap<>();
         Matcher match = SAMPLER.matcher(source);
-        while (match.find()) result.add(match.group(1));
+        while (match.find()) result.putIfAbsent(match.group(2), match.group(1));
         return result;
+    }
+
+    /** Whether a texture the pack names can be read as a sampler of this type: a raw 3D texture only as a {@code sampler3D}, a picture only as a 2D one. */
+    public static boolean fits(final String texture, final String samplerType) {
+        TextureSpec spec = TextureSpec.parse(texture);
+        String dimension = spec == null ? "2D" : spec.target().substring("TEXTURE_".length());
+        return samplerType.endsWith("sampler" + dimension);
     }
 
     /** The programs of a stage that can run, in the order they run in. */

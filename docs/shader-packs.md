@@ -16,9 +16,11 @@ The mod's own shaders are such a pack, **Metallically Beautiful**, inside the ja
 everything below, and the file a new pack is most easily made from (copy that folder into a ZIP's `shaders/`). To edit it live, start the game
 with `-Dmetallumextra.shaderDir=<that folder>`.
 
-This is a start at Iris compatibility, not all of it. A pack written for this mod runs; an arbitrary Iris pack may not, yet: programs must be in
-modern GLSL (`#version 330`, `in`/`out`), geometry, compute and tessellation shaders, `block.properties` and custom uniforms are not supported, and
-the packs of other mods' formats are not read. A pack that reads this mod's own extensions (below) runs only here.
+This is a start at Iris compatibility, not all of it. A pack written for this mod runs; an arbitrary Iris pack may not. Both modern GLSL and a subset of
+the older compatibility profile are translated. Geometry, compute and tessellation shaders are not run. `block.properties` and scalar custom uniforms
+are supported in part; other custom uniform types and several Iris properties remain unsupported. See the [translation table](translation-table.md) for
+the tested constructs and current gaps. Packs written for other mods' private formats are not read. A pack that reads this mod's own extensions (below)
+runs only here.
 This mod's earlier pack format (`pack.json`, `program/`, `override/`) is no longer read; the ZIP is listed with that reason.
 
 ## What runs, and when
@@ -146,9 +148,9 @@ Conventions are Iris's, not the game's own:
 
 - **Shadow matrices:** `shadowModelView`, `shadowModelViewInverse`, `shadowProjection`, `shadowProjectionInverse` (see Shadows).
 
-An Iris uniform that is not provided yet is refused when the pack loads, with its name: the per-object ones (`entityId`, `entityColor`, ...),
-`centerDepthSmooth`, `fogStart`, `fogEnd`, the `...Fract`/`...Int` camera forms, held items, biomes. Custom uniforms from `shaders.properties`
-are not supported yet.
+An Iris uniform that is not provided yet is refused when the pack loads, with its name. This includes per-object values such as `entityId` and
+`entityColor`, `centerDepthSmooth`, the `...Fract`/`...Int` camera forms, held-item and biome values. Scalar custom uniforms and variables from
+`shaders.properties` are evaluated on the CPU; vector custom uniforms (`vec2`, `vec3`, `vec4`) are not supported yet.
 `const int colortexNFormat = RGBA16F;` lines are removed before compiling, since the format names are not GLSL.
 
 
@@ -165,8 +167,8 @@ Vertex inputs (the `core` profile names, `#version 330 core`): declare `in vec3 
 - `vaColor` (vec4): the vertex color, alpha 1. `vaUV0` (vec2): the atlas coordinate. `vaUV2` (ivec2): the light map coordinate, 0 to 240.
 - `vaNormal` (vec3): the direction the quad faces, one of the six axes; a quad that faces none of them closely (plants) reads as up.
   Sodium's mesh has no normals, so the mod writes the direction into spare bits when it builds the mesh.
-- `mc_Entity` (vec2): `x` is -1 (block ids from `block.properties` are not supported; a pack can ask for this mod's own kinds of block, see
-  Extensions), `y` is 1 for fluids and -1 for everything else. `mc_midTexCoord` (vec2) is only good for telling which side of a quad's texture a
+- `mc_Entity` (vec2): `x` is the pack's block id from `block.properties`, or -1 when no id is mapped; a pack can also ask for this mod's own kinds of block (see
+  Extensions). `y` is 1 for fluids and -1 for everything else. `mc_midTexCoord` (vec2) is only good for telling which side of a quad's texture a
   vertex is on (Sodium's mesh has no texture centers): compare it with `vaUV0`. `mc_chunkFade` (float) is 0 for a section just built and 1 once it
   has faded in from the fog, as Sodium fades it.
 

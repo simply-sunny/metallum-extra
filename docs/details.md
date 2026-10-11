@@ -6,8 +6,7 @@ For the short version see the [README](../README.md).
 ## Features
 
 ### Shaders (`shaders.enabled`, off by default)
-A shader pipeline of Metallum Extra's own, written for Metal. It comes with one built-in look and can load shader
-packs written for it (below); it does **not** load OptiFine or Iris shader packs. Needs Sodium. Switch it on under **Video Settings → Metallum Extra → Shaders**.
+Metallum Extra includes its **Metallically Beautiful** built-in pack and an experimental loader for selected Iris/OptiFine-layout ZIP packs. The loader translates supported shader stages into programs Metallum can run on Metal; compatibility is partial, so see the [pack format and limitations](shader-packs.md) and [tested compatibility table](translation-table.md). Needs Sodium. Open the shader menu under **Video Settings → Shaders**.
 
 What it draws:
 - **Sun and moon light with shadows.** Terrain, mobs, block entities, dropped items and the player (in first
@@ -41,24 +40,18 @@ A **Shader Quality** preset (on the Shader Options screen) (Low, Medium, High, U
 sharpness and distance, reflections, ambient occlusion and sun rays. Each part also has its own switch (Shadows,
 Glow, Water Reflections, Moving Water and Plants, Sun Rays, Ambient Occlusion, Colored Light, Smooth Edges), and all of them
 change while the game is running (the shaders are compiled again, which takes a moment); changing one makes the preset read Custom.
-They are the options of the built-in shader pack, kept in `config/metallum-extra-packs.properties` with every pack's. On an M4 Max in a forest scene:
-about 255 FPS with shaders off, 160 on Medium, 125 on High (measured before the shader pack was moved onto the Iris pipeline). Shadow detail,
-shadow distance (in blocks) and the sun's tilt are more options of the pack, under Shader Options.
+They are the options of the built-in shader pack, kept in `config/metallum-extra-packs.properties` with every pack's. Shadow detail,
+shadow distance (in blocks) and the sun's tilt are more options of the pack, under Shader Options. Earlier M4 Max measurements below predate the current pack pipeline; use the [recorded renderer demo](renderer-demo.md) for the current measured sample.
 
-How it works: the game and Sodium keep drawing with their own pipelines, but the text of their shaders is replaced
-with Metallum Extra's. The extra data those shaders need (sun direction, shadow map, a copy of the scene for
-reflections) is bound by Metallum's render pass itself. The world is still drawn into the game's normal image, so
-anything Metallum Extra does not replace (other mods' own shaders, text, beams, the HUD) keeps working unchanged.
-The shader files are plain GLSL in `assets/metallum-extra/shaders/` inside the jar.
+How it works: Metallum Extra reads the selected pack and adapts supported world and screen-space programs to the game's pipelines and render passes. Metallum compiles the resulting GLSL to Metal. Pack textures, uniforms, shadow maps, and color buffers are supplied where implemented; unsupported pack features can cause a pack to be refused or fall back. The built-in pack files are in `assets/metallum-extra/pack/shaders/` inside the jar.
 
-Cost: on an M4 Max at the default 8-chunk shadow distance, about a third of the frame rate in a forest scene
-(roughly 240 FPS without, 160 with). Shadows are most of that.
+Historical cost measurements on an M4 Max, before the current pack pipeline: about a third of the frame rate in a forest scene
+(roughly 240 FPS without, 160 with). They are not a measurement of the current build; see the [recorded renderer demo](renderer-demo.md).
 
 The terrain part of the shadow map is cached: it is drawn again only when the sun has turned 0.2 degrees, you have
 walked 8 blocks from the map's center (the map is 8 blocks larger than the shadow distance to allow for that),
 Sodium changed a section's mesh, or a setting or the pack changed. On the other frames it is copied, and only mobs,
-items and the player are drawn on top. In a test scene this took the GPU time per frame from 11.1 ms to 6.1 ms and
-the terrain draw calls from about 5000 to about 1200 per frame, with the same picture.
+items and the player are drawn on top. These shadow-cache measurements predate the current pack pipeline and are historical; they are not a result for the current build.
 `-Dmetallumextra.noShadowCache=true` turns the cache off for comparing.
 
 Limits, as tested:

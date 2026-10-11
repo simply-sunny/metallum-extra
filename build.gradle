@@ -44,6 +44,24 @@ dependencies {
 	runtimeOnly "maven.modrinth:distanthorizons:${project.distant_horizons_version}"
 }
 
+// A small deterministic test suite for the parts of the shader pipeline that do not need a running game.
+sourceSets {
+	architectureTest {
+		java.srcDir 'src/architectureTest/java'
+		compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+		runtimeClasspath += sourceSets.main.output + sourceSets.main.runtimeClasspath
+	}
+}
+
+tasks.register('architectureTest', JavaExec) {
+	group = 'verification'
+	description = 'Checks shader stage ordering, buffer flips, GLSL rewrites, and translation-cache invalidation without starting Minecraft.'
+	dependsOn tasks.named('architectureTestClasses')
+	classpath = sourceSets.architectureTest.runtimeClasspath
+	mainClass = 'com.metallumextra.ArchitectureChecks'
+	workingDir = projectDir
+}
+
 processResources {
 	inputs.property 'version', project.version
 	inputs.property 'metallum_version', project.metallum_version

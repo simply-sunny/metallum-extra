@@ -62,9 +62,10 @@ public final class IrisTerrain {
         for (String name : IrisUniforms.TERRAIN_MACROS) {
             text = Pattern.compile("(?m)^[ \\t]*uniform\\s+(?:(?:highp|mediump|lowp)\\s+)?\\w+\\s+" + name + "\\s*;[ \\t]*$").matcher(text).replaceAll("");
         }
+        text = IrisWorldAdapter.withPipelineNamesUndefined(text);
         boolean atlas = uses(text, "gtexture");
         boolean light = uses(text, "lightmap");
-        text = Pattern.compile("(?m)^[ \\t]*uniform\\s+sampler2D\\s+(gtexture|lightmap)\\s*;[ \\t]*$").matcher(text).replaceAll("");
+        text = IrisWorldAdapter.withoutOwnSamplers(text);
 
         String[] bound = IrisWorldAdapter.boundSamplers(text);
         text = bound[0];
@@ -78,13 +79,11 @@ public final class IrisTerrain {
         }
         if (atlas) prelude.append("uniform sampler2D u_BlockTex;\n#define gtexture u_BlockTex\n#define atlasSize textureSize(u_BlockTex, 0)\n");
         // The shadow map is drawn without a light map: a program that reads one gets a white texel.
-        if (light && shadow) prelude.append("uniform sampler2D ").append(ShaderBindings.WHITE).append(";\n#define lightmap ").append(ShaderBindings.WHITE).append('\n');
+        if (light && shadow) prelude.append(IrisWorldAdapter.WHITE_DECLARATION).append("#define lightmap ").append(ShaderBindings.WHITE).append('\n');
         else if (light) prelude.append("uniform sampler2D u_LightTex;\n#define lightmap u_LightTex\n");
         prelude.append(vertex ? VERTEX_PRELUDE : FRAGMENT_PRELUDE).append('\n');
 
-        int at = 0;
-        Matcher header = HEADER_LINE.matcher(text);
-        while (header.find()) at = header.end();
+        int at = com.metallumextra.shader.pack.LegacyGlsl.headerEnd(text);
         String result = text.substring(0, at) + prelude + text.substring(at);
         return shadow && vertex ? IrisWorldAdapter.shadowClip(result) : result;
     }

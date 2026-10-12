@@ -152,20 +152,39 @@ public final class IrisUniforms {
             String type = match.group(2);
             String[] declarators = match.group(3).split(",");
             boolean opaque = type.matches("[iu]?sampler.*|image.*|[iu]image.*");
-            boolean allKnown = true;
+            boolean plain = type.matches("float|int|uint|bool|[iub]?vec[234]|mat[234]");
+            boolean arrays = false;
+            List<String> known = new ArrayList<>();
+            List<String> unknown = new ArrayList<>();
             for (String d : declarators) {
                 String name = d.strip();
-                if (name.contains("[") || !(BY_NAME.containsKey(name) || custom.containsKey(name) || TERRAIN_MACROS.contains(name))) allKnown = false;
+                if (name.contains("[")) arrays = true;
+                else if (BY_NAME.containsKey(name) || custom.containsKey(name) || TERRAIN_MACROS.contains(name)) known.add(name);
+                else unknown.add(name);
             }
-            if (opaque || allKnown || declarators.length != 1 || declarators[0].contains("[") || !type.matches("float|int|uint|bool|[iub]?vec[234]|mat[234]")) {
+            // In a list, only the Distant Horizons names are zero: any other unknown name may be a custom uniform, which is not known yet when the program is first read.
+            boolean listWithOthers = declarators.length > 1 && unknown.stream().anyMatch(name -> !name.startsWith("dh"));
+            if (opaque || !plain || arrays || unknown.isEmpty() || listWithOthers) {
                 match.appendReplacement(out, Matcher.quoteReplacement(match.group()));
                 continue;
             }
+            // What the game does not set is zero: each such name becomes a constant, and the ones it does set stay declared together.
             String zero = type.startsWith("mat") ? type + "(0.0)" : type + "(0)";
-            match.appendReplacement(out, Matcher.quoteReplacement(match.group(1) + "const " + type + " " + declarators[0].strip() + " = " + zero + ";"));
+            StringBuilder replacement = new StringBuilder();
+            if (!known.isEmpty()) replacement.append(match.group(1)).append("uniform ").append(type).append(' ').append(String.join(", ", known)).append(";\n");
+            for (String name : unknown) replacement.append(match.group(1)).append("const ").append(type).append(' ').append(name).append(" = ").append(zero).append(";\n");
+            replacement.setLength(replacement.length() - 1);
+            match.appendReplacement(out, Matcher.quoteReplacement(replacement.toString()));
         }
         match.appendTail(out);
         return out.toString();
+    }
+
+    private static final Pattern WORLD_ONLY = Pattern.compile("(?m)^([ \\t]*)uniform\\s+(?:(?:highp|mediump|lowp)\\s+)?(int|vec4)\\s+(entityId|blockEntityId|currentRenderedItemId|entityColor|renderStage)\\s*;[ \\t]*$");
+
+    /** What only the programs that draw the world are told (the id of the entity being drawn) is zero for the others, as in Iris. */
+    public static String zeroWorldOnly(final String source) {
+        return WORLD_ONLY.matcher(source).replaceAll(m -> Matcher.quoteReplacement(m.group(1) + "const " + m.group(2) + " " + m.group(3) + " = " + m.group(2) + "(0);"));
     }
 
     /** The standard uniforms a source declares, in layout order. Samplers are not uniforms in this sense. */
@@ -199,6 +218,10 @@ public final class IrisUniforms {
         return result;
     }
 
+    private static boolean isScalar(final String type) {
+        return type.equals("int") || type.equals("float") || type.equals("bool");
+    }
+
     private static Uniform lookup(final String type, final String name) throws PackException {
         Uniform uniform = BY_NAME.get(name);
         if (uniform == null) uniform = custom.get(name);
@@ -208,7 +231,7 @@ public final class IrisUniforms {
             if (later != null) throw new PackException("uniform " + name + " is an Iris uniform that is not provided by " + later);
             throw new PackException("uniform " + name + " is not a standard Iris uniform this version knows (and shaders.properties defines no custom uniform of that name)");
         }
-        if (!uniform.type.equals(type)) throw new PackException("uniform " + name + " is declared " + type + ", but it is a " + uniform.type);
+        if (!uniform.type.equals(type) && !(isScalar(type) && isScalar(uniform.type))) throw new PackException("uniform " + name + " is declared " + type + ", but it is a " + uniform.type);
         return uniform;
     }
 
@@ -220,6 +243,10 @@ public final class IrisUniforms {
     public static String rewrite(final String source, final List<String> declared) throws PackException {
         if (declared.isEmpty()) return source;
         // Declarations are replaced by nothing, but their lines stay, so error messages keep their line numbers.
+        // A program may declare a number as another kind than Iris holds it (an int for a bool): the name it reads is then a conversion of the member.
+        Map<String, String> coerced = new LinkedHashMap<>();
+        // The names this stage declares itself: the block is the same for both stages of a program, but a stage that does not declare a name may use it for something else.
+        Set<String> here = new LinkedHashSet<>();
         Matcher match = LOOSE.matcher(source);
         StringBuilder out = new StringBuilder();
         while (match.find()) {
@@ -230,7 +257,9 @@ public final class IrisUniforms {
             }
             boolean block = false;
             for (String name : names(match.group(3))) {
-                lookup(type, name);
+                here.add(name);
+                Uniform found = lookup(type, name);
+                if (!found.type.equals(type) && !TERRAIN_MACROS.contains(name)) coerced.put(name, type);
                 block |= !TERRAIN_MACROS.contains(name);
             }
             match.appendReplacement(out, block ? "" : Matcher.quoteReplacement(match.group()));
@@ -242,18 +271,21 @@ public final class IrisUniforms {
         StringBuilder booleans = new StringBuilder();
         for (Uniform uniform : allUniforms()) {
             boolean isBool = uniform.type.equals("bool");
-            boolean used = declared.contains(uniform.name);
+            boolean used = declared.contains(uniform.name) && (here.contains(uniform.name) || uniform.name.startsWith("Mx"));
             // SPIR-V has no boolean in a uniform block: it is held as an int, and the name the pack reads is that int compared with zero.
-            String name = isBool ? "_mx_bool_" + uniform.name : used ? uniform.name : "_mx_unused_" + uniform.name;
+            String wanted = coerced.get(uniform.name);
+            String name = isBool ? "_mx_bool_" + uniform.name : !used ? "_mx_unused_" + uniform.name : wanted != null ? "_mx_raw_" + uniform.name : uniform.name;
             block.append("    ").append(isBool ? "int" : uniform.type).append(' ').append(name).append(";\n");
-            if (isBool && used) booleans.append("#define ").append(uniform.name).append(" (").append(name).append(" != 0)\n");
+            if (used) {
+                String value = isBool ? "(" + name + " != 0)" : name;
+                if (wanted != null) booleans.append("#define ").append(uniform.name).append(' ').append(wanted).append('(').append(value).append(")\n");
+                else if (isBool) booleans.append("#define ").append(uniform.name).append(' ').append(value).append('\n');
+            }
         }
         block.append("};\n").append(booleans);
 
         // After the last #version or #extension line.
-        int at = 0;
-        Matcher header = HEADER_LINE.matcher(stripped);
-        while (header.find()) at = header.end();
+        int at = LegacyGlsl.headerEnd(stripped);
         return stripped.substring(0, at) + "\n" + block + stripped.substring(at);
     }
 

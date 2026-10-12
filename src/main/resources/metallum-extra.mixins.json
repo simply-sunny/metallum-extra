@@ -33,6 +33,8 @@
     "shader.MetalRenderPassShaderMixin",
     "shader.PipelineCacheShaderMixin",
     "shader.SkyRendererShaderMixin",
+    "shader.ModelFeatureRendererEntityMixin",
+    "shader.RenderTypeEntityMixin",
     "shader.SodiumBlockRendererShaderMixin",
     "shader.SodiumChunkRendererInvoker",
     "shader.SodiumChunkRendererShaderMixin",
@@ -40,6 +42,7 @@
     "shader.SodiumMeshBufferShaderMixin",
     "shader.SodiumSectionDataShaderMixin",
     "shader.SodiumTerrainPipelineMixin",
+    "shader.PipelineCompileGuardMixin",
     "shader.SodiumTerrainPrograms",
     "shader.SodiumWorldRendererShaderMixin"
   ],

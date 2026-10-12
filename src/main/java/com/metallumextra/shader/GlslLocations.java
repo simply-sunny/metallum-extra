@@ -53,7 +53,42 @@ public final class GlslLocations {
      * @param other  the other stage of the same program, which decides the numbers of what passes between them; null if there is none
      * @param vertex whether {@code source} is the vertex stage
      */
-    public static String fit(final String source, final @Nullable String other, final boolean vertex) {
+    private static final Pattern STORAGE_MACRO = Pattern.compile("(?m)^[ \\t]*#[ \\t]*define[ \\t]+(\\w+)[ \\t]+(in|out|varying|attribute|flat in|flat out)[ \\t]*(?://.*)?$");
+
+    /**
+     * A pack that spells {@code in} and {@code out} with a macro of its own ({@code #define in_out out} for the vertex stage, {@code in} for the fragment stage) is read
+     * with the macro replaced where it is used, since the declarations are looked for before the preprocessor runs.
+     */
+    private static String storageMacrosExpanded(final String source) {
+        Matcher macro = STORAGE_MACRO.matcher(source);
+        Map<String, String> bodies = new HashMap<>();
+        while (macro.find()) bodies.put(macro.group(1), macro.group(2));
+        if (bodies.isEmpty()) return source;
+        StringBuilder out = new StringBuilder(source.length());
+        String[] lines = source.split("\n", -1);
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i];
+            if (!line.stripLeading().startsWith("#")) {
+                for (Map.Entry<String, String> entry : bodies.entrySet()) {
+                    if (line.contains(entry.getKey())) line = line.replaceAll("\\b" + entry.getKey() + "\\b", entry.getValue());
+                }
+            }
+            out.append(line);
+            if (i < lines.length - 1) out.append('\n');
+        }
+        return out.toString();
+    }
+
+    private static final Pattern TYPE_ARRAY = Pattern.compile("\\b(in|out|varying|attribute)(\\s+(?:(?:highp|mediump|lowp)\\s+)?)(\\w+)\\s*\\[\\s*(\\d+)\\s*\\](\\s+)(\\w+)\\s*;");
+
+    /** {@code out vec3[9] name;} (the array on the type) is {@code out vec3 name[9];}, which is the form the rest of this class reads. */
+    private static String arrayOnName(final String source) {
+        return TYPE_ARRAY.matcher(source).replaceAll("$1$2$3$5$6[$4];");
+    }
+
+    public static String fit(final String source0, final @Nullable String other0, final boolean vertex) {
+        String source = arrayOnName(storageMacrosExpanded(source0));
+        String other = other0 == null ? null : arrayOnName(storageMacrosExpanded(other0));
         Map<String, List<Member>> structTypes = structMembers(other == null ? source : source + "\n" + other);
         Map<String, Integer> structs = structSlots(structTypes);
         List<Statement> mine = scan(source, vertex, structs);
@@ -149,6 +184,40 @@ public final class GlslLocations {
         }
         out.append(source, at, source.length());
         String result = out.toString();
+        if (vertex) {
+            // What the fragment stage reads and the vertex stage never declares reaches it as undefined in OpenGL, which packs rely on when a branch is off in one stage
+            // only; the game's compiler wants the output to be there. The declarations go on the line of main, so no line moves.
+            java.util.Set<String> written = new java.util.HashSet<>();
+            for (Statement st : vertexSide) if (st.out) for (Variable v : st.variables) written.add(v.name);
+            StringBuilder missing = new StringBuilder();
+            for (Statement st : fragmentSide) {
+                if (st.out || structTypes.containsKey(st.type)) continue;
+                for (Variable v : st.variables) {
+                    Integer location = shared.get(v.name);
+                    if (location == null || !written.add(v.name)) continue;
+                    Substitutions.note("the fragment stage reads " + v.name + ", which the vertex stage does not write: it reads zero");
+                    missing.append("layout(location = ").append(location).append(") ").append(st.interpolation).append("out ").append(st.type).append(' ').append(v.name).append(v.array).append("; ");
+                }
+            }
+            if (missing.length() > 0) {
+                // On the first empty line after the header, so that the functions the program defines before main can read them; else on main's line.
+                int insert = -1;
+                int from = com.metallumextra.shader.pack.LegacyGlsl.headerEnd(result);
+                int lineStart = result.indexOf('\n', from) + 1;
+                while (lineStart > 0 && lineStart < result.length()) {
+                    int lineEnd = result.indexOf('\n', lineStart);
+                    if (lineEnd < 0) break;
+                    if (result.substring(lineStart, lineEnd).isBlank()) {
+                        insert = lineStart;
+                        break;
+                    }
+                    lineStart = lineEnd + 1;
+                }
+                Matcher at3 = MAIN.matcher(result);
+                if (insert < 0 && at3.find()) insert = at3.start();
+                if (insert >= 0) result = result.substring(0, insert) + missing + result.substring(insert);
+            }
+        }
         if (head.length() + tail.length() > 0) {
             Matcher main = MAIN.matcher(result);
             if (main.find()) result = main.replaceAll("void mx_main_()") + "\nvoid main() {\n" + head + "    mx_main_();\n" + tail + "}\n";

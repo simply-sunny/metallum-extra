@@ -42,8 +42,11 @@ public final class ComputeCompiler {
         BUFFER
     }
 
-    /** One thing the kernel takes: its name in the GLSL, what it is, and the Metal slots (buffer, texture) and sampler slot (-1 for none) it is in. */
-    public record Resource(String name, Kind kind, int slot, int sampler) {
+    /**
+     * One thing the kernel takes: its name in the GLSL, what it is, the Metal slot (buffer or texture) and sampler slot (-1 for none) it is in, and the
+     * binding the GLSL gave it ({@code layout(binding = n)}), which is how a buffer is found in shaders.properties.
+     */
+    public record Resource(String name, Kind kind, int slot, int sampler, int binding) {
     }
 
     public record Compiled(String metal, String entry, List<Resource> resources) {
@@ -138,21 +141,21 @@ public final class ComputeCompiler {
                         switch (type) {
                             case Spvc.SPVC_RESOURCE_TYPE_UNIFORM_BUFFER -> {
                                 binding.msl_buffer(buffers);
-                                made = new Resource(resource.nameString(), Kind.BLOCK, buffers++, -1);
+                                made = new Resource(resource.nameString(), Kind.BLOCK, buffers++, -1, at);
                             }
                             case Spvc.SPVC_RESOURCE_TYPE_STORAGE_BUFFER -> {
                                 binding.msl_buffer(buffers);
-                                made = new Resource(resource.nameString(), Kind.BUFFER, buffers++, -1);
+                                made = new Resource(resource.nameString(), Kind.BUFFER, buffers++, -1, at);
                             }
                             case Spvc.SPVC_RESOURCE_TYPE_SAMPLED_IMAGE -> {
                                 boolean texelBuffer = Spvc.spvc_type_get_image_dimension(Spvc.spvc_compiler_get_type_handle(compiler, resource.type_id())) == SPV_DIM_BUFFER;
                                 binding.msl_texture(textures);
                                 if (!texelBuffer) binding.msl_sampler(samplers);
-                                made = new Resource(resource.nameString(), Kind.TEXTURE, textures++, texelBuffer ? -1 : samplers++);
+                                made = new Resource(resource.nameString(), Kind.TEXTURE, textures++, texelBuffer ? -1 : samplers++, at);
                             }
                             default -> {
                                 binding.msl_texture(textures);
-                                made = new Resource(resource.nameString(), Kind.IMAGE, textures++, -1);
+                                made = new Resource(resource.nameString(), Kind.IMAGE, textures++, -1, at);
                             }
                         }
                         check(Spvc.spvc_compiler_msl_add_resource_binding(compiler, binding), "spvc_compiler_msl_add_resource_binding");

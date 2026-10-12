@@ -26,6 +26,8 @@ public final class ArchitectureChecks {
         stageOrderingAndBufferFlips();
         legacyGlslRewrite();
         translationCacheInvalidation();
+        frameStatsPercentiles();
+        settingsDiffLines();
         System.out.println("Architecture checks passed: " + checks);
     }
 
@@ -95,6 +97,42 @@ public final class ArchitectureChecks {
 
     private static String finalFragment() {
         return "#version 330\nuniform sampler2D colortex0;\nin vec2 texcoord;\nout vec4 color;\nvoid main() { color = texture(colortex0, texcoord); }\n";
+    }
+
+    /** The run log's numbers: 100 frames of 10 ms and one of 50 ms give 101 frames, a median of 10 ms and a 99th percentile of 10 ms. */
+    private static void frameStatsPercentiles() {
+        FrameStats stats = new FrameStats();
+        for (int i = 0; i < 100; i++) stats.add(10.0);
+        stats.add(50.0);
+        check("frame count includes every frame", stats.count() == 101);
+        check("median frame time is the common frame", Math.abs(stats.percentileMs(0.5) - 10.0) < 0.06);
+        check("99th percentile is the common frame, not the outlier", Math.abs(stats.percentileMs(0.99) - 10.0) < 0.06);
+        check("worst frame is kept", stats.maxMs() == 50.0);
+        check("fps is frames over their total time", Math.abs(stats.fps() - 101 * 1000.0 / 1050.0) < 1e-9);
+        check("1% low is the fps at the 99th percentile frame time", Math.abs(stats.onePercentLowFps() - 100.0) < 1.0);
+        FrameStats slow = new FrameStats();
+        slow.add(250.0);
+        check("frames over 100 ms still count in the worst and the fps", slow.count() == 1 && slow.maxMs() == 250.0 && Math.abs(slow.fps() - 4.0) < 1e-9);
+        check("an empty histogram reads as zero", new FrameStats().percentileMs(0.5) == 0 && new FrameStats().fps() == 0);
+    }
+
+    /** The settings diff: changed, added and removed keys, in key order, and nothing for unchanged ones. */
+    private static void settingsDiffLines() {
+        Map<String, String> before = new LinkedHashMap<>();
+        before.put("options.renderDistance", "16");
+        before.put("options.improvedTransparency", "false");
+        before.put("mod.shadersEnabled", "false");
+        Map<String, String> after = new LinkedHashMap<>();
+        after.put("options.renderDistance", "66");
+        after.put("options.improvedTransparency", "false");
+        after.put("display.focused", "true");
+        List<String> lines = SettingsDiff.diff(before, after);
+        check("changed setting shows old and new", lines.contains("options.renderDistance: 16 -> 66"));
+        check("unchanged setting is not listed", lines.stream().noneMatch(line -> line.startsWith("options.improvedTransparency")));
+        check("added setting shows none before", lines.contains("display.focused: (none) -> true"));
+        check("removed setting shows removed after", lines.contains("mod.shadersEnabled: false -> (removed)"));
+        check("diff lines are in key order", lines.equals(List.of("display.focused: (none) -> true", "mod.shadersEnabled: false -> (removed)", "options.renderDistance: 16 -> 66")));
+        check("identical snapshots have no diff", SettingsDiff.diff(before, before).isEmpty());
     }
 
     private static void check(final String description, final boolean condition) {

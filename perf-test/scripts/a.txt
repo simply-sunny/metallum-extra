@@ -1,0 +1,27 @@
+world PerfWorld
+wait 2000
+opt renderDistance 8
+opt simulationDistance 5
+opt vsync off
+opt fps 260
+cmd gamemode spectator @a
+cmd time set 6000
+cmd execute in minecraft:the_nether run tp @a -100 72 -136 0 10
+wait 30000
+spin 20
+bench A0-no-shaders 30
+iris on BSL Shaders v10.1.8.zip
+bench A1-bsl-high-load 15
+bench A1-bsl-high 40
+shot A1-bsl-high
+iris off
+wait 3000
+bench A2-off-after-bsl 30
+iris on ComplementaryReimagined_r5.9.3.zip
+bench A3-comp-5.9.3-medium-load 15
+bench A3-comp-5.9.3-medium 40
+shot A3-comp-5.9.3-medium
+iris off
+wait 3000
+bench A4-off-after-comp 30
+quit

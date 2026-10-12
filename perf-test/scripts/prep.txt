@@ -1,0 +1,11 @@
+world PerfWorld
+wait 2000
+opt renderDistance 8
+opt simulationDistance 5
+cmd gamemode spectator @a
+cmd execute in minecraft:the_nether run tp @a -100 72 -136 0 10
+wait 100000
+shot prep_nether
+cmd save-all flush
+wait 8000
+quit

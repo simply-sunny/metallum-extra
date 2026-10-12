@@ -59,6 +59,8 @@ import java.util.Set;
  */
 public final class IrisPipeline {
     private static final Identifier BLIT_VERTEX = Identifier.fromNamespaceAndPath(com.metallumextra.MetallumExtra.MOD_ID, "internal/fullscreen");
+    private static final Identifier UNPACK_FRAGMENT = Identifier.fromNamespaceAndPath(com.metallumextra.MetallumExtra.MOD_ID, "internal/unpack");
+    private static final Map<Integer, RenderPipeline> UNPACKS = new HashMap<>();
     private static final Identifier BLIT_FRAGMENT = Identifier.fromNamespaceAndPath(com.metallumextra.MetallumExtra.MOD_ID, "internal/blit");
 
     private static final IrisTargets TARGETS = new IrisTargets();
@@ -175,6 +177,8 @@ public final class IrisPipeline {
                 customUniforms = built.programs().customUniforms(IrisPipeline::biomeConstant);
                 itemIds = new HashMap<>();
                 for (var rule : built.programs().itemMappings().rules()) itemIds.put(rule.namespace() + ":" + rule.name(), rule.id());
+                entityIds = new HashMap<>();
+                for (var rule : built.programs().entityMappings().rules()) entityIds.put(rule.namespace() + ":" + rule.name(), rule.id());
                 // Blocks of chunks already built carry the ids of the old mapping: they are built again when it changes.
                 if (BlockIds.use(built.programs().blockMappings())) Minecraft.getInstance().levelExtractor.allChanged();
                 PIPELINES.clear();
@@ -261,10 +265,13 @@ public final class IrisPipeline {
         RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
         if (TARGETS.width() == 0 || !ready(main) || descriptor.colorAttachments().get(0) == null
                 || descriptor.colorAttachments().get(0).textureView().texture() != main.getColorTexture()) return descriptor;
-        GpuTextureView[] extra = new GpuTextureView[plan.worldBuffers().size()];
-        int i = 0;
-        for (int buffer : plan.worldBuffers()) extra[i++] = TARGETS.read(buffer);
-        return withColorAttachments(descriptor, extra);
+        // The buffers in the order of their attachments (see IrisPlan#attachment): the ones that stand alone, then one for each group packed together.
+        java.util.List<GpuTextureView> extra = new java.util.ArrayList<>();
+        for (int buffer : plan.worldBuffers()) {
+            if (plan.packGroupOf(buffer) < 0) extra.add(TARGETS.read(buffer));
+        }
+        for (int group = 0; group < plan.packGroups().size(); group++) extra.add(TARGETS.packedView(group));
+        return withColorAttachments(descriptor, extra.toArray(new GpuTextureView[0]));
     }
 
     /** The descriptor with more color attachments after its own (it is a record: a new one is made). */
@@ -285,7 +292,7 @@ public final class IrisPipeline {
         if (current != null && slot < current.worldSlots().size()) {
             IrisPlan.Input input = current.worldSlots().get(slot);
             if (input.colorBuffer() == IrisPlan.CUSTOM) {
-                var view = PackTextures.view(pack, input.texture());
+                var view = customView(pack, input.texture());
                 if (view != null) {
                     pass.bindTexture(name, view, PackTextures.sampler(pack, input.texture()));
                     return;
@@ -354,6 +361,12 @@ public final class IrisPipeline {
         return target != null ? target.getDepthTextureView() : Minecraft.getInstance().gameRenderer.mainRenderTarget().getDepthTextureView();
     }
 
+    /** The depth of the world without the held item ({@code depthtex2}) for the programs that draw the world. */
+    static com.mojang.renderpearl.api.textures.GpuTextureView worldDepthWithoutHand() {
+        TextureTarget target = TARGETS.depthWithoutHand();
+        return target != null ? target.getDepthTextureView() : worldDepth();
+    }
+
     /** The generation of the plan that is current; the shader ids of its programs carry it. */
     public static int generation() {
         return generation;
@@ -376,7 +389,10 @@ public final class IrisPipeline {
         PIPELINES.clear();
         KERNELS.clear();
         BLITS.clear();
+        UNPACKS.clear();
         TARGETS.release();
+        STORAGE.values().forEach(GpuBuffer::close);
+        STORAGE.clear();
         if (uniformBuffer != null) {
             uniformBuffer.close();
             uniformBuffer = null;
@@ -443,6 +459,7 @@ public final class IrisPipeline {
             List<IrisPlan.Step> deferred = current.steps(ProgramSet.Stage.DEFERRED);
             RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
             if (!ready(main)) return;
+            unpackBuffers(current);
             snapshotDepth(main, false);
             if (handDepth != null) overlayHandDepth(handDepth, false);
             if (current.usesDepth(1) || current.usesDepth(2)) copies++;
@@ -484,6 +501,8 @@ public final class IrisPipeline {
             compositePending = false;
             if (current == null || !current.afterWorld() || !ready(main) || !TARGETS.isFor(current)) return;
             snapshotDepth(main, true);
+            // depthtex2 is the world before the held item goes into it, and depthtex0 is the world with it.
+            if (current.usesDepth(2)) snapshotDepthInto(main, TARGETS.depthWithoutHand());
             if (handDepth != null) overlayHandDepth(handDepth, true);
             if (current.usesDepth(0)) copies++;
             compositePending = true;
@@ -501,6 +520,7 @@ public final class IrisPipeline {
             // An item drawn after the rest has only the game's own depth buffer to say where it is.
             if (handDepth == null) overlayHandDepth(main.getDepthTextureView(), true);
             handDepth = null;
+            unpackBuffers(current);
             // Translucent things and the held item were drawn into the game's image after the deferred programs: it, not buffer 0, is the finished world.
             worldIntoColor0(main);
             run(current.steps(ProgramSet.Stage.COMPOSITE), main);
@@ -590,18 +610,19 @@ public final class IrisPipeline {
                     else if (input.colorBuffer() == IrisPlan.SHADOW_DEPTH) view = shadowDepth();
                     else if (input.colorBuffer() == IrisPlan.SHADOW_COLOR) view = shadowColor();
                     else if (input.colorBuffer() == IrisPlan.SHADOW_COLOR1) view = shadowColor1();
-                    else if (input.colorBuffer() == IrisPlan.CUSTOM) view = java.util.Objects.requireNonNullElse(PackTextures.view(pack, input.texture()), TARGETS.read(0));
-                    else view = TARGETS.depth(input.depthTexture() == 0 ? 0 : 1);
+                    else if (input.colorBuffer() == IrisPlan.CUSTOM) view = java.util.Objects.requireNonNullElse(customView(pack, input.texture()), TARGETS.read(0));
+                    else view = TARGETS.depth(input.depthTexture());
                     bindings.add(new ComputeBinding(resource, null, view, samplerOfKind(kindOf(pack, input)), false));
                 }
                 case IMAGE -> {
                     IrisPlan.Image image = null;
                     for (IrisPlan.Image candidate : compute.images()) if (candidate.name().equals(resource.name())) image = candidate;
                     if (image == null) throw new IllegalStateException(step.program().name() + " has no image " + resource.name());
-                    if (image.buffer() < 0) throw new IllegalStateException("images of the pack's own are not supported yet (" + image.name() + ")");
-                    bindings.add(new ComputeBinding(resource, null, TARGETS.read(image.buffer()), null, image.writes()));
+                    GpuTextureView picture = image.buffer() >= 0 ? TARGETS.read(image.buffer()) : TARGETS.image(image.custom());
+                    if (picture == null) throw new IllegalStateException("the image " + image.name() + " cannot be used: it is not a custom image of a format this version makes");
+                    bindings.add(new ComputeBinding(resource, null, picture, null, image.writes()));
                 }
-                case BUFFER -> throw new IllegalStateException("storage buffers are not supported yet (" + resource.name() + ")");
+                case BUFFER -> bindings.add(new ComputeBinding(resource, storageBuffer(step, resource).slice(), null, null, true));
             }
         }
         int[] groups;
@@ -646,10 +667,10 @@ public final class IrisPipeline {
                 else if (input.colorBuffer() == IrisPlan.SHADOW_COLOR) pass.setUniform(input.name(), shadowColor(), sampler);
                 else if (input.colorBuffer() == IrisPlan.SHADOW_COLOR1) pass.setUniform(input.name(), shadowColor1(), sampler);
                 else if (input.colorBuffer() == IrisPlan.CUSTOM) {
-                    var view = PackTextures.view(pack, input.texture());
+                    var view = customView(pack, input.texture());
                     pass.setUniform(input.name(), view != null ? view : TARGETS.read(0), sampler);
                 }
-                else pass.setUniform(input.name(), TARGETS.depth(input.depthTexture() == 0 ? 0 : 1), sampler);
+                else pass.setUniform(input.name(), TARGETS.depth(input.depthTexture()), sampler);
             }
             pass.draw(3, 1, 0, 0);
         }
@@ -676,9 +697,50 @@ public final class IrisPipeline {
     }
 
     private static int kindOf(final ShaderPack pack, final IrisPlan.Input input) {
+        // An integer buffer cannot be filtered (GL reads it with texelFetch or nearest only), so it is read nearest.
+        if (input.colorBuffer() >= 0 && integerBuffer(input.colorBuffer())) return KIND_NEAREST_CLAMP;
         if (input.colorBuffer() >= 0 || input.colorBuffer() == IrisPlan.SHADOW_COLOR || input.colorBuffer() == IrisPlan.SHADOW_COLOR1) return KIND_LINEAR_CLAMP;
         if (input.colorBuffer() == IrisPlan.CUSTOM) return PackTextures.kind(pack, input.texture());
         return KIND_NEAREST_CLAMP;
+    }
+
+    /** The storage buffers made so far, by the binding their program gives them; they keep what the kernels wrote from frame to frame. */
+    private static final java.util.Map<Integer, GpuBuffer> STORAGE = new java.util.HashMap<>();
+
+    /**
+     * The storage buffer a compute program declares as {@code layout(binding = n) buffer ...}: {@code bufferObject.n} in shaders.properties is its size in bytes.
+     * It starts out zeroed, and is made again when the pack changes.
+     */
+    private static GpuBuffer storageBuffer(final IrisPlan.Step step, final ComputeCompiler.Resource resource) {
+        GpuBuffer existing = STORAGE.get(resource.binding());
+        if (existing != null) return existing;
+        String size = plan == null ? null : plan.programs().property("bufferObject." + resource.binding());
+        int bytes;
+        try {
+            bytes = size == null ? -1 : Integer.parseInt(size);
+        } catch (NumberFormatException e) {
+            bytes = -1;
+        }
+        if (bytes <= 0) throw new IllegalStateException(step.program().name() + " uses the buffer " + resource.name() + ", which shaders.properties does not size (bufferObject." + resource.binding() + " = bytes)");
+        GpuBuffer made = RenderSystem.getDevice().createBuffer(() -> "Metallum Extra storage " + resource.binding(), GpuBuffer.USAGE_COPY_DST | GpuBuffer.USAGE_COPY_SRC, bytes);
+        RenderSystem.getDevice().createCommandEncoder().writeToBuffer(made.slice(), java.nio.ByteBuffer.allocateDirect(bytes).order(java.nio.ByteOrder.nativeOrder()));
+        STORAGE.put(resource.binding(), made);
+        return made;
+    }
+
+    /** The picture a custom input reads: one of the pack's pictures, or a custom image the pack declares ({@link ProgramSet#IMAGE_PATH}). */
+    private static @Nullable GpuTextureView customView(final ShaderPack pack, final String path) {
+        if (path.startsWith(ProgramSet.IMAGE_PATH)) return TARGETS.image(path.substring(ProgramSet.IMAGE_PATH.length()));
+        return PackTextures.view(pack, path);
+    }
+
+    /** Whether buffer {@code buffer} of the plan in use has an integer format (its programs read it as a usampler or isampler). */
+    private static boolean integerBuffer(final int buffer) {
+        IrisPlan current = plan;
+        IrisPlan.Buffer spec = current == null ? null : current.buffers().get(buffer);
+        if (spec == null) return false;
+        String name = spec.format().name();
+        return name.endsWith("_UINT") || name.endsWith("_SINT");
     }
 
     private static GpuSampler samplerOfKind(final int kind) {
@@ -822,6 +884,15 @@ public final class IrisPipeline {
 
     /** What the pack's {@code item.properties} calls each item: its registry name to its id. */
     private static Map<String, Integer> itemIds = new HashMap<>();
+    /** The ids of entities in the pack's entity.properties, by their registry key ({@code minecraft:zombie}). */
+    private static Map<String, Integer> entityIds = new HashMap<>();
+
+    /** The id the pack gives the entity a render state is for, or 0 for none: what {@code entityId} is for the entity's draws. */
+    public static int entityIdOf(final Object state) {
+        if (!(state instanceof net.minecraft.client.renderer.entity.state.EntityRenderState render) || render.entityType == null || entityIds.isEmpty()) return 0;
+        Integer id = entityIds.get(net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(render.entityType).toString());
+        return id == null ? 0 : id;
+    }
 
     /**
      * {@code heldItemId} and {@code heldItemId2} (main hand and off hand: the id {@code item.properties} gave the item, 0 for an empty hand and -1 for an item
@@ -959,7 +1030,10 @@ public final class IrisPipeline {
      * a full-screen pass that converts each value, since the game's own depth runs the other way and cannot be used as it is.
      */
     private static void snapshotDepth(final RenderTarget world, final boolean withTranslucent) {
-        TextureTarget target = TARGETS.depthTarget(withTranslucent);
+        snapshotDepthInto(world, TARGETS.depthTarget(withTranslucent));
+    }
+
+    private static void snapshotDepthInto(final RenderTarget world, final @Nullable TextureTarget target) {
         if (target == null) return;
         if (depthParams == null) {
             depthParams = RenderSystem.getDevice().createBuffer(() -> "Metallum Extra depth conversion", GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_COPY_DST, 16);
@@ -1048,6 +1122,37 @@ public final class IrisPipeline {
             blit(TARGETS.read(0), main.getColorTextureView(), GpuFormat.RGBA8_UNORM);
         }
         copies++;
+    }
+
+    /**
+     * The buffers the world was drawn into packed together (see {@link IrisPlan#packGroups}) are taken apart into the buffers themselves, which the programs after the
+     * world read. Done before the deferred programs and again before the composite ones, since translucent things and the held item are drawn in between.
+     */
+    private static void unpackBuffers(final IrisPlan current) {
+        for (int group = 0; group < current.packGroups().size(); group++) {
+            java.util.List<Integer> buffers = current.packGroups().get(group);
+            int count = buffers.size();
+            RenderPipeline pipeline = UNPACKS.computeIfAbsent(count, c -> {
+                RenderPipeline.Builder builder = RenderPipeline.builder()
+                        .withLocation(Identifier.fromNamespaceAndPath(MetallumExtra.MOD_ID, "pipeline/internal/unpack_" + c))
+                        .withVertexShader(BLIT_VERTEX)
+                        .withFragmentShader(UNPACK_FRAGMENT)
+                        .withShaderDefine("COUNT", c)
+                        .withBindGroupLayout(BindGroupLayout.builder().withUniform("packedBuffers", UniformType.COMBINED_IMAGE_SAMPLER).build())
+                        .withPrimitiveTopology(PrimitiveTopology.TRIANGLES);
+                for (int i = 0; i < c; i++) builder.withColorTargetState(i, new ColorTargetState(Optional.empty(), GpuFormat.RGBA8_UNORM, ColorTargetState.WRITE_ALL));
+                return builder.build();
+            });
+            RenderPassDescriptor.Builder descriptor = RenderPassDescriptor.builder(() -> "Metallum Extra unpack buffers")
+                    .withRenderArea(new RenderPass.RenderArea(0, 0, TARGETS.width(), TARGETS.height()));
+            for (int buffer : buffers) descriptor.withColorAttachment(TARGETS.read(buffer));
+            try (RenderPass pass = RenderSystem.getDevice().createCommandEncoder().createRenderPass(descriptor.build())) {
+                pass.setPipeline(RenderSystem.getCompiledPipeline(pipeline));
+                pass.setUniform("packedBuffers", TARGETS.packedView(group), RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST));
+                pass.draw(3, 1, 0, 0);
+            }
+            passes++;
+        }
     }
 
     /** Draws one image into another of a different format, which a plain copy cannot do. */

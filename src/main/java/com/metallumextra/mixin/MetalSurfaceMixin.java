@@ -2,6 +2,7 @@ package com.metallumextra.mixin;
 
 import com.metallumextra.NonBlockingPresent;
 import com.metallumextra.FrameProfiler;
+import com.metallumextra.RunLog;
 import com.mojang.renderpearl.api.device.GpuSurface;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -20,5 +21,6 @@ public abstract class MetalSurfaceMixin {
     @Inject(method = "present", at = @At("RETURN"))
     private void metallumExtra$frameEnd(final CallbackInfo ci) {
         FrameProfiler.frameEnd();
+        RunLog.frame();
     }
 }

@@ -47,9 +47,13 @@ public final class IrisWorld {
     private static int passedThrough;
 
     /** What a shader id handed out stands for. */
-    public record Entry(int generation, IrisPlan.Step step, IrisWorldAdapter.Format format, Kind kind, int stage) {
+    public record Entry(int generation, IrisPlan.Step step, IrisWorldAdapter.Format format, Kind kind, int stage, int entity) {
+        public Entry(final int generation, final IrisPlan.Step step, final IrisWorldAdapter.Format format, final Kind kind, final int stage) {
+            this(generation, step, format, kind, stage, 0);
+        }
+
         public Entry(final int generation, final IrisPlan.Step step, final IrisWorldAdapter.Format format, final Kind kind) {
-            this(generation, step, format, kind, 0);
+            this(generation, step, format, kind, 0, 0);
         }
     }
 
@@ -57,6 +61,11 @@ public final class IrisWorld {
     public static volatile int skyStage;
     public static final int STAGE_SUN = 4;
     public static final int STAGE_MOON = 5;
+    /** The entity the game is preparing to draw, by its id in the pack's {@code entity.properties}; 0 for none (see ModelFeatureRendererEntityMixin). */
+    public static volatile int preparingEntity;
+    /** The pipelines of entities with an id, by the game's pipeline and then the id. A pipeline made here is drawn as it is (see {@link #pipelineFor}). */
+    private static final Map<RenderPipeline, Map<Integer, RenderPipeline>> ENTITY_VARIANTS = new ConcurrentHashMap<>();
+    private static final java.util.Set<RenderPipeline> ENTITY_MADE = java.util.Collections.newSetFromMap(new ConcurrentHashMap<>());
     private static final Map<RenderPipeline, Map<Integer, RenderPipeline>> SKY_VARIANTS = new java.util.HashMap<>();
 
     /** What a program is made to draw: the world, the shadow map, or the sky behind everything. */
@@ -80,6 +89,8 @@ public final class IrisWorld {
     /** Called when the plan changes or the pack is put away: the copies were made for the old one. */
     public static void forget() {
         VARIANTS.clear();
+        ENTITY_VARIANTS.clear();
+        ENTITY_MADE.clear();
         SKY_VARIANTS.clear();
         COPIES.clear();
         HAND_VARIANTS.clear();
@@ -104,6 +115,7 @@ public final class IrisWorld {
         // A copy this class made, handed in again (the pass was told twice, or the pack failed and the draw is retried): start from the game's.
         RenderPipeline original = COPIES.getOrDefault(given, given);
         if (!IrisPipeline.inUse()) return original;
+        if (ENTITY_MADE.contains(given)) return given;
         int phase = Shaders.phase();
         if (phase == Shaders.PHASE_SHADOW) return shadowPipelineFor(original);
         if (phase != Shaders.PHASE_WORLD && phase != Shaders.PHASE_HAND) return original;
@@ -113,7 +125,7 @@ public final class IrisWorld {
             IrisPlan skyPlan = IrisPipeline.currentPlan();
             if (skyPlan == null) return original;
             int stage = skyStage;
-            RenderPipeline skyMade = SKY_VARIANTS.computeIfAbsent(original, k -> new java.util.HashMap<>()).computeIfAbsent(stage, k -> make(original, skyPlan, false, stage));
+            RenderPipeline skyMade = SKY_VARIANTS.computeIfAbsent(original, k -> new java.util.HashMap<>()).computeIfAbsent(stage, k -> make(original, skyPlan, false, stage, 0));
             COPIES.put(skyMade, original);
             return skyMade;
         }
@@ -122,7 +134,7 @@ public final class IrisWorld {
         if (known != null) return known;
         IrisPlan plan = IrisPipeline.currentPlan();
         if (plan == null) return original;
-        RenderPipeline made = make(original, plan, hand, 0);
+        RenderPipeline made = make(original, plan, hand, 0, 0);
         variants.put(original, made);
         COPIES.put(made, original);
         return made;
@@ -246,6 +258,12 @@ public final class IrisWorld {
                 return IrisPlan.Use.CLOUDS;
             case "core/glint":
                 return IrisPlan.Use.GLINT;
+            case "core/rendertype_crumbling":
+                return IrisPlan.Use.DAMAGED_BLOCK;
+            case "core/rendertype_outline":
+                return IrisPlan.Use.GLOWING;
+            case "core/rendertype_lines":
+                return IrisPlan.Use.LINES;
             case "core/rendertype_beacon_beam":
                 return IrisPlan.Use.BEACON;
             case "core/rendertype_lightning":
@@ -299,6 +317,11 @@ public final class IrisWorld {
         } catch (RuntimeException e) {
             // A sky that cannot be drawn is never a crash: the pack is put aside, and the game draws its own sky from the next frame.
             sky = null;
+            // The group the draw opened is closed, or the pass is refused at its end for leaving one open.
+            try {
+                pass.popDebugGroup();
+            } catch (RuntimeException ignored) {
+            }
             if (!com.metallumextra.shader.pack.PackManager.fail(e)) throw e;
         }
         return true;
@@ -331,14 +354,34 @@ public final class IrisWorld {
         return builder;
     }
 
-    private static RenderPipeline make(final RenderPipeline original, final IrisPlan plan, final boolean hand, final int stage) {
+    /**
+     * The pipeline an entity with id {@code entity} draws with: the pack's program for it, with the id as a constant. The given pipeline when the entity has no
+     * id or the pack has no program for the kind of thing it is.
+     */
+    public static RenderPipeline entityPipelineFor(final RenderPipeline original, final int entity) {
+        if (entity == 0 || !IrisPipeline.inUse()) return original;
+        IrisPlan.Use use = classify(original);
+        if (use != IrisPlan.Use.ENTITY && use != IrisPlan.Use.ENTITY_TRANSLUCENT) return original;
+        IrisPlan plan = IrisPipeline.currentPlan();
+        if (plan == null) return original;
+        return ENTITY_VARIANTS.computeIfAbsent(original, k -> new ConcurrentHashMap<>()).computeIfAbsent(entity, id -> {
+            RenderPipeline made = make(original, plan, false, 0, id);
+            if (made != original) {
+                COPIES.put(made, original);
+                ENTITY_MADE.add(made);
+            }
+            return made;
+        });
+    }
+
+    private static RenderPipeline make(final RenderPipeline original, final IrisPlan plan, final boolean hand, final int stage, final int entity) {
         java.util.List<ColorTargetState> targets = original.getColorTargetStates();
         if (targets.isEmpty() || targets.get(0) == null || targets.get(0).format() != GpuFormat.RGBA8_UNORM) return original;
         // Terrain's pipelines are made with the pack's targets already (see SodiumTerrainPipelineMixin).
         if (targets.size() > 1) return original;
 
         IrisPlan.Use use = hand ? classifyHand(original) : classify(original);
-        String stageSuffix = stage == 0 ? "" : "_stage" + stage;
+        String stageSuffix = (stage == 0 ? "" : "_stage" + stage) + (entity == 0 ? "" : "_entity" + entity);
         IrisPlan.Step step = use == null ? null : plan.worldStep(use);
         IrisWorldAdapter.Format format = IrisWorldAdapter.Format.of(original);
         if (step != null) {
@@ -353,6 +396,14 @@ public final class IrisWorld {
                 }
             }
         }
+        // The outline pass has one attachment, the entity outline target: a glowing program writes only its first output, into it.
+        if (use == IrisPlan.Use.GLOWING) {
+            if (step == null) {
+                passedThrough++;
+                return original;
+            }
+            step = new IrisPlan.Step(step.program(), new int[] {0}, new boolean[] {false}, step.inputs(), step.uniforms(), step.compute());
+        }
         if (step == null && plan.worldBuffers().isEmpty()) {
             passedThrough++;
             return original;
@@ -363,7 +414,7 @@ public final class IrisWorld {
         Identifier fragment = fragmentOf(original);
         if (step != null) {
             String path = "iris_" + IrisPipeline.generation() + "_" + step.program().name() + "_" + location.replace('/', '_').replace(':', '_') + stageSuffix;
-            IDS.put(path, new Entry(IrisPipeline.generation(), step, format, Kind.WORLD, stage));
+            IDS.put(path, new Entry(IrisPipeline.generation(), step, format, Kind.WORLD, stage, entity));
             ORIGINALS.put(path, new Identifier[] {vertex, fragment});
             vertex = Identifier.fromNamespaceAndPath("minecraft", path);
             fragment = vertex;
@@ -371,12 +422,14 @@ public final class IrisWorld {
 
         RenderPipeline.Builder builder = copy(original, vertex, fragment, "pipeline/world/" + IrisPipeline.generation() + "/" + location + stageSuffix);
         builder.withColorTargetState(0, targets.get(0));
-        declareExtras(builder, plan, step);
+        if (use != IrisPlan.Use.GLOWING) declareExtras(builder, plan, step);
         substituted++;
         if (LOG) {
             MetallumExtra.LOGGER.info("[Metallum Extra] world pipeline {} -> {} (vertex {}, fragment {}, format {})", original.getLocation(), step == null ? "game shader" : step.program().name(), vertexOf(original), fragmentOf(original), original.getVertexFormatBindings());
         }
-        return builder.build();
+        RenderPipeline made = builder.build();
+        PipelineTrace.variant(original, made, step == null ? "none (the game's shader, with the pack's buffers)" : step.program().name());
+        return made;
     }
 
     /**
@@ -400,6 +453,8 @@ public final class IrisWorld {
             builder.withColorTargetState(0, new ColorTargetState(writesZero ? blend : Optional.empty(), zero.format(), writesZero ? zero.writeMask() : ColorTargetState.WRITE_NONE));
         }
         for (int buffer : plan.worldBuffers()) {
+            // A buffer packed with others has no attachment of its own (see below).
+            if (plan.packGroupOf(buffer) >= 0) continue;
             boolean writes = false;
             if (step != null) {
                 for (int written : step.writes()) writes |= written == buffer;
@@ -411,6 +466,19 @@ public final class IrisWorld {
                 else if (setting instanceof IrisPlan.BlendSetting.Default && buffer == step.writes()[0]) blend = blendOfFirst;
             }
             builder.withColorTargetState(plan.attachment(buffer), new ColorTargetState(blend, plan.buffers().get(buffer).format(), writes ? ColorTargetState.WRITE_ALL : ColorTargetState.WRITE_NONE));
+        }
+        // One attachment of four 32-bit integers for each group of packed buffers: the channels of the buffers the program writes are written, the others left as they are.
+        int[] channelBits = {ColorTargetState.WRITE_RED, ColorTargetState.WRITE_GREEN, ColorTargetState.WRITE_BLUE, ColorTargetState.WRITE_ALPHA};
+        for (int group = 0; group < plan.packGroups().size(); group++) {
+            int mask = ColorTargetState.WRITE_NONE;
+            if (step != null) {
+                for (int buffer : plan.packGroups().get(group)) {
+                    for (int written : step.writes()) {
+                        if (written == buffer) mask |= channelBits[plan.packChannelOf(buffer)];
+                    }
+                }
+            }
+            builder.withColorTargetState(plan.attachmentOfGroup(group), new ColorTargetState(Optional.empty(), GpuFormat.RGBA32_UINT, mask));
         }
     }
 }

@@ -3,6 +3,7 @@ package com.metallumextra.mixin.shader;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.metallumextra.shader.IrisWorld;
+import com.metallumextra.shader.PipelineTrace;
 import com.metallumextra.shader.PipelineOrigin;
 import com.metallumextra.shader.Shaders;
 import com.metallumextra.shader.pack.PackManager;
@@ -24,15 +25,19 @@ import java.util.List;
 @Mixin(FrontendRenderPass.class)
 public abstract class FrontendRenderPassShaderMixin {
     @Shadow @Final private List<?> colorAttachments;
+    @Shadow @Final private boolean hasDepthAttachment;
 
     @WrapMethod(method = "setPipeline")
     private void metallumExtra$packPipeline(final CompiledRenderPipeline pipeline, final Operation<Void> original) {
+        if (PipelineTrace.ON) PipelineTrace.catalogue();
         RenderPipeline origin = PipelineOrigin.of(pipeline);
         if (origin == null) {
+            PipelineTrace.unknown(pipeline, this.colorAttachments, this.hasDepthAttachment);
             original.call(pipeline);
             return;
         }
         RenderPipeline copy = IrisWorld.pipelineFor(origin);
+        PipelineTrace.pass(origin, copy, this.colorAttachments, this.hasDepthAttachment);
         // A pass the pack's buffers were not attached to (not the game's image) keeps the game's pipelines.
         if (copy == origin || copy.getColorTargetStates().size() != this.colorAttachments.size()) {
             original.call(pipeline);
@@ -41,10 +46,14 @@ public abstract class FrontendRenderPassShaderMixin {
         try {
             original.call(RenderSystem.getCompiledPipeline(copy));
         } catch (RuntimeException e) {
+            PipelineTrace.failed(origin, copy, e);
             if (!Shaders.active() || !PackManager.fail(com.metallumextra.shader.PipelineErrors.explain(e))) throw e;
             // The pack's copy of the pipeline is the one that failed: the game's own is drawn with for the rest of this frame (with the pack's buffers declared, since the pass has them).
+            // The plain copy declares the pack's buffers, and a pass the pack's buffers were not attached to (the shadow pass) would refuse it: the game's own
+            // pipeline is drawn with then. A refusal here would leave the pass open for the rest of the frame.
             RenderPipeline plain = IrisWorld.withoutPack(origin);
-            original.call(plain == origin ? pipeline : RenderSystem.getCompiledPipeline(plain));
+            boolean fits = plain != origin && plain.getColorTargetStates().size() == this.colorAttachments.size();
+            original.call(fits ? RenderSystem.getCompiledPipeline(plain) : pipeline);
         }
     }
 }

@@ -42,13 +42,17 @@ public interface ShaderPack {
      *
      * @throws IllegalStateException if the file or something it includes is not in the pack
      */
+    /** What a full-screen program with no vertex shader of its own gets, as in Iris: the corners of the screen and the coordinate to read the buffers by. */
+    String DEFAULT_VERTEX = "mx_default.vsh";
+    String DEFAULT_VERTEX_SOURCE = "#version 120\nvarying vec2 texcoord;\nvoid main() {\n    gl_Position = ftransform();\n    texcoord = (gl_TextureMatrix[0] * gl_MultiTexCoord0).xy;\n}\n";
+
     default String load(final String path) {
         return LoadCache.get(this, path);
     }
 
     /** {@link #load} without the memory of earlier loads. */
     default String loadUncached(final String path) {
-        String text = read(path);
+        String text = path.equals(DEFAULT_VERTEX) ? DEFAULT_VERTEX_SOURCE : read(path);
         if (text == null) throw new IllegalStateException("Shader pack " + name() + " has no " + path);
         StringBuilder out = new StringBuilder(text.length() + 4096);
         expand(text, path, out, new HashSet<>());
@@ -59,14 +63,20 @@ public interface ShaderPack {
         // The branches the options and macros decide are decided now, so that nothing downstream reads code the compiler would never see.
         Set<String> optionNames = new HashSet<>();
         for (PackOption option : options) optionNames.add(option.id());
-        text2 = GlslConditions.decide(withMacros(LegacyGlsl.spliceLines(text2)), optionNames);
+        text2 = LegacyGlsl.undefineRedefinitions(LegacyGlsl.withoutPrecision(LegacyGlsl.blankBlockComments(GlslConditions.decide(withMacros(LegacyGlsl.spliceLines(text2)), optionNames, ShaderMacros.builtin()))));
         try {
             // A program of the old compatibility profile of GLSL is read in the names of Iris from here on (see LegacyGlsl).
             LegacyGlsl.Kind kind = LegacyGlsl.Kind.of(path);
             // Iris offers the block atlas as gtexture, and also as tex and texture (the old name, which is a GLSL function once texture2D becomes texture(): renamed before that).
-            if (kind == LegacyGlsl.Kind.WORLD) text2 = LegacyGlsl.renameSampler(text2, "texture", "gtexture");
+            if (kind == LegacyGlsl.Kind.WORLD) text2 = LegacyGlsl.aliasSampler(text2, "texture", "gtexture");
+            else text2 = LegacyGlsl.aliasSampler(text2, "texture", "colortex0");
             String translated = LegacyGlsl.translate(text2, vertex, kind);
-            if (kind == LegacyGlsl.Kind.WORLD) translated = LegacyGlsl.renameSampler(translated, "tex", "gtexture");
+            if (kind == LegacyGlsl.Kind.WORLD) {
+                translated = LegacyGlsl.aliasSampler(translated, "tex", "gtexture");
+            } else {
+                translated = IrisUniforms.zeroWorldOnly(LegacyGlsl.aliasSampler(translated, "tex", "colortex0"));
+            }
+            if (vertex) translated = LegacyGlsl.zeroInputs(translated);
             return IrisUniforms.zeroUndefined(ProgramSet.withoutUnusedUniforms(LegacyGlsl.cppKeywords(LegacyGlsl.shadowSamplers(translated))));
         } catch (PackException e) {
             throw new IllegalStateException(path + ": " + e.getMessage(), e);

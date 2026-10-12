@@ -164,6 +164,7 @@ public final class ShaderSources {
                 String clean;
                 try (var t = com.metallumextra.ResourceLog.step("ad-buffer-formats", f)) {
                     clean = IrisPlan.withoutBufferFormats(text);
+                    clean = type == ShaderType.VERTEX ? GeometryStage.vertex(clean, program) : GeometryStage.fragment(clean, program, 0);
                 }
                 String adapted;
                 try (var t = com.metallumextra.ResourceLog.step("ad-terrain-adapt", f)) {
@@ -197,7 +198,8 @@ public final class ShaderSources {
             }
             try (var timer = com.metallumextra.ResourceLog.step("adapt-program", file)) {
                 if (text == null) return Optional.empty();
-                String source = IrisWorldAdapter.withRenderStage(IrisPlan.withoutBufferFormats(text), entry.stage());
+                String clean = type == ShaderType.VERTEX ? GeometryStage.vertex(text, program) : GeometryStage.fragment(text, program, entry.stage());
+                String source = IrisWorldAdapter.withEntityId(IrisWorldAdapter.withRenderStage(IrisPlan.withoutBufferFormats(clean), entry.stage()), entry.entity());
                 String adapted = entry.kind() == IrisWorld.Kind.SKY ? IrisWorldAdapter.adaptSky(source, type == ShaderType.VERTEX)
                         : IrisWorldAdapter.adapt(source, type == ShaderType.VERTEX, entry.format(), entry.kind() == IrisWorld.Kind.SHADOW);
                 if (type != ShaderType.VERTEX) {

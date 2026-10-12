@@ -28,6 +28,10 @@ public final class ExtraConfig {
     public final int summarySeconds;
     /** Cap on individual hitch lines in the game log per summary window (all hitches still go to the CSV). */
     public final int maxHitchLogsPerSummary;
+    /** The run log: every setting, each change to one, and the frame rate per settings combination (see {@link RunLog}). */
+    public final boolean runLogEnabled;
+    /** Seconds between the run log's frame-rate lines. */
+    public final int runLogPerfSeconds;
     /** With vsync off, skip presenting a frame instead of blocking when macOS has no swapchain image free. */
     public volatile boolean nonBlockingPresent;
     /** When the camera enters a new chunk section, update only the section slots that changed (vanilla rescans all). */
@@ -55,6 +59,8 @@ public final class ExtraConfig {
         this.hitchMultiplier = dbl(p, "profiler.hitchMultiplier", 4.0);
         this.summarySeconds = Math.max(1, (int) dbl(p, "profiler.summarySeconds", 10));
         this.maxHitchLogsPerSummary = Math.max(0, (int) dbl(p, "profiler.maxHitchLogsPerSummary", 10));
+        this.runLogEnabled = bool(p, "runlog.enabled", true);
+        this.runLogPerfSeconds = Math.max(1, (int) dbl(p, "runlog.perfSeconds", 5));
         this.nonBlockingPresent = bool(p, "fix.nonBlockingPresent", true);
         this.fastSectionRecenter = bool(p, "fix.fastSectionRecenter", true);
         this.spreadSodiumCleanup = bool(p, "fix.spreadSodiumCleanup", true);
@@ -194,6 +200,14 @@ public final class ExtraConfig {
                 profiler.summarySeconds=%d
                 profiler.maxHitchLogsPerSummary=%d
 
+                # --- Run log (on by default) ---
+                # Writes <minecraft folder>/metallum-extra/runlog-<time>.log for each launch: every setting at the
+                # start (vanilla options, window size and focus, Sodium, this mod), each one that changes, and the
+                # frame rate per combination of render distance, resolution, transparency, shaders and focus.
+                runlog.enabled=%s
+                # Seconds between frame-rate lines in the run log.
+                runlog.perfSeconds=%d
+
                 # --- Shaders (switch live; need Sodium) ---
                 # Metallum Extra's own lighting: sun and moon light with shadows, a new sky, lit water with
                 # reflections, sun rays, and glow around bright things. Off by default. What the shaders show
@@ -236,7 +250,7 @@ public final class ExtraConfig {
                 # is out of bounds"). This renumbers the samplers of such shaders. Others are untouched.
                 compat.manyTextures=%s
                 """.formatted(profilerEnabled, hitchMinMs, hitchMultiplier, summarySeconds, maxHitchLogsPerSummary,
-                shadersEnabled, shaderPack.replace("\\", "\\\\"), shaderMessages, upscaleMode.name(), packLines, nonBlockingPresent, fastSectionRecenter, spreadSodiumCleanup,
+                runLogEnabled, runLogPerfSeconds, shadersEnabled, shaderPack.replace("\\", "\\\\"), shaderMessages, upscaleMode.name(), packLines, nonBlockingPresent, fastSectionRecenter, spreadSodiumCleanup,
                 manyTextures);
         try {
             Files.createDirectories(file.getParent());

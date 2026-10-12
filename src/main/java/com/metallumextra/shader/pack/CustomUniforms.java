@@ -82,7 +82,14 @@ public final class CustomUniforms {
                 if (vector) {
                     // vecN(a, b ...): each component is an expression of its own.
                     String value = entry.getValue().trim();
-                    if (!value.startsWith(type + "(") || !value.endsWith(")")) throw new PackException("a " + type + " is written " + type + "(a, b ...)");
+                    if (!value.startsWith(type + "(") || !value.endsWith(")") || !balancedAsOneCall(value, type.length())) {
+                        // Anything else is worked out for each component alone: a vector name stands for its own component, so -sunVector and sunVector * 2 are vectors too.
+                        int size = type.charAt(3) - '0';
+                        Node[] each = new Node[size];
+                        for (int k = 0; k < size; k++) each[k] = new Parser(value, result, constant, k).parse();
+                        result.entries.add(new Entry(type, parts[2], each[0], variable, each));
+                        continue;
+                    }
                     String inside = value.substring(type.length() + 1, value.length() - 1);
                     List<Node> nodes = new ArrayList<>();
                     int depth = 0, from = 0;
@@ -109,6 +116,17 @@ public final class CustomUniforms {
         return result;
     }
 
+    /** Whether the {@code (} at {@code open} closes at the very end of the text: {@code vec3(a, b, c)} is one call, {@code vec3(a) * vec3(b)} is not. */
+    private static boolean balancedAsOneCall(final String text, final int open) {
+        int depth = 0;
+        for (int i = open; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '(') depth++;
+            else if (c == ')' && --depth == 0) return i == text.length() - 1;
+        }
+        return false;
+    }
+
     /** The uniforms (not the variables) a program may declare. */
     public List<Def> uniforms() {
         List<Def> result = new ArrayList<>();
@@ -127,6 +145,7 @@ public final class CustomUniforms {
                 double[] vector = new double[entry.components.length];
                 for (int i = 0; i < vector.length; i++) vector[i] = entry.components[i].eval(context);
                 custom.put(entry.name, vector[0]);
+                for (int i = 1; i < vector.length; i++) custom.put(entry.name + "#" + i, vector[i]);
                 if (!entry.variable) values.put(entry.name, vector);
                 continue;
             }
@@ -144,9 +163,9 @@ public final class CustomUniforms {
             Map.entry("abs", Math::abs), Map.entry("sqrt", Math::sqrt), Map.entry("floor", Math::floor), Map.entry("ceil", Math::ceil),
             Map.entry("round", v -> (double) Math.round(v)), Map.entry("exp", Math::exp), Map.entry("log", Math::log), Map.entry("log10", Math::log10),
             Map.entry("sin", Math::sin), Map.entry("cos", Math::cos), Map.entry("tan", Math::tan), Map.entry("asin", Math::asin), Map.entry("acos", Math::acos),
-            Map.entry("atan", Math::atan), Map.entry("radians", Math::toRadians), Map.entry("degrees", Math::toDegrees), Map.entry("signum", Math::signum),
+            Map.entry("atan", Math::atan), Map.entry("radians", Math::toRadians), Map.entry("degrees", Math::toDegrees), Map.entry("torad", Math::toRadians), Map.entry("todeg", Math::toDegrees), Map.entry("signum", Math::signum),
             Map.entry("frac", v -> v - Math.floor(v)), Map.entry("fract", v -> v - Math.floor(v)), Map.entry("saturate", v -> Math.max(0.0, Math.min(1.0, v))));
-    private static final Map<String, DoubleBinaryOperator> BINARY = Map.of("min", Math::min, "max", Math::max, "pow", Math::pow, "atan2", Math::atan2, "mod", (a, b) -> a - b * Math.floor(a / b));
+    private static final Map<String, DoubleBinaryOperator> BINARY = Map.of("min", Math::min, "max", Math::max, "pow", Math::pow, "atan2", Math::atan2, "mod", (a, b) -> a - b * Math.floor(a / b), "fmod", (a, b) -> a - b * Math.floor(a / b));
 
     private static final class Parser {
         private final String text;
@@ -154,7 +173,14 @@ public final class CustomUniforms {
         private final CustomUniforms owner;
         private final java.util.function.Function<String, @Nullable Double> constant;
 
+        private final int defaultComponent;
+
         Parser(final String text, final CustomUniforms owner, final java.util.function.Function<String, @Nullable Double> constant) {
+            this(text, owner, constant, 0);
+        }
+
+        Parser(final String text, final CustomUniforms owner, final java.util.function.Function<String, @Nullable Double> constant, final int defaultComponent) {
+            this.defaultComponent = defaultComponent;
             this.text = text;
             this.owner = owner;
             this.constant = constant;
@@ -350,7 +376,7 @@ public final class CustomUniforms {
         }
 
         private Node reference(final String name, final @Nullable String component) throws PackException {
-            int index = component == null ? 0 : "xyzw".indexOf(component.charAt(0)) >= 0 ? "xyzw".indexOf(component.charAt(0)) : "rgba".indexOf(component.charAt(0));
+            int index = component == null ? defaultComponent : "xyzw".indexOf(component.charAt(0)) >= 0 ? "xyzw".indexOf(component.charAt(0)) : "rgba".indexOf(component.charAt(0));
             if (component != null && (component.length() != 1 || index < 0)) throw new PackException("the component ." + component + " is not x, y, z or w");
             switch (name) {
                 case "true":
@@ -366,7 +392,7 @@ public final class CustomUniforms {
             // A name that is neither a uniform nor an earlier variable is one of the constants the game supplies (a biome): asked when it is used, because
             // the game's registries may not exist yet when the pack is read.
             return c -> {
-                Double custom = c.custom.get(name);
+                Double custom = c.custom.get(index > 0 ? name + "#" + index : name);
                 if (custom != null) return custom;
                 double[] value = c.values.get(name);
                 if (value != null) return index < value.length ? value[index] : 0.0;
@@ -385,6 +411,11 @@ public final class CustomUniforms {
             DoubleBinaryOperator binary = BINARY.get(name);
             if (binary != null && a.size() == 2) return c -> binary.applyAsDouble(a.get(0).eval(c), a.get(1).eval(c));
             switch (name) {
+                case "random" -> {
+                    // OptiFine's random(): a new number from 0 to 1 each time it is worked out.
+                    if (!a.isEmpty()) throw new PackException("random takes nothing");
+                    return c -> java.util.concurrent.ThreadLocalRandom.current().nextDouble();
+                }
                 case "if" -> {
                     // if(cond, then, [cond2, then2, ...] else)
                     if (a.size() < 3 || a.size() % 2 == 0) throw new PackException("if needs a condition, a value, and an else value");

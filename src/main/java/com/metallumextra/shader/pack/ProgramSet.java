@@ -145,8 +145,11 @@ public final class ProgramSet {
                 unsupported.add(name + " (needs shadow maps)");
                 continue;
             }
-            programs.add(new Program(name, stage, numberOf(name), find(files, dimension, name, "vsh"), find(files, dimension, name, "fsh"),
-                    find(files, dimension, name, "gsh") != null));
+            String vertex = find(files, dimension, name, "vsh");
+            String fragment = find(files, dimension, name, "fsh");
+            // Without a vertex shader a full-screen program gets the default one, as in Iris; a program without a fragment shader draws nothing and is left out.
+            if (vertex == null && fragment != null && stage != Stage.GBUFFERS && stage != Stage.SHADOW) vertex = ShaderPack.DEFAULT_VERTEX;
+            programs.add(new Program(name, stage, numberOf(name), vertex, fragment, find(files, dimension, name, "gsh") != null));
         }
         programs.sort(java.util.Comparator.comparing(Program::stage).thenComparingInt(Program::number).thenComparingInt(Program::letter));
         unsupported.sort(String::compareTo);
@@ -238,6 +241,40 @@ public final class ProgramSet {
         return value == null ? null : value.strip();
     }
 
+    /** The path a program reads a custom image by (see {@link #customImages}): {@code mx:image:<name>}, which the pipeline resolves to the image itself. */
+    public static final String IMAGE_PATH = "mx:image:";
+
+    /**
+     * A picture a compute program reads or writes by name, declared as {@code image.<name> = <sampler> <channels> <internal format> <type> <clear> <relative>
+     * <size ...>} (one to three sizes; as fractions of the screen when relative). {@code sampler} is the name a program reads it by as a texture, if any.
+     */
+    public record CustomImage(String name, String sampler, String internal, boolean clear, boolean relative, float[] sizes) {
+    }
+
+    /** The custom images the pack declares, by name, in the order of shaders.properties; one with a malformed declaration is left out. */
+    public List<CustomImage> customImages() {
+        List<CustomImage> result = new ArrayList<>();
+        for (String key : new java.util.TreeSet<>(properties.stringPropertyNames())) {
+            if (!key.startsWith("image.")) continue;
+            String[] parts = property(key).split("\\s+");
+            if (parts.length < 7 || parts.length > 9) continue;
+            try {
+                float[] sizes = new float[parts.length - 6];
+                for (int i = 0; i < sizes.length; i++) sizes[i] = Float.parseFloat(parts[6 + i]);
+                result.add(new CustomImage(key.substring("image.".length()), parts[0], parts[2], parts[4].equals("true"), parts[5].equals("true"), sizes));
+            } catch (NumberFormatException e) {
+                // Not a size: the declaration is ignored, as a missing one would be.
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    /** The custom image a pack declares for a sampler, which the program reads as {@link #IMAGE_PATH}{@code <name>}; null when none does. */
+    private @Nullable String imageFor(final String sampler) {
+        for (CustomImage image : customImages()) if (image.sampler().equals(sampler)) return IMAGE_PATH + image.name();
+        return null;
+    }
+
     /**
      * The picture a pack gives a sampler in a stage: {@code texture.<stage>.<sampler>=<path>} in {@code shaders.properties}, or {@code texture.noise} for
      * {@code noisetex} everywhere. The stage is begin, prepare, shadow, deferred, composite (which includes final) or gbuffers. Null when there is none.
@@ -265,10 +302,13 @@ public final class ProgramSet {
             }
         }
         if (value == null && sampler.equals("noisetex")) value = property("texture.noise");
+        // customTexture.<sampler> gives a sampler a picture in every stage.
+        if (value == null) value = property("customTexture." + sampler);
+        if (value == null) value = imageFor(sampler);
         if (value == null || value.isBlank()) return null;
         String path = TextureSpec.pathOf(value);
         // A picture, or a file of raw numbers that says how to read it.
-        return path.endsWith(".png") || TextureSpec.parse(value) != null ? value.trim() : null;
+        return value.startsWith(IMAGE_PATH) || path.endsWith(".png") || TextureSpec.parse(value) != null ? value.trim() : null;
     }
 
     /** The programs of the pack that can be run here, in the order they run in, with their files present and not switched off. */
@@ -373,7 +413,7 @@ public final class ProgramSet {
         return result;
     }
 
-    /** Programs with a geometry shader, which this version cannot run. */
+    /** Programs with a geometry shader. Their geometry stage is not run. */
     public List<String> withGeometry() {
         List<String> result = new ArrayList<>();
         for (Program program : runnable()) {
@@ -427,11 +467,8 @@ public final class ProgramSet {
         List<String> others = new ArrayList<>();
         for (String dimension : DIMENSIONS) {
             ProgramSet set = discover(pack, dimension);
-            for (String name : set.incomplete()) {
-                throw new PackException(name + " needs both " + name + ".vsh and " + name + ".fsh");
-            }
             for (String name : set.withGeometry()) {
-                throw new PackException(name + " has a geometry shader, which this version cannot run yet");
+                MetallumExtra.LOGGER.warn("[Metallum Extra] {} has a geometry shader, which is not run: the program runs without it", name);
             }
             if (!set.runnable().isEmpty()) {
                 any = true;

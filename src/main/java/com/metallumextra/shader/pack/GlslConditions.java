@@ -65,7 +65,7 @@ public final class GlslConditions {
      * @param options the names of the pack's options: each is known, and defined or not as the text says
      */
     public static String strip(final String source, final Set<String> options) {
-        return process(source, options, false);
+        return process(source, options, false, Map.of());
     }
 
     /**
@@ -73,11 +73,16 @@ public final class GlslConditions {
      * be decided (a name the game defines when it compiles) is left exactly as written, with both of its sides, for the compiler's preprocessor to decide.
      */
     public static String decide(final String source, final Set<String> options) {
-        return process(source, options, true);
+        return process(source, options, true, Map.of());
     }
 
-    private static String process(final String source, final Set<String> options, final boolean keepOpen) {
-        Map<String, String> defined = new HashMap<>();
+    /** As {@link #decide(String, Set)}, with names already defined before the first line (the loader's macros, which a program may test above its {@code #version}). */
+    public static String decide(final String source, final Set<String> options, final Map<String, String> predefined) {
+        return process(source, options, true, predefined);
+    }
+
+    private static String process(final String source, final Set<String> options, final boolean keepOpen, final Map<String, String> predefined) {
+        Map<String, String> defined = new HashMap<>(predefined);
         // Names defined only where a condition that cannot be decided has them: they may or may not be, so a condition on one cannot be decided either.
         Set<String> maybe = new java.util.HashSet<>();
         String[] lines = source.split("\n", -1);
@@ -87,12 +92,40 @@ public final class GlslConditions {
         boolean[] keptLine = new boolean[lines.length];
         Deque<Level> stack = new ArrayDeque<>();
         boolean kept = true;
+        // The preprocessor reads comments before directives: what a /* */ comment holds is no directive (a pack comments out code that has #ifdef in it),
+        // and a line that only carries comment stays whatever group it is in, so that a comment always ends where it did.
+        boolean[] inComment = new boolean[lines.length];
+        boolean[] commentOnly = new boolean[lines.length];
+        boolean block = false;
+        for (int i = 0; i < lines.length; i++) {
+            inComment[i] = block;
+            StringBuilder code = new StringBuilder();
+            String line = lines[i];
+            for (int k = 0; k < line.length(); k++) {
+                char c = line.charAt(k);
+                if (block) {
+                    if (c == '*' && k + 1 < line.length() && line.charAt(k + 1) == '/') {
+                        block = false;
+                        k++;
+                    }
+                } else if (c == '/' && k + 1 < line.length() && line.charAt(k + 1) == '*') {
+                    block = true;
+                    k++;
+                } else if (c == '/' && k + 1 < line.length() && line.charAt(k + 1) == '/') {
+                    break;
+                } else {
+                    code.append(c);
+                }
+            }
+            // Only a comment that runs over lines is kept whatever group it is in; one that begins and ends on its line (/* RENDERTARGETS: 0 */) belongs to its group.
+            commentOnly[i] = (inComment[i] || block) && code.toString().isBlank();
+        }
         for (int i = 0; i < lines.length; i++) {
             String line = lines[i];
-            Matcher match = line.indexOf('#') < 0 ? null : DIRECTIVE.matcher(line);
+            Matcher match = inComment[i] || line.indexOf('#') < 0 ? null : DIRECTIVE.matcher(line);
             boolean isDirective = match != null && match.matches();
             String kind = isDirective ? match.group(1) : "";
-            String rest = isDirective ? match.group(2).strip() : "";
+            String rest = isDirective ? match.group(2).replaceAll("/\\*.*?\\*/|//.*$", "").strip() : "";
             directive[i] = isDirective && !kind.equals("define") && !kind.equals("undef");
             switch (kind) {
                 case "ifdef", "ifndef", "if" -> {
@@ -155,7 +188,7 @@ public final class GlslConditions {
                 default -> {
                 }
             }
-            keptLine[i] = kept;
+            keptLine[i] = kept || commentOnly[i];
         }
         StringBuilder out = new StringBuilder(source.length());
         for (int i = 0; i < lines.length; i++) {

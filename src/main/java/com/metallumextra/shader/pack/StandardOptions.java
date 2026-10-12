@@ -70,7 +70,8 @@ public final class StandardOptions {
     }
 
     private static final Pattern TOGGLE_LINE = Pattern.compile("^([ \\t]*)(?://[ \\t]*)?#define[ \\t]+([A-Za-z_]\\w*)\\b[ \\t]*((?://.*)?)$");
-    private static final Pattern VALUE_LINE = Pattern.compile("^([ \\t]*#define[ \\t]+)([A-Za-z_]\\w*)([ \\t]+)\\S+");
+    private static final Pattern ANNOTATED = Pattern.compile("//\\s*\\[");
+    private static final Pattern VALUE_LINE = Pattern.compile("^([ \\t]*#define[ \\t]+)([A-Za-z_]\\w*)([ \\t]+)(?:(?!//)\\S)+");
     private static final Pattern CONSTANT_LINE = Pattern.compile("(const[ \\t]+(?:int|float|bool)[ \\t]+)([A-Za-z_]\\w*)([ \\t]*=[ \\t]*)[^;\\n]+;");
 
     /**
@@ -101,17 +102,22 @@ public final class StandardOptions {
         Matcher match = TOGGLE_LINE.matcher(line);
         if (match.matches()) {
             PackOption option = byName.get(match.group(2));
-            if (option != null && option.toggle()) {
+            // Only an option the player changed is written into the files, as Iris does: every other line stays as the pack wrote it (a pack comments a define out in one file
+            // and leaves it on in another).
+            if (option != null && option.toggle() && chosen.get(option.id()) != option.defaultIndex()) {
                 boolean on = chosen.get(option.id()) == 1;
                 return match.group(1) + (on ? "" : "//") + "#define " + option.id() + (match.group(3).isEmpty() ? "" : " " + match.group(3));
             }
             return line;
         }
+        // Only a line that is the declaration of an option, with its list of values in a comment, takes the player's choice: a pack may define the same name again
+        // further down (to settle an "automatic" value), and that line is its own.
+        if (!ANNOTATED.matcher(line).find()) return line;
         String result = line;
         match = VALUE_LINE.matcher(result);
         if (match.find()) {
             PackOption option = byName.get(match.group(2));
-            if (option != null && !option.toggle()) {
+            if (option != null && !option.toggle() && chosen.get(option.id()) != option.defaultIndex()) {
                 result = match.group(1) + match.group(2) + match.group(3) + option.values().get(chosen.get(option.id())) + result.substring(match.end());
             }
         }
@@ -119,7 +125,7 @@ public final class StandardOptions {
         StringBuilder replaced = new StringBuilder();
         while (match.find()) {
             PackOption option = byName.get(match.group(2));
-            String replacement = option != null && !option.toggle() ? match.group(1) + match.group(2) + match.group(3) + option.values().get(chosen.get(option.id())) + ";" : match.group();
+            String replacement = option != null && !option.toggle() && chosen.get(option.id()) != option.defaultIndex() ? match.group(1) + match.group(2) + match.group(3) + option.values().get(chosen.get(option.id())) + ";" : match.group();
             match.appendReplacement(replaced, Matcher.quoteReplacement(replacement));
         }
         match.appendTail(replaced);

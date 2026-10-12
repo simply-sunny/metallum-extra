@@ -131,11 +131,20 @@ public final class IrisPlan {
         HAND_WATER("gbuffers_hand_water", "gbuffers_hand", "gbuffers_textured_lit", "gbuffers_textured", "gbuffers_basic"),
         /** The glowing parts of mobs (eyes of spiders and endermen, a charged creeper's glow). */
         EYES("gbuffers_spidereyes", "gbuffers_textured", "gbuffers_basic"),
+        /**
+         * The outline the game draws round glowing entities. It is drawn into the entity outline target, which the game composites over the frame, so the
+         * program's output goes there and nowhere else (see {@code IrisWorld#make}).
+         */
+        GLOWING("gbuffers_entities_glowing"),
         CLOUDS("gbuffers_clouds", "gbuffers_textured", "gbuffers_basic"),
         /** The shimmer of an enchanted item or armour. */
         GLINT("gbuffers_armor_glint", "gbuffers_textured", "gbuffers_basic"),
         /** The beam of a beacon. */
         BEACON("gbuffers_beaconbeam", "gbuffers_textured", "gbuffers_basic"),
+        /** The cracks the game draws over a block being broken. */
+        DAMAGED_BLOCK("gbuffers_damagedblock", "gbuffers_textured", "gbuffers_basic"),
+        /** Lines: the outline of the block the player looks at, the debug boxes and the like. */
+        LINES("gbuffers_line", "gbuffers_basic"),
         /** A bolt of lightning (Iris falls back to the entities' program). */
         LIGHTNING("gbuffers_lightning", "gbuffers_entities", "gbuffers_textured_lit", "gbuffers_textured", "gbuffers_basic"),
         /** The sky behind everything, drawn over the whole screen in place of the game's disc, sunrise fan and dark disc. */
@@ -194,7 +203,7 @@ public final class IrisPlan {
     private int shadowResolution = 1024;
     private float shadowDistance = 160.0F;
     private final Map<String, String> vertexSources = new TreeMap<>();
-    private final Set<Integer> worldBuffers = new java.util.TreeSet<>();
+    private final java.util.TreeSet<Integer> worldBuffers = new java.util.TreeSet<>();
     private final List<Input> worldSlots = new ArrayList<>();
     private boolean usesBlockIds;
 
@@ -225,6 +234,11 @@ public final class IrisPlan {
     /** Every color buffer the programs touch, and how it is stored; nothing else is allocated. */
     public Map<Integer, Buffer> buffers() {
         return buffers;
+    }
+
+    /** The custom images the pack declares (see {@link ProgramSet#customImages}). */
+    public List<ProgramSet.CustomImage> customImages() {
+        return programs().customImages();
     }
 
     /** Whether any program samples {@code depthtex<n>} (0: everything, 1: without translucent terrain, 2: without the hand too). */
@@ -526,7 +540,19 @@ public final class IrisPlan {
                 inputs.add(made);
                 continue;
             }
-            Input made = gbuffers ? gbufferInput(program, sampler, shadow) : input(program, sampler);
+            Input made;
+            try {
+                made = gbuffers ? gbufferInput(program, sampler, shadow) : input(program, sampler);
+            } catch (PackException e) {
+                // A sampler of no name this version knows reads a white picture (zeros for a 3D one), as one that nothing is bound to does in Iris; only a mistake in a name
+                // it does know (a colortex that does not exist) is an error.
+                String neutral = e.getMessage().contains("cannot provide") ? neutralTexture(declared.getValue()) : null;
+                if (neutral == null) throw e;
+                made = new Input(sampler, CUSTOM, -1, neutral);
+                if (gbuffers) slotFor(made);
+                inputs.add(made);
+                continue;
+            }
             // The ones read through the game's passes (see ShaderBindings) that are not one of its fixed bindings get a slot of their own.
             if (gbuffers && made.colorBuffer >= 1) slotFor(made);
             inputs.add(made);
@@ -573,7 +599,7 @@ public final class IrisPlan {
         if (!shadow && sampler.equals("MxLightColors")) return new Input(sampler, LIGHT_COLORS, -1);
         if (sampler.equals("DissolveMaskSampler")) return new Input(sampler, -1, -1);
         if (sampler.equals("texture")) throw new PackException(program.name() + " names its atlas sampler 'texture', which is also a GLSL function; use gtexture");
-        if (!shadow && sampler.matches("shadowtex[01]")) return new Input(sampler, SHADOW_DEPTH, -1);
+        if (!shadow && sampler.matches("shadowtex[01]|shadow|watershadow")) return new Input(sampler, SHADOW_DEPTH, -1);
         if (!shadow && sampler.equals("shadowcolor0")) return new Input(sampler, SHADOW_COLOR, -1);
         if (!shadow && sampler.equals("shadowcolor1")) return new Input(sampler, SHADOW_COLOR1, -1);
         // Every program that draws the world may bind the depth of the world so far and the buffers the passes before it wrote, as in Iris.
@@ -588,6 +614,15 @@ public final class IrisPlan {
         throw new PackException(program.name() + " reads " + sampler + ", which this version cannot provide to the programs that draw the world yet");
     }
 
+    /** The picture a sampler with nothing bound to it reads. */
+    private static @Nullable String neutralTexture(final String samplerType) {
+        return switch (samplerType) {
+            case "sampler2D" -> "mx:white";
+            case "sampler3D" -> "mx:zero TEXTURE_3D RGBA8 1 1 1 RGBA BYTE";
+            default -> null;
+        };
+    }
+
     /** {@link Input#colorBuffer} of the shadow map's depth and of its color. */
     public static final int SHADOW_DEPTH = -2;
     public static final int SHADOW_COLOR = -3;
@@ -598,9 +633,13 @@ public final class IrisPlan {
     /** The compatibility profile is named in the error until the next step translates it. */
     private static void rejectLegacy(final ProgramSet.Program program, final String vertex, final String fragment) throws PackException {
         for (String source : List.of(vertex, fragment)) {
-            Matcher match = LEGACY.matcher(COMMENTS.matcher(source).replaceAll(""));
+            String code = COMMENTS.matcher(source).replaceAll("");
+            Matcher match = LEGACY.matcher(code);
             if (match.find()) {
-                throw new PackException(program.name() + " uses " + match.group(1) + ", from the old compatibility profile of GLSL, which this version cannot read yet (use #version 330 core with in/out)");
+                int from = code.lastIndexOf('\n', match.start()) + 1;
+                int to = code.indexOf('\n', match.end());
+                String line = code.substring(from, to < 0 ? code.length() : to).strip();
+                throw new PackException(program.name() + " (" + (source == vertex ? "vertex" : "fragment") + ") uses " + match.group(1) + ", from the old compatibility profile of GLSL, which this version cannot read yet (use #version 330 core with in/out): " + (line.length() > 120 ? line.substring(0, 120) : line));
             }
         }
     }
@@ -632,7 +671,8 @@ public final class IrisPlan {
             return new Input(sampler, index, -1);
         }
         if (sampler.matches("depthtex[012]")) return new Input(sampler, -1, sampler.charAt(8) - '0');
-        if (sampler.matches("shadowtex[01]")) return new Input(sampler, SHADOW_DEPTH, -1);
+        // "shadow" and "watershadow" are the old names of shadowtex0 and shadowtex1.
+        if (sampler.matches("shadowtex[01]") || sampler.equals("shadow") || sampler.equals("watershadow")) return new Input(sampler, SHADOW_DEPTH, -1);
         if (sampler.equals("shadowcolor0")) return new Input(sampler, SHADOW_COLOR, -1);
         if (sampler.equals("shadowcolor1")) return new Input(sampler, SHADOW_COLOR1, -1);
         throw new PackException(program.name() + " reads " + sampler + ", which this version cannot provide yet");
@@ -708,9 +748,27 @@ public final class IrisPlan {
             }
         }
         // Metal draws into eight attachments at most: the buffers the programs of the world write, with colortex0, must fit (any of the sixteen may be among them).
-        if (worldBuffers.size() + 1 > MAX_OUTPUTS) {
-            throw new PackException("the programs that draw the world write " + (worldBuffers.size() + 1) + " different buffers (colortex0 and colortex" + worldBuffers
-                    + "), but Metal can draw into " + MAX_OUTPUTS + " at once");
+        // When they do not, 8-bit buffers are packed four to an attachment of four 32-bit integers (see PackedBuffers) and unpacked once the world is drawn.
+        int excess = worldBuffers.size() + 1 - MAX_OUTPUTS;
+        if (excess > 0) {
+            List<Integer> candidates = new ArrayList<>();
+            for (int buffer : worldBuffers.descendingSet()) {
+                if (packable(buffer)) candidates.add(buffer);
+            }
+            int saved = 0;
+            while (saved < excess && candidates.size() >= 2) {
+                int size = Math.min(PACK_SIZE, candidates.size());
+                List<Integer> group = new ArrayList<>(candidates.subList(0, size));
+                candidates.subList(0, size).clear();
+                group.sort(null);
+                packGroups.add(group);
+                saved += size - 1;
+            }
+            if (saved < excess) {
+                packGroups.clear();
+                throw new PackException("the programs that draw the world write " + (worldBuffers.size() + 1) + " different buffers (colortex0 and colortex" + worldBuffers
+                        + "), but Metal can draw into " + MAX_OUTPUTS + " at once, and not enough of them can be packed together");
+            }
         }
     }
 
@@ -775,12 +833,66 @@ public final class IrisPlan {
      */
     public int attachment(final int buffer) {
         if (buffer == 0) return 0;
+        int group = packGroupOf(buffer);
+        if (group >= 0) return 1 + unpackedCount() + group;
         int at = 1;
         for (int b : worldBuffers) {
+            if (packGroupOf(b) >= 0) continue;
             if (b == buffer) return at;
             at++;
         }
         return buffer;
+    }
+
+    /** How many buffers go in a packed attachment at most: four 8-bit buffers fill the four 32-bit channels of one. */
+    public static final int PACK_SIZE = 4;
+    private final List<List<Integer>> packGroups = new ArrayList<>();
+
+    /** Whether a buffer of the world can share an attachment: 8-bit, cleared to zero every frame, read by no program of the world, written by no other stage before the composites. */
+    private boolean packable(final int buffer) {
+        Buffer spec = buffers.get(buffer);
+        if (spec == null || spec.format() != GpuFormat.RGBA8_UNORM || !spec.clear() || spec.scaleX() != 1.0F || spec.scaleY() != 1.0F || spec.width() != 0) return false;
+        if (spec.clearColor() != null) {
+            for (float c : spec.clearColor()) if (c != 0.0F) return false;
+        }
+        for (ProgramSet.Stage stage : ProgramSet.Stage.values()) {
+            for (Step step : stages.get(stage.ordinal())) {
+                if (stage == ProgramSet.Stage.GBUFFERS) {
+                    for (Input input : step.inputs()) if (input.colorBuffer() == buffer) return false;
+                } else if (stage != ProgramSet.Stage.COMPOSITE && stage != ProgramSet.Stage.FINAL) {
+                    for (int written : step.writes()) if (written == buffer) return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    /** The groups of buffers that share an attachment; each is one attachment of four 32-bit integers, one for each buffer. */
+    public List<List<Integer>> packGroups() {
+        return packGroups;
+    }
+
+    /** The group {@code buffer} is packed in, or -1. */
+    public int packGroupOf(final int buffer) {
+        for (int g = 0; g < packGroups.size(); g++) if (packGroups.get(g).contains(buffer)) return g;
+        return -1;
+    }
+
+    /** Which of its group's four channels {@code buffer} is in. */
+    public int packChannelOf(final int buffer) {
+        int g = packGroupOf(buffer);
+        return g < 0 ? -1 : packGroups.get(g).indexOf(buffer);
+    }
+
+    private int unpackedCount() {
+        int count = 0;
+        for (int b : worldBuffers) if (packGroupOf(b) < 0) count++;
+        return count;
+    }
+
+    /** The attachment of a packed group. */
+    public int attachmentOfGroup(final int group) {
+        return 1 + unpackedCount() + group;
     }
 
     private void settleBuffers(final Map<String, String> fragments) throws PackException {
@@ -843,7 +955,18 @@ public final class IrisPlan {
     }
 
     private GpuFormat format(final String program, final int buffer, final String name) throws PackException {
-        GpuFormat format = switch (name) {
+        GpuFormat format = formatNamed(name);
+        if (format == null) throw new PackException(program + " gives colortex" + buffer + " the format " + name + ", which this version does not support");
+        if (name.matches("RGB(8|16|32)(F|UI|I)?(_SNORM)?")) {
+            notes.add("colortex" + buffer + " is " + name + "; stored with four channels (" + format.name() + ") because Metal has no three-channel or packed formats here");
+        }
+        return format;
+    }
+
+    /** The Metal-side format of a GL internal format name ({@code RGBA16F}, {@code R32UI} ...), or null when this version has none. Case does not matter. */
+    public static @Nullable GpuFormat formatNamed(final String text) {
+        String name = text.toUpperCase(java.util.Locale.ROOT);
+        return switch (name) {
             case "R8" -> GpuFormat.R8_UNORM;
             case "RG8" -> GpuFormat.RG8_UNORM;
             case "RGBA8", "RGB8" -> GpuFormat.RGBA8_UNORM;
@@ -864,13 +987,28 @@ public final class IrisPlan {
             case "R32F" -> GpuFormat.R32_FLOAT;
             case "RG32F" -> GpuFormat.RG32_FLOAT;
             case "RGBA32F", "RGB32F" -> GpuFormat.RGBA32_FLOAT;
+            // Integer buffers: read as usampler/isampler and written as uvec4/ivec4 (nearest filtering only, which is what GL allows for them).
+            case "R8UI" -> GpuFormat.R8_UINT;
+            case "RG8UI" -> GpuFormat.RG8_UINT;
+            case "RGBA8UI", "RGB8UI" -> GpuFormat.RGBA8_UINT;
+            case "R8I" -> GpuFormat.R8_SINT;
+            case "RG8I" -> GpuFormat.RG8_SINT;
+            case "RGBA8I", "RGB8I" -> GpuFormat.RGBA8_SINT;
+            case "R16UI" -> GpuFormat.R16_UINT;
+            case "RG16UI" -> GpuFormat.RG16_UINT;
+            case "RGBA16UI", "RGB16UI" -> GpuFormat.RGBA16_UINT;
+            case "R16I" -> GpuFormat.R16_SINT;
+            case "RG16I" -> GpuFormat.RG16_SINT;
+            case "RGBA16I", "RGB16I" -> GpuFormat.RGBA16_SINT;
+            case "R32UI" -> GpuFormat.R32_UINT;
+            case "RG32UI" -> GpuFormat.RG32_UINT;
+            case "RGBA32UI", "RGB32UI" -> GpuFormat.RGBA32_UINT;
+            case "R32I" -> GpuFormat.R32_SINT;
+            case "RG32I" -> GpuFormat.RG32_SINT;
+            case "RGBA32I", "RGB32I" -> GpuFormat.RGBA32_SINT;
+            case "RGB10_A2UI" -> GpuFormat.RGB10A2_UINT;
             default -> null;
         };
-        if (format == null) throw new PackException(program + " gives colortex" + buffer + " the format " + name + ", which this version does not support");
-        if (name.equals("RGB8") || name.equals("RGB16") || name.equals("RGB16F") || name.equals("RGB32F") || name.equals("RGB8_SNORM") || name.equals("RGB16_SNORM")) {
-            notes.add("colortex" + buffer + " is " + name + "; stored with four channels (" + format.name() + ") because Metal has no three-channel or packed formats here");
-        }
-        return format;
     }
 
     private static float[] color(final String program, final String components) throws PackException {

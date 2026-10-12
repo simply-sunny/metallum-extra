@@ -34,7 +34,21 @@ public final class PackTextures {
     private PackTextures() {
     }
 
+    /** The pictures the loader makes itself (white, black, noise ...) belong to no pack: they stay, so they are never made in the middle of a draw when the pack changes. */
+    private static final Map<String, Loaded> OWN = new HashMap<>();
+
     private static synchronized @Nullable Loaded get(final ShaderPack pack, final String path) {
+        if (path.startsWith(BUILTIN)) {
+            Loaded own = OWN.get(path);
+            if (own == null) {
+                own = builtin(path);
+                if (own != null) {
+                    OWN.put(path, own);
+                    LOADED.remove(path);
+                }
+            }
+            return own;
+        }
         if (owner != pack) {
             release();
             owner = pack;
@@ -68,7 +82,8 @@ public final class PackTextures {
      * given a one-pixel picture to hand to the programs, and the real texture is bound in its place (see {@link com.metallum.render.MetallumExtraNative}).
      */
     private static @Nullable Loaded raw(final ShaderPack pack, final String key, final com.metallumextra.shader.pack.TextureSpec spec) {
-        byte[] bytes = pack.bytes(spec.path());
+        // An image the pack declares (image.* in shaders.properties) that nothing writes to: zeros.
+        byte[] bytes = spec.path().equals("mx:zero") ? new byte[spec.width() * spec.height() * spec.depth() * spec.sourceChannels() * spec.sourceBytes()] : pack.bytes(spec.path());
         if (bytes == null) return null;
         try {
             Object real = com.metallum.render.MetallumExtraNative.create("Metallum Extra pack texture " + spec.path(), spec.target(), spec.format(), spec.width(), spec.height(), spec.depth(),

@@ -1,0 +1,56 @@
+world PerfWorld
+wait 2000
+opt renderDistance 8
+opt simulationDistance 5
+opt vsync off
+opt fps 260
+cmd gamemode spectator @a
+cmd time set 6000
+cmd execute in minecraft:the_nether run tp @a -100 72 -136 0 10
+wait 30000
+spin 20
+mx set shaders off
+bench B0-no-shaders 30
+mx pack builtin
+mx set quality ultra
+mx set shadows on
+mx set bloom on
+mx set reflections on
+mx set waving on
+mx set rays on
+mx set ao on
+mx set colored on
+mx set edges on
+mx set shaders on
+bench B1-internal-max-load 15
+bench B1-internal-max 40
+shot B1-internal-max
+mx set shaders off
+wait 3000
+bench B2-off-after-internal 30
+mx pack BSL Shaders v10.1.8.zip
+mx profile HIGH
+mx set shaders on
+bench B3-bsl-high-load 15
+bench B3-bsl-high 40
+shot B3-bsl-high
+mx set shaders off
+wait 3000
+mx pack ComplementaryReimagined_r5.5.1.zip
+mx profile MEDIUM
+mx set shaders on
+bench B4-comp-5.5.1-medium-load 15
+bench B4-comp-5.5.1-medium 40
+shot B4-comp-5.5.1-medium
+mx set shaders off
+wait 3000
+mx pack ComplementaryReimagined_r5.9.3.zip
+mx profile MEDIUM
+mx set shaders on
+bench B5-comp-5.9.3-medium-load 15
+bench B5-comp-5.9.3-medium 40
+shot B5-comp-5.9.3-medium
+mx set shaders off
+wait 3000
+bench B6-off-end 30
+quit

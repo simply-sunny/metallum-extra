@@ -39,3 +39,11 @@ replay_*.log
 *.hprof
 *.jfr
 libs/
+
+# local runtime logs and metallum-extra perf-test artifacts (instances, results, downloads)
+logs/
+perf-test/inst-*/
+perf-test/results/
+perf-test/dl/
+perf-test/world-template/
+perf-test/classpath.txt

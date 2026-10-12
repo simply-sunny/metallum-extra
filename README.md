@@ -8,13 +8,11 @@ An add-on for [Metallum](https://modrinth.com/mod/metallum-mc), the Metal backen
 Download the jar from [Releases](https://github.com/ohjey/metallum-extra/releases) and put it in your `mods` folder next to Metallum.
 
 ## Features
-- **Shaders** (experimental, off by default): sun and moon shadows, reflective water, glow, colored light, sun rays, ambient occlusion and a new sky. One built-in look; it does not load OptiFine or Iris shader packs.
+- **Shaders:** This fork adds experimental, partial Iris/OptiFine pack loading. See the [pack guide](docs/shader-packs.md), [compatibility table](docs/translation-table.md), and [demo](docs/renderer-demo.md).
 - **Unlocked frame rate:** with VSync off, the game no longer pauses to wait for the screen. Higher FPS and fewer small stutters.
 - **Smooth chunk crossing:** removes the freeze when you move into a new chunk at very high render distances.
 - **Smooth memory cleanup:** spreads Sodium's chunk-memory cleanup over many frames instead of one.
 - **Performance logging** (off by default): records what caused each stutter.
-
-This fork adds experimental, partial Iris/OptiFine pack loading. See the [pack guide](docs/shader-packs.md), [compatibility table](docs/translation-table.md), and [demo](docs/renderer-demo.md). Run `./gradlew architectureTest` for checks without Minecraft.
 
 ## Settings
 Everything is switched in game, under **Video Settings → Metallum Extra** (with Sodium) or from Mod Menu. Settings are saved to `config/metallum-extra.properties`.
@@ -27,6 +25,7 @@ cd metallum-extra
 ./gradlew build
 ```
 The jar is written to `build/libs/`.
+Run `./gradlew architectureTest` for checks without Minecraft.
 
 How each feature works, the config keys and how to add a new Metallum release are in [docs/details.md](docs/details.md).
 

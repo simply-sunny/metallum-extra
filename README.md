@@ -14,7 +14,7 @@ Download the jar from [Releases](https://github.com/ohjey/metallum-extra/release
 - **Smooth memory cleanup:** spreads Sodium's chunk-memory cleanup over many frames instead of one.
 - **Performance logging** (off by default): records what caused each stutter.
 
-This fork adds experimental, partial Iris/OptiFine pack loading. See the [pack guide](docs/shader-packs.md), [compatibility table](docs/translation-table.md), and [demo](docs/renderer-demo.md). Run `./gradlew architectureTest` for checks without Minecraft.
+This fork adds experimental, partial Iris/OptiFine pack loading. This branch adds work in progress: Voxy's distant terrain, drawn through Metal. It is not in the releases yet. See the [pack guide](docs/shader-packs.md), [compatibility table](docs/translation-table.md), and [demo](docs/renderer-demo.md). Run `./gradlew architectureTest` for checks without Minecraft.
 
 ## Settings
 Everything is switched in game, under **Video Settings → Metallum Extra** (with Sodium) or from Mod Menu. Settings are saved to `config/metallum-extra.properties`.

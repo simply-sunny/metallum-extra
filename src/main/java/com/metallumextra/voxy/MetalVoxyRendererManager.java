@@ -2,6 +2,7 @@ package com.metallumextra.voxy;
 
 import com.metallumextra.MetallumExtra;
 import me.cortex.voxy.commonImpl.VoxyCommon;
+import net.minecraft.client.renderer.state.level.CameraRenderState;
 import net.minecraft.world.level.Level;
 
 /**
@@ -10,12 +11,19 @@ import net.minecraft.world.level.Level;
  * renderer down and makes a new one, and closing the level renderer shuts it down.
  *
  * <p>Voxy's per-world instance may not exist yet when the level is set (it is created when the session
- * starts), so creation is retried from {@link #tick()} until it appears.</p>
+ * starts), so creation is retried from {@link #frame} until it appears. Each frame is also the one
+ * place that keeps a failing renderer from taking the game down with it: three consecutive frames
+ * that throw shut the renderer off until the next world or resource reload.</p>
  */
 public final class MetalVoxyRendererManager {
+    /** Consecutive frames that may fail before the renderer is shut off for the rest of the session. */
+    private static final int MAX_CONSECUTIVE_FAILURES = 3;
+
     private static MetalVoxyRenderer renderer;
     private static Level level;
     private static boolean pendingCreate;
+    private static boolean disabled;
+    private static int failures;
 
     private MetalVoxyRendererManager() {
     }
@@ -24,6 +32,7 @@ public final class MetalVoxyRendererManager {
     public static synchronized void onSetLevel(final Level newLevel) {
         if (level != newLevel) {
             shutdown();
+            disabled = false;
             level = newLevel;
         }
     }
@@ -31,6 +40,7 @@ public final class MetalVoxyRendererManager {
     /** {@code LevelExtractor.allChanged}: resources or the world reloaded, rebuild from scratch. */
     public static synchronized void onAllChanged() {
         shutdown();
+        disabled = false;
         tryCreate();
     }
 
@@ -39,13 +49,34 @@ public final class MetalVoxyRendererManager {
         shutdown();
     }
 
-    /** Once per frame: finish deferred creation and let the renderer work. */
-    public static synchronized void tick() {
+    /**
+     * Once per frame, from the level renderer: finish deferred creation, hand the frame's camera
+     * state over and draw. The camera render state carries the projection, the fog values and the
+     * light the game settled on for this frame, which is everything this renderer needs from it.
+     */
+    public static synchronized void frame(final CameraRenderState camera) {
+        if (disabled) {
+            return;
+        }
         if (pendingCreate && renderer == null) {
             tryCreate();
         }
-        if (renderer != null) {
-            renderer.tick();
+        if (renderer == null) {
+            return;
+        }
+        try {
+            renderer.tick(camera);
+            renderer.render(camera);
+            failures = 0;
+        } catch (final RuntimeException | LinkageError failure) {
+            failures++;
+            MetallumExtra.LOGGER.error("[Metallum Extra] Metal Voxy renderer failed on frame {} of {}",
+                    failures, MAX_CONSECUTIVE_FAILURES, failure);
+            if (failures >= MAX_CONSECUTIVE_FAILURES) {
+                // Rendering the LOD field is optional; taking the game down with it is not an option.
+                disabled = true;
+                shutdown();
+            }
         }
     }
 
@@ -72,6 +103,7 @@ public final class MetalVoxyRendererManager {
 
     private static void shutdown() {
         pendingCreate = false;
+        failures = 0;
         if (renderer != null) {
             try {
                 renderer.shutdown();

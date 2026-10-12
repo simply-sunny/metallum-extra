@@ -19,7 +19,8 @@
     "ModelFactoryUploadMixin",
     "SoftwareModelTextureBakeryMixin",
     "SpriteContentsAccessor",
-    "TextureAtlasAccessor"
+    "TextureAtlasAccessor",
+    "ModelStoreBufferAccessor"
   ],
   "injectors": {
     "defaultRequire": 1

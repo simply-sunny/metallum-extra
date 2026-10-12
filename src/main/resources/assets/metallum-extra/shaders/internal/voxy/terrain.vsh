@@ -29,9 +29,9 @@ layout(location = 1) in uint a_FaceData;
 layout(location = 2) in uint a_ModelFlags;
 layout(location = 3) in uint a_Tint;
 
-layout(location = 0) out flat uint v_Flags;
-layout(location = 1) out flat uint v_Tint;
-layout(location = 2) out flat vec3 v_Shade;
+layout(location = 0) flat out uint v_Flags;
+layout(location = 1) flat out uint v_Tint;
+layout(location = 2) flat out vec3 v_Shade;
 layout(location = 3) out vec3 v_Point;
 layout(location = 4) out vec2 v_UV;
 
@@ -44,7 +44,7 @@ uint getLoDLevel(uvec2 packedPos) {
 ivec3 getLoDPosition(uvec2 packedPos) {
     int y = (int(packedPos.x) << 4) >> 24;
     int x = (int(packedPos.y) << 4) >> 8;
-    int z = int((packedPos.x & ((1 << 20) - 1)) << 4);
+    int z = int((packedPos.x & ((1u << 20) - 1u)) << 4);
     z |= int(packedPos.y >> 28);
     z <<= 8;
     z >>= 8;
@@ -53,13 +53,13 @@ ivec3 getLoDPosition(uvec2 packedPos) {
 
 // Voxy's swizzelDataAxis: which two axes a face's quad lives in (face >> 1 is 0 for X, 1 for Y, 2 for Z).
 vec3 swizzelDataAxis(uint axis, vec3 data) {
-    if (axis == 1) return data;
-    return axis == 0 ? data.xzy : data.zxy;
+    if (axis == 1u) return data;
+    return axis == 0u ? data.xzy : data.zxy;
 }
 
 // Voxy's getLightmapUv: an 8 bit light id, high nibble block light, low nibble sky light.
 vec2 getLightmapUv(uint index) {
-    vec2 base = vec2((index >> 4) & 0xF, index & 0xF) / 15.0;
+    vec2 base = vec2((index >> 4) & 0xFu, index & 0xFu) / 15.0;
     return clamp(base * (15.0 / 16.0) + (0.5 / 16.0), vec2(8.0 / 256.0), vec2(248.0 / 256.0));
 }
 
@@ -67,9 +67,9 @@ vec2 getLightmapUv(uint index) {
 // that opts out of shading is lit as if from above.
 float getFaceTint(uint face, bool shaded) {
     if (!shaded) return u_FaceTints.y;
-    if ((face >> 1) == 1) return u_FaceTints.z;
-    if ((face >> 1) == 2) return u_FaceTints.w;
-    if (face == 1) return u_FaceTints.y;
+    if ((face >> 1) == 1u) return u_FaceTints.z;
+    if ((face >> 1) == 2u) return u_FaceTints.w;
+    if (face == 1u) return u_FaceTints.y;
     return u_FaceTints.x;
 }
 
@@ -79,23 +79,23 @@ void main() {
     // The node's origin, in the level-0 section grid and then in blocks, relative to the camera's section.
     ivec3 baseSection = (getLoDPosition(u_Node) << int(lodLevel)) - u_BaseSectionPos;
 
-    uint face = a_Quad.x & 7;
-    uint modelId = (a_Quad.x >> 26) | ((a_Quad.y & 0x3FFF) << 6);
-    int x = int((a_Quad.x >> 21) & 31);
-    int y = int((a_Quad.x >> 16) & 31);
-    int z = int((a_Quad.x >> 11) & 31);
-    vec2 quadSize = vec2(float((a_Quad.x >> 3) & 15) + 1.0, float((a_Quad.x >> 7) & 15) + 1.0);
+    uint face = a_Quad.x & 7u;
+    uint modelId = (a_Quad.x >> 26) | ((a_Quad.y & 0x3FFFu) << 6);
+    int x = int((a_Quad.x >> 21) & 31u);
+    int y = int((a_Quad.x >> 16) & 31u);
+    int z = int((a_Quad.x >> 11) & 31u);
+    vec2 quadSize = vec2(float((a_Quad.x >> 3) & 15u) + 1.0, float((a_Quad.x >> 7) & 15u) + 1.0);
 
     // Face offsets and sizes in cells, and how deep the quad sits in its face. The epsilon keeps
     // neighbouring quads overlapping by a hair, which is what stops cracks showing between them.
-    vec4 faceSize = vec4(float(a_FaceData & 15), float((a_FaceData >> 4) & 15),
-            float((a_FaceData >> 8) & 15), float((a_FaceData >> 12) & 15)) / 16.0;
+    vec4 faceSize = vec4(float(a_FaceData & 15u), float((a_FaceData >> 4) & 15u),
+            float((a_FaceData >> 8) & 15u), float((a_FaceData >> 12) & 15u)) / 16.0;
     faceSize.xz -= vec2(0.00005);
     faceSize.yw -= faceSize.xz;
-    float depthOffset = float((a_FaceData >> 16) & 15) / 16.0;
+    float depthOffset = float((a_FaceData >> 16) & 15u) / 16.0;
 
     vec3 quadStart = vec3(float(x), float(y), float(z));
-    quadStart += swizzelDataAxis(face >> 1, vec3(faceSize.xz, mix(depthOffset, 1.0 - depthOffset, float(face & 1))));
+    quadStart += swizzelDataAxis(face >> 1, vec3(faceSize.xz, mix(depthOffset, 1.0 - depthOffset, float(face & 1u))));
     vec3 basePoint = quadStart * lodScale + vec3(baseSection << 5);
 
     vec2 quadSizeAddin = faceSize.yw + quadSize - 1.0;
@@ -116,15 +116,15 @@ void main() {
     // tint state and the face.
     uint flags = modelId << 16;
     flags |= uint((int(quadSize.x) - 1) << 8) | uint((int(quadSize.y) - 1) << 12);
-    uint cutout = a_FaceData & 1;
-    cutout |= uint(quadSize.x > 1.0 || quadSize.y > 1.0) & ((a_FaceData >> 23) & 1);
+    uint cutout = a_FaceData & 1u;
+    cutout |= uint(quadSize.x > 1.0 || quadSize.y > 1.0) & ((a_FaceData >> 23) & 1u);
     flags |= cutout;
-    flags |= ((a_FaceData >> 24) & 3) << 2;
+    flags |= ((a_FaceData >> 24) & 3u) << 2;
     flags |= face << 4;
     v_Flags = flags;
     // Captured as RGBA already: voxy's shader would byte swap its ARGB here, but the capture did it.
     v_Tint = a_Tint;
 
-    uint lightId = (a_Quad.y >> 23) & 0xFF;
-    v_Shade = textureLod(u_Lightmap, getLightmapUv(lightId), 0.0).rgb * getFaceTint(face, (a_ModelFlags & 8) != 0);
+    uint lightId = (a_Quad.y >> 23) & 0xFFu;
+    v_Shade = textureLod(u_Lightmap, getLightmapUv(lightId), 0.0).rgb * getFaceTint(face, (a_ModelFlags & 8u) != 0u);
 }

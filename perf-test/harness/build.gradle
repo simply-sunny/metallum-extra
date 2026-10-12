@@ -1,0 +1,11 @@
+plugins {
+	id 'net.fabricmc.fabric-loom' version "${loom_version}"
+}
+version = '1.0'
+base { archivesName = 'perfbench' }
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+}
+tasks.withType(JavaCompile).configureEach { it.options.release = 25 }
+java { sourceCompatibility = JavaVersion.VERSION_25; targetCompatibility = JavaVersion.VERSION_25 }

@@ -38,4 +38,13 @@ public abstract class GlTextureMixin {
     private static void metallumExtra$deleteTexture(final int texture) {
         VoxyGlRegistry.free(texture);
     }
+
+    /**
+     * {@code glClearTexImage} (reused atlas from the cache): the texture is fake and its pixels live in
+     * {@code ModelAtlasMirror}, so zeroing is a no-op. Without this, re-creating the renderer (e.g. after
+     * applying video settings) aborts the JVM with "No context is current".
+     */
+    @Redirect(method = "zero", at = @At(value = "INVOKE", target = "Lorg/lwjgl/opengl/GL45C;nglClearTexImage(IIIIJ)V"))
+    private static void metallumExtra$zeroTextureNoop(final int texture, final int level, final int format, final int type, final long pixels) {
+    }
 }

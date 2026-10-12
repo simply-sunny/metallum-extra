@@ -42,12 +42,18 @@ dependencies {
 	// Sodium is also compiled against for its video-settings API (the page is only loaded when Sodium is present).
 	implementation "maven.modrinth:sodium:${project.sodium_version}"
 	runtimeOnly "maven.modrinth:fabric-api:${project.fabric_api_version}"
-	runtimeOnly "maven.modrinth:distanthorizons:${project.distant_horizons_version}"
 
 	// Voxy (optional at runtime): compiled against for the Metal far-terrain bridge, and on the dev
 	// client's classpath so the bridge can be exercised in ./gradlew runClient. Not bundled.
 	compileOnly files(project.voxy_jar)
+	compileOnly "org.rocksdb:rocksdbjni:10.2.1"
 	runtimeOnly files(project.voxy_jar)
+	runtimeOnly "org.rocksdb:rocksdbjni:10.2.1"
+	// Voxy ships LWJGL zstd/lmdb natives for linux+windows only; its section saving runs on
+	// Sodium's chunk threads, so without macOS natives the missing dylib kills those threads
+	// and no vanilla chunks ever build. Dev classpath only, never bundled.
+	runtimeOnly "org.lwjgl:lwjgl-zstd:3.4.1:natives-macos-arm64"
+	runtimeOnly "org.lwjgl:lwjgl-lmdb:3.4.1:natives-macos-arm64"
 }
 
 // A small deterministic test suite for the parts of the shader pipeline that do not need a running game.

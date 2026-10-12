@@ -150,6 +150,11 @@ public final class MetalVoxyRenderer {
     private final LongArrayList visible = new LongArrayList();
     private final LongArrayList noData = new LongArrayList();
     private final LongArrayList draws = new LongArrayList();
+    // Temporary bring-up instrumentation: per-5s mesh-task/draw counters (remove once LOD is seen).
+    private long statResults;
+    private long statEnqueued;
+    private long statDraws;
+    private long statLastNanos;
 
     // ---- results handed over by the meshing workers ----
     private final ConcurrentLinkedQueue<MetalVoxyVertexCapture.Result> results = new ConcurrentLinkedQueue<>();
@@ -195,6 +200,9 @@ public final class MetalVoxyRenderer {
     private int requestBudget;
     private boolean warnedPipeline;
     private boolean closed;
+    // Temporary bring-up instrumentation: dump the first drawn frame's inputs (remove once LOD is seen).
+    private boolean dumpedFrame;
+    private boolean dumpedVerts;
 
     public MetalVoxyRenderer(final Level level) {
         this.level = level;
@@ -344,6 +352,16 @@ public final class MetalVoxyRenderer {
         if (this.draws.isEmpty()) {
             return;
         }
+        if (!this.dumpedFrame) {
+            this.dumpedFrame = true;
+            final long first = this.draws.getLong(0);
+            MetallumExtra.LOGGER.info("[Metallum Extra] Voxy frame dump: cam=({},{},{}) baseSec=[{},{},{}] camSub=[{},{},{}] draws={} firstNodeHi={} firstNodeLo={} firstCount={} m22={} m32={} fogStart={} fogEnd={} fadeStart={} fadeEnd={}",
+                    this.camX, this.camY, this.camZ, this.baseSectionPos[0], this.baseSectionPos[1], this.baseSectionPos[2],
+                    this.cameraSubPos[0], this.cameraSubPos[1], this.cameraSubPos[2], this.draws.size(),
+                    Long.toHexString(first >>> 32), Long.toHexString(first & 0xFFFFFFFFL), this.meshCount.get(first),
+                    this.projection.m22(), this.projection.m32(),
+                    this.ubo.getFloat(96), this.ubo.getFloat(100), this.ubo.getFloat(104), this.ubo.getFloat(108));
+        }
         final RenderPassDescriptor descriptor = RenderPassDescriptor.builder(() -> "Metallum Extra voxy terrain")
                 .withColorAttachment(main.getColorTextureView())
                 .withDepthAttachment(main.getDepthTextureView())
@@ -365,7 +383,17 @@ public final class MetalVoxyRenderer {
                 pass.pushConstants(this.push);
                 pass.setVertexBuffer(0, this.arena.slice(offset, (long) count * MetalVoxyVertexCapture.VERTEX_STRIDE));
                 pass.draw(count, 1, 0, 0);
+                this.statDraws++;
             }
+        }
+        final long now = System.nanoTime();
+        if (now - this.statLastNanos > 5_000_000_000L) {
+            MetallumExtra.LOGGER.info("[Metallum Extra] Voxy stats: enqueued={} results={} draws={}",
+                    this.statEnqueued, this.statResults, this.statDraws);
+            this.statEnqueued = 0L;
+            this.statResults = 0L;
+            this.statDraws = 0L;
+            this.statLastNanos = now;
         }
     }
 
@@ -408,6 +436,23 @@ public final class MetalVoxyRenderer {
         final CommandEncoder encoder = RenderSystem.getDevice().createCommandEncoder();
         MetalVoxyVertexCapture.Result result;
         while ((result = this.results.poll()) != null) {
+            this.statResults++;
+            if (!this.dumpedVerts && result.hasGeometry()) {
+                this.dumpedVerts = true;
+                final long va = result.vertexAddress();
+                final StringBuilder sb = new StringBuilder(256);
+                for (int v = 0; v < 3; v++) {
+                    sb.append('[');
+                    for (int w = 0; w < 5; w++) {
+                        if (w > 0) sb.append(' ');
+                        sb.append(Integer.toHexString(MemoryUtil.memGetInt(va + (long) v * 20L + (long) w * 4L)));
+                    }
+                    sb.append(']');
+                }
+                MetallumExtra.LOGGER.info("[Metallum Extra] Voxy vert dump: nodeHi={} nodeLo={} count={} {}",
+                        Long.toHexString(result.position() >>> 32), Long.toHexString(result.position() & 0xFFFFFFFFL),
+                        result.vertexCount(), sb);
+            }
             final long pos = result.position();
             this.childMask.put(pos, result.childExistence());
             if (result.hasGeometry()) {
@@ -708,6 +753,7 @@ public final class MetalVoxyRenderer {
             this.nodeState.put(pos, ST_PENDING);
         }
         this.generation.enqueueTask(pos);
+        this.statEnqueued++;
     }
 
     private long fallbackRoot(final long pos) {
@@ -795,8 +841,8 @@ public final class MetalVoxyRenderer {
             final Identifier location = Identifier.fromNamespaceAndPath(MetallumExtra.MOD_ID, "pipeline/voxy_terrain");
             this.pipeline = RenderPipeline.builder()
                     .withLocation(location)
-                    .withVertexShader(Identifier.fromNamespaceAndPath(MetallumExtra.MOD_ID, "voxy/terrain"))
-                    .withFragmentShader(Identifier.fromNamespaceAndPath(MetallumExtra.MOD_ID, "voxy/terrain"))
+                    .withVertexShader(Identifier.fromNamespaceAndPath(MetallumExtra.MOD_ID, "internal/voxy/terrain"))
+                    .withFragmentShader(Identifier.fromNamespaceAndPath(MetallumExtra.MOD_ID, "internal/voxy/terrain"))
                     .withVertexBinding(0, VERTEX_FORMAT)
                     .withBindGroupLayout(BIND_GROUP)
                     .withPushConstantSize(PUSH_BYTES)
@@ -814,7 +860,7 @@ public final class MetalVoxyRenderer {
         }
         if (this.arena == null) {
             this.arena = RenderSystem.getDevice().createBuffer(() -> "Voxy vertex arena",
-                    GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST, INITIAL_ARENA_BYTES);
+                    GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST | GpuBuffer.USAGE_COPY_SRC, INITIAL_ARENA_BYTES);
             this.arenaCapacity = INITIAL_ARENA_BYTES;
         }
         if (this.atlasTexture == null) {
@@ -861,7 +907,7 @@ public final class MetalVoxyRenderer {
         }
         final long capacity = Math.max(this.arenaCapacity * 2L, needed);
         final GpuBuffer next = RenderSystem.getDevice().createBuffer(() -> "Voxy vertex arena",
-                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST, capacity);
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST | GpuBuffer.USAGE_COPY_SRC, capacity);
         if (this.arenaUsed > 0L) {
             RenderSystem.getDevice().createCommandEncoder()
                     .copyToBuffer(this.arena.slice(0, this.arenaUsed), next.slice(0, this.arenaUsed));

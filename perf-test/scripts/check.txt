@@ -1,0 +1,26 @@
+world PerfWorld
+wait 2000
+opt renderDistance 8
+opt simulationDistance 5
+opt vsync off
+opt fps 260
+cmd gamemode spectator @a
+cmd time set 6000
+cmd execute in minecraft:the_nether run tp @a -100 72 -136 0 10
+wait 30000
+spin 20
+mx set shaders off
+mx set upscale balanced
+wait 3000
+shot c_balanced
+mx set upscale ultra_performance
+wait 3000
+shot c_ultra
+mx set upscale quality
+wait 3000
+shot c_quality
+mx pack builtin
+mx set shaders on
+wait 8000
+shot c_internal_quality
+quit

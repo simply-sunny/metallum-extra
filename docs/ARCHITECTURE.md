@@ -182,9 +182,10 @@ substitutions themselves are not logged.
 
 Metal has no geometry stage and no storage binding for render pipelines, so:
 
-- `GeometryKernel` runs a pack's vertex and geometry stages as one compute kernel.
-  `GeometryStage` records what a geometry stage did for programs that do not
-  have one.
+- Geometry stages are **not run**. `GeometryStage` only records what a geometry
+  stage would have done, so the program is drawn by its vertex stage alone.
+  `GeometryKernel`, which would run both stages as one compute kernel, exists but
+  is used only by `GeometryKernelCheck`. It is not wired into the frame.
 - `ComputeCompiler` and `MetallumExtraCompute` run compute programs (`setup`,
   `shadowcomp`, and the `_a` stages). Compute binds storage images and buffers
   itself, which render pipelines cannot do yet.

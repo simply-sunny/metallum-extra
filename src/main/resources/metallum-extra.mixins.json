@@ -18,6 +18,7 @@
     "MTLCommandBufferMixin",
     "MTLDeviceMixin",
     "RenderPipelineBuilderAccessor",
+    "RenderPipelineBuilderMixin",
     "RenderSystemAccessor",
     "RotatingSectionStorageMixin",
     "SodiumChunkRendererMixin",

@@ -948,6 +948,11 @@ public final class PackTests {
         }
         check("a program with only a compute shader is found as a compute program", ProgramSet.discover(openStandard(dir.resolve("Compute.zip"), Map.of("composite.csh", "#version 430\n", "final.vsh", VERTEX, "final.fsh", one)), null)
                 .runnable().stream().anyMatch(p -> p.name().equals("composite") && p.isCompute()));
+        Path track1 = dir.resolve("Track1Test.zip");
+        TestPacks.writeTrack1Pack(track1);
+        ZipPack track1Pack = ZipPack.open(track1);
+        IrisPlan track1Plan = IrisPlan.build(track1Pack, "world0");
+        check("Track 1 synthetic pack plans successfully", track1Plan != null && track1Plan.stepCount() > 0);
     }
 
     // ---- programs that draw terrain ----

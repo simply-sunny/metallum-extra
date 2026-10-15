@@ -13,18 +13,20 @@ Priority: **P1** blocks packs that otherwise work or crashes the game, **P2** bl
 
 | Item | State | Blocks | Prio | Note |
 |---|---|---|---|---|
-| `shadow` sampler (a shadow map read without a `shadowtex*` name) in `composite`/`deferred` | Not provided | Bliss, RedHat | P1 | Bind the shadow depth map under that name for post programs; the 2x2 compare helper already exists. |
-| `gl_Fog` as a whole (`gl_Fog.color`, `.density`) | Only `.start .end .scale` | TAA Project | P2 | `gl_FogFragCoord` was added today. Add `color` from `fogColor`, `density` from `fogDensity`. |
+| `shadow` sampler (a shadow map read without a `shadowtex*` name) in `composite`/`deferred` | **Done** | Bliss, RedHat | - | Bound shadow depth map under `shadow`/`watershadow` for post programs. |
+| `gl_Fog` as a whole (`gl_Fog.color`, `.density`) | **Done** | TAA Project | - | `gl_FogFragCoord`, `color`, `density`, `start`, `end`, and `scale` translated. |
 | `gl_FrontColor`, `gl_BackColor`, `gl_TexCoord[n]`, `gl_FrontMaterial`, `gl_LightSource` | Refused with the name | not seen in the 26 packs | P3 | Fixed-function leftovers; refusal is fine. |
-| Unary minus on a vec3 in a custom `variable.*` | Not parsed | Bloop | P2 | Expression parser in `CustomUniforms`. |
-| Custom-uniform functions beyond the set added today (`fmod`, `torad`, `todeg`) | `random`, `texture`-like and vector forms missing | none now | P3 | OptiFine list is `sin cos asin acos tan atan atan2 torad todeg min max clamp abs floor ceil exp frac log log10 pow random round signum sqrt fmod time if lerp smooth`; only `random` is still missing. |
-| `uniform sampler2D tex` read in `prepare` | Not provided there | I Like Vanilla | P2 | Only `gtexture`/`texture`/`tex` for gbuffers are bound. |
+| Unary minus on a vec3 in a custom `variable.*` | **Done** | Bloop | - | Supported in `CustomUniforms`. |
+| Custom-uniform vector constructors & expressions (`vec2/3/4(...)`, element-wise math) | **Done** | RenderPearl | - | Full vector expressions and swizzling in `CustomUniforms`. |
+| Matrix component access (`matrix.col.row`, `matrix.col.xyzwrgba`) | **Done** | RenderPearl | - | Supported in `CustomUniforms`. |
+| `textureLod` on `sampler2DShadow` | **Done** | iterationT | - | Overloaded `mx_shadowCompare` with lod support in `LegacyGlsl`. |
+| `uniform sampler2D tex` read in `prepare` | **Done** (neutral texture fallback) | I Like Vanilla | - | Neutral texture bound for unmapped prepare samplers. |
 | Integer colour formats (`RGBA32UI`, `R32I`) for `colortexN` | Refused | Noble | P2 | Needs `usampler2D` reads and integer render targets in the buffer allocator. |
 | Geometry shaders (`.gsh`) | Refused | iterationT | P2 | Metal has no geometry stage; would need emulation by vertex expansion. |
-| `#version` below 140 in the sky / fullscreen path | Rejected by glslang | miniature-shader | P1 | The sky pipeline is built outside the legacy translator; send it through `LegacyGlsl.translate`. |
-| A varying read by the fragment stage but never declared by the vertex stage | **Done today** (dummy output) | OPAL, Vibrant | - | `GlslLocations.fit`. |
-| Duplicate `#define projectionMatrix` in shadow programs | Macro redefined | Noble | P1 | The shadow prelude defines it and the pack does too; undefine before the pack's own, as is done for the pipeline defines. |
-| `#ifdef X // comment`, `0.75// [..]`, directives in block comments, multi-name uniform lists, `blockEntityId` attribute, `CAT_*` constants, `gl_FogFragCoord`, `fmod` | **Done today** | see compatibility doc | - | |
+| `#version` below 140 in the sky / fullscreen path | **Done** | miniature-shader | - | `adaptSky` translates legacy versions to `#version 330 core`. |
+| A varying read by the fragment stage but never declared by the vertex stage | **Done** (dummy output) | OPAL, Vibrant | - | `GlslLocations.fit`. |
+| Duplicate `#define projectionMatrix` in shadow programs | **Done** | Noble | - | Prelude undefines conflicting macros before pack code. |
+| `#ifdef X // comment`, `0.75// [..]`, directives in block comments, multi-name uniform lists, `blockEntityId` attribute, `CAT_*` constants, `gl_FogFragCoord`, `fmod` | **Done** | see compatibility doc | - | |
 | Names that Metal's library also defines (`saturate`, `length_squared`, ...) | Done (renamed) | Photon | - | List `METAL_FUNCTIONS`; extend when a pack names another. |
 | C++ keywords used as variable names (`new`, `sampler`, ...) | Done (prefixed) | several | - | |
 

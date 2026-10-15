@@ -105,6 +105,54 @@ public final class TestPacks {
         write(folder.resolve("Incomplete.zip"), null, incomplete);
     }
 
+    /** A synthetic shader pack testing Track 1 primitives: vertex storage image, atomic image, SSBO atomic, and composite read. */
+    public static void writeTrack1Pack(final Path zip) throws IOException {
+        Map<String, String> files = new java.util.LinkedHashMap<>();
+        files.put("shaders.properties", "image.storage_img = null rgba rgba8 unsigned_byte true false 64 64\nbufferObject.0 = 64\n");
+        files.put("gbuffers_terrain.vsh", """
+                #version 430 core
+                layout(binding = 70, r32ui) uniform coherent uimage2D u_img;
+                layout(binding = 71, rgba8) uniform writeonly image2D storage_img;
+                layout(std430, binding = 20) buffer Counter { uint val; } ssbo;
+                layout(location = 0) in vec3 vaPosition;
+                void main() {
+                    imageAtomicAdd(u_img, ivec2(gl_VertexIndex, 0), 1u);
+                    imageStore(storage_img, ivec2(gl_VertexIndex, 0), vec4(1.0, 0.5, 0.25, 1.0));
+                    atomicAdd(ssbo.val, 1u);
+                    gl_Position = vec4(vaPosition, 1.0);
+                }
+                """);
+        files.put("gbuffers_terrain.fsh", """
+                #version 430 core
+                layout(location = 0) out vec4 outColor0;
+                void main() {
+                    outColor0 = vec4(1.0);
+                }
+                """);
+        files.put("composite.vsh", FULLSCREEN_VSH);
+        files.put("composite.fsh", """
+                #version 430 core
+                layout(binding = 70, r32ui) uniform readonly uimage2D u_img;
+                layout(binding = 71, rgba8) uniform readonly image2D storage_img;
+                layout(std430, binding = 20) buffer Counter { uint val; } ssbo;
+                layout(location = 0) out vec4 outColor0;
+                in vec2 texcoord;
+                void main() {
+                    uint a = imageLoad(u_img, ivec2(0)).r;
+                    vec4 b = imageLoad(storage_img, ivec2(0));
+                    uint c = ssbo.val;
+                    if (a >= 0u && b.a > 0.0 && c >= 0u) {
+                        outColor0 = vec4(0.0, 1.0, 0.0, 1.0);
+                    } else {
+                        outColor0 = vec4(1.0, 0.0, 0.0, 1.0);
+                    }
+                }
+                """);
+        files.put("final.vsh", FULLSCREEN_VSH);
+        files.put("final.fsh", finalFragment("fragColor = color;"));
+        write(zip, null, files);
+    }
+
     /** The vertex shader of a full-screen program: one triangle that covers the screen. */
     private static final String FULLSCREEN_VSH = """
             #version 330

@@ -18,7 +18,7 @@ public final class ImageMslSpike {
             #version 430 core
             layout(binding = 70, r32ui) uniform coherent uimage3D mx_img_0;
             layout(binding = 71, rgba16f) uniform image2D mx_img_1;
-            layout(std430, binding = 40) buffer MxBuf { uint counts[]; } mx_ssbo_0;
+            layout(std430, binding = 20) buffer MxBuf { uint counts[]; } mx_ssbo_0;
             layout(location = 0) in vec3 Position;
             void main() {
                 ivec3 c = ivec3(Position);

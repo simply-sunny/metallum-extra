@@ -104,3 +104,11 @@ tasks.register('metalFxProbe', JavaExec) {
 	jvmArgs = ['--enable-native-access=ALL-UNNAMED']
 	workingDir = projectDir
 }
+
+tasks.register('imageMslSpike', JavaExec) {
+	group = 'verification'
+	description = 'Shows the Metal source SPIRV-Cross makes of storage images, SSBOs and atomics in a raster stage.'
+	classpath = sourceSets.test.output + sourceSets.main.runtimeClasspath
+	mainClass = 'com.metallumextra.ImageMslSpike'
+	workingDir = projectDir
+}

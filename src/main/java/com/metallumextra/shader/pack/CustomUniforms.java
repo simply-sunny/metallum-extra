@@ -356,28 +356,45 @@ public final class CustomUniforms {
                 return function(name, arguments);
             }
             String component = null;
-            // A matrix's entry: gbufferModelView.2.1 is the third column's second row.
-            java.util.regex.Matcher entry = java.util.regex.Pattern.compile("\\.(\\d)\\.(\\d)").matcher(text);
+            // A matrix's entry: gbufferModelView.2.1 or gbufferModelViewInverse.0.x
+            java.util.regex.Matcher entry = java.util.regex.Pattern.compile("\\.(\\d)\\.([0-3xyzwrgba])").matcher(text);
             if (entry.find(at) && entry.start() == at) {
                 at = entry.end();
-                int slot = (entry.group(1).charAt(0) - '0') * 4 + (entry.group(2).charAt(0) - '0');
+                int col = entry.group(1).charAt(0) - '0';
+                char rowCh = entry.group(2).charAt(0);
+                int row = Character.isDigit(rowCh) ? rowCh - '0' : ("xyzw".indexOf(rowCh) >= 0 ? "xyzw".indexOf(rowCh) : "rgba".indexOf(rowCh));
+                int slot = col * 4 + row;
                 return c -> {
                     double[] value = c.values.get(name);
                     return value != null && slot < value.length ? value[slot] : 0.0;
                 };
             }
-            if (at < text.length() && text.charAt(at) == '.' && at + 1 < text.length() && Character.isLetter(text.charAt(at + 1))) {
-                at++;
-                int s = at;
-                while (at < text.length() && Character.isLetter(text.charAt(at))) at++;
-                component = text.substring(s, at);
+            if (at < text.length() && text.charAt(at) == '.' && at + 1 < text.length()) {
+                char chNext = text.charAt(at + 1);
+                if (Character.isLetter(chNext) || (Character.isDigit(chNext) && (at + 2 >= text.length() || text.charAt(at + 2) != '.'))) {
+                    at++;
+                    int s = at;
+                    while (at < text.length() && (Character.isLetterOrDigit(text.charAt(at)))) at++;
+                    component = text.substring(s, at);
+                }
             }
             return reference(name, component);
         }
 
         private Node reference(final String name, final @Nullable String component) throws PackException {
-            int index = component == null ? defaultComponent : "xyzw".indexOf(component.charAt(0)) >= 0 ? "xyzw".indexOf(component.charAt(0)) : "rgba".indexOf(component.charAt(0));
-            if (component != null && (component.length() != 1 || index < 0)) throw new PackException("the component ." + component + " is not x, y, z or w");
+            int idx = defaultComponent;
+            if (component != null) {
+                if (component.length() == 1 && Character.isDigit(component.charAt(0))) {
+                    idx = component.charAt(0) - '0';
+                } else if ("xyzw".indexOf(component.charAt(0)) >= 0) {
+                    idx = "xyzw".indexOf(component.charAt(0));
+                } else if ("rgba".indexOf(component.charAt(0)) >= 0) {
+                    idx = "rgba".indexOf(component.charAt(0));
+                } else {
+                    throw new PackException("the component ." + component + " is not x, y, z or w");
+                }
+            }
+            final int index = idx;
             switch (name) {
                 case "true":
                     return c -> 1.0;
@@ -465,6 +482,13 @@ public final class CustomUniforms {
                         c.smoothed.put(key, next);
                         return next;
                     };
+                }
+                case "vec2", "vec3", "vec4" -> {
+                    int expected = name.charAt(3) - '0';
+                    if (a.size() == 1) return a.get(0);
+                    if (a.size() != expected) throw new PackException(name + " needs " + expected + " arguments or 1 argument, not " + a.size());
+                    int idx = Math.min(defaultComponent, a.size() - 1);
+                    return a.get(Math.max(0, idx));
                 }
                 default -> throw new PackException("the function " + name + " is not supported");
             }

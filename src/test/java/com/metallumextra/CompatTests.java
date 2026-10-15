@@ -148,11 +148,15 @@ final class CompatTests {
         properties.put("uniform.float.minmax", "max(min(3, 9), 1) + pow(2, 3) - sqrt(16)");
         properties.put("uniform.float.not", "!0 + !5 + (1 != 2)");
         properties.put("uniform.int.fm", "fmod(frameCounter, 8) * 10 + fmod(frameCounter - 22, 8)");
-        CustomUniforms custom = CustomUniforms.parse(properties, name -> name.equals("BIOME_FOREST") ? 4.0 : name.equals("BIOME_BIRCH_FOREST") ? 6.0 : null);
+        properties.put("variable.vec3.sunDirection", "sunPosition * vec3(0.01, 0.01, 0.01)");
+        properties.put("uniform.vec3.sunDirPlr", "vec3(-sunDirection.x, sunDirection.y, sunDirection.z)");
+        properties.put("uniform.float.matElem", "gbufferModelView.1.2 + gbufferModelView.0.x");
+        CustomUniforms custom = CustomUniforms.parse(properties, name -> name.equals("BIOME_FOREST") ? Double.valueOf(4.0) : name.equals("BIOME_BIRCH_FOREST") ? Double.valueOf(6.0) : null);
         check("the uniforms are listed, the variables are not", custom.uniforms().stream().map(CustomUniforms.Def::name).toList()
-                .equals(List.of("framemod8", "moves", "inCave", "inForest", "whole", "either", "minmax", "not", "fm")));
+                .equals(List.of("framemod8", "moves", "inCave", "inForest", "whole", "either", "minmax", "not", "fm", "sunDirPlr", "matElem")));
         Map<String, double[]> v = values("frameCounter", 21, "cameraPosition", new double[] {10.5, 0, 0}, "previousCameraPosition", new double[] {10.0, 0, 0},
-                "isEyeInWater", 0, "eyeBrightness", new double[] {0, 60}, "biome", 6);
+                "isEyeInWater", 0, "eyeBrightness", new double[] {0, 60}, "biome", 6, "sunPosition", new double[] {100.0, 200.0, 300.0},
+                "gbufferModelView", new double[] {1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0});
         custom.evaluate(v, 0.016);
         check("% on numbers", v.get("framemod8")[0] == 5.0);
         check("a variable uses the values of this frame, and a uniform can use a variable", v.get("moves")[0] == 2.0 && !v.containsKey("dx"));
@@ -163,6 +167,8 @@ final class CompatTests {
         check("min, max, pow and sqrt", v.get("minmax")[0] == 3.0 + 8.0 - 4.0);
         check("! and comparisons are 0 or 1", v.get("not")[0] == 2.0);
         check("fmod keeps the sign of the divisor", v.get("fm")[0] == 57.0);
+        check("vector expressions and unary minus", v.get("sunDirPlr")[0] == -1.0 && v.get("sunDirPlr")[1] == 2.0 && v.get("sunDirPlr")[2] == 3.0);
+        check("matrix indexing with numeric or named row", v.get("matElem")[0] == 7.0 + 1.0);
         Map<String, double[]> still = values("frameCounter", 0, "cameraPosition", new double[] {5, 0, 0}, "previousCameraPosition", new double[] {5, 0, 0},
                 "isEyeInWater", 1, "eyeBrightness", new double[] {0, 240}, "biome", 1);
         custom.evaluate(still, 0.016);

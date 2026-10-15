@@ -1206,6 +1206,8 @@ public final class PackTests {
         String fragmentText = IrisWorldAdapter.adapt("#version 330 core\nuniform sampler2D gtexture;\nuniform sampler2D lightmap;\nuniform float alphaTestRef;\nvoid main() { }\n", false, entity);
         check("the fragment stage reads the game's samplers: the entity's texture is Sampler0, the light map Sampler2", fragmentText.contains("#define gtexture Sampler0") && fragmentText.contains("#define lightmap Sampler2")
                 && fragmentText.contains("#define alphaTestRef ALPHA_CUTOUT") && !fragmentText.contains("in vec3 Position;") && !fragmentText.contains("uniform float alphaTestRef;"));
+        String legacySky = IrisWorldAdapter.adaptSky("#version 120\nvarying vec4 col;\nvoid main() { gl_Position = ftransform(); col = gl_Color; }\n", true);
+        check("adaptSky translates legacy version to 330 core", legacySky.startsWith("#version 330 core") && legacySky.contains("mx_sky_vertex"));
         String remapped = IrisWorldAdapter.remapOutputs("layout(location = 0) out vec4 a;\nlayout(location = 1) out vec4 b;\n  out vec4 outColor2;\nlayout(location = 3) out vec4 d;\n", new int[] {0, 3, 5, 6});
         check("outputs move to the attachment of their buffer: 0, 1, 2, 3 become 0, 3, 5, 6", remapped.contains("layout(location = 0) out vec4 a;") && remapped.contains("layout(location = 3) out vec4 b;")
                 && remapped.contains("layout(location = 5) out vec4 outColor2;") && remapped.contains("layout(location = 6) out vec4 d;"));

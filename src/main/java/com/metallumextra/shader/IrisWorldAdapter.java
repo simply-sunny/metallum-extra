@@ -158,7 +158,15 @@ public final class IrisWorldAdapter {
      * A program for the sky (see {@link #SKY_PRELUDE}). Nothing is drawn with depth there, so the depth the vertex stage leaves is simply made valid.
      */
     public static String adaptSky(final String source, final boolean vertex) {
-        String text = declarationsWithoutComments(source);
+        String text = source;
+        if (com.metallumextra.shader.pack.LegacyGlsl.isLegacy(text)) {
+            try {
+                text = com.metallumextra.shader.pack.LegacyGlsl.translate(text, vertex, com.metallumextra.shader.pack.LegacyGlsl.Kind.WORLD);
+            } catch (com.metallumextra.shader.pack.PackException e) {
+                throw new IllegalStateException("Failed to translate legacy sky shader: " + e.getMessage(), e);
+            }
+        }
+        text = declarationsWithoutComments(text);
         if (vertex) {
             for (String name : INPUTS) {
                 text = Pattern.compile("(?m)^[ \\t]*(?:layout\\s*\\([^)]*\\)\\s*)?in\\s+(?:(?:highp|mediump|lowp)\\s+)?\\w+\\s+" + name + "\\s*;[ \\t]*$").matcher(text).replaceAll("");

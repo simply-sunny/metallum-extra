@@ -107,19 +107,13 @@ public final class GlslLocations {
         }
         for (Variable v : passing) {
             if (v.explicit < 0 && !shared.containsKey(v.name)) {
+                if (shared.containsKey("v_" + v.name)) {
+                    shared.put(v.name, shared.get("v_" + v.name));
+                    continue;
+                }
                 int location = next(used, v.size);
                 used.set(location, location + v.size);
                 shared.put(v.name, location);
-            }
-        }
-        // When a fragment input (color) corresponds to a vertex output (v_color), link them to the same location.
-        for (Statement st : fragmentSide) {
-            if (!st.out) {
-                for (Variable v : st.variables) {
-                    if (shared.containsKey("v_" + v.name) && !shared.containsKey(v.name)) {
-                        shared.put(v.name, shared.get("v_" + v.name));
-                    }
-                }
             }
         }
 

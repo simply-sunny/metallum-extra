@@ -1,11 +1,12 @@
 package com.metallumextra.shader;
 
-import com.mojang.renderpearl.api.GpuFormat;
 import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.renderpearl.api.GpuFormat;
 import com.mojang.renderpearl.api.textures.GpuTexture;
 import com.mojang.renderpearl.api.textures.GpuTextureView;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
@@ -15,6 +16,8 @@ import org.jspecify.annotations.Nullable;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Arrays;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * The color of block light at each point near the player.
@@ -25,9 +28,9 @@ import java.util.Arrays;
  * by their brightness and how close they are. The shader tints block light by it. Brightness still comes from
  * the game's own light, so the grid does not need to know about walls: it only decides the color.
  * <p>
- * The grid is filled a chunk column at a time, one per frame, so a change shows within a third of a second and
- * no frame pays for all of it. It lives in a 2D texture with the grid's depth slices laid side by side, since
- * Metallum knows no 3D textures.
+ * The grid is scanned a chunk column at a time across frames. Rebuilding is computed asynchronously on a
+ * background worker so that large clusters of light sources (such as subterranean lava lakes and waterfalls)
+ * never cause render-thread frame hitches.
  */
 public final class LightColorGrid {
     public static final String SAMPLER = "MxLightColors";
@@ -44,9 +47,22 @@ public final class LightColorGrid {
     private int originX, originY, originZ;
     private boolean placed;
     private int cursor;
+    private int generation;
     private final IntArrayList[] columns = new IntArrayList[COLUMNS * COLUMNS];
-    private final float[] sum = new float[TEXELS * 4];
+    private final int[] columnCellLights = new int[8 * 8 * HEIGHT];
+
+    private final Object uploadLock = new Object();
     private final ByteBuffer upload = ByteBuffer.allocateDirect(TEXELS * 4).order(ByteOrder.nativeOrder());
+    private final ByteBuffer staging = ByteBuffer.allocateDirect(TEXELS * 4).order(ByteOrder.nativeOrder());
+    private final float[] workerSum = new float[TEXELS * 4];
+
+    private final ExecutorService worker = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "MetallumExtra-LightGrid");
+        t.setDaemon(true);
+        return t;
+    });
+    private volatile boolean updating;
+    private volatile boolean ready;
 
     private @Nullable GpuTexture texture;
     private @Nullable GpuTextureView view;
@@ -64,8 +80,12 @@ public final class LightColorGrid {
         this.texture = RenderSystem.getDevice().createTexture(() -> "Metallum Extra light colors",
                 GpuTexture.USAGE_TEXTURE_BINDING | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, WIDTH * DEPTH, HEIGHT, 1, 1);
         this.view = RenderSystem.getDevice().createTextureView(this.texture);
-        Arrays.fill(this.sum, 0.0F);
-        this.write();
+        synchronized (this.uploadLock) {
+            this.upload.clear();
+            for (int i = 0; i < TEXELS; i++) this.upload.putInt(0);
+            this.upload.flip();
+            RenderSystem.getDevice().createCommandEncoder().writeToTexture(this.texture, this.upload, 0, 0, 0, 0, WIDTH * DEPTH, HEIGHT);
+        }
     }
 
     /** Only after {@link #ensure()}. */
@@ -85,16 +105,40 @@ public final class LightColorGrid {
             this.originZ = wantedZ;
             this.placed = true;
             this.cursor = 0;
+            this.generation++;
             for (IntArrayList column : this.columns) column.clear();
         }
         globals.lightGrid.set((float) (this.originX - camera.x), (float) (this.originY - camera.y), (float) (this.originZ - camera.z), CELL);
+
+        // Upload any finished background rebuild to the GPU texture without stalling the frame.
+        if (this.ready) {
+            synchronized (this.uploadLock) {
+                this.ready = false;
+                if (this.texture != null) {
+                    RenderSystem.getDevice().createCommandEncoder().writeToTexture(this.texture, this.upload, 0, 0, 0, 0, WIDTH * DEPTH, HEIGHT);
+                }
+            }
+        }
 
         this.scan(level, this.cursor);
         this.cursor++;
         if (this.cursor == this.columns.length) {
             this.cursor = 0;
-            this.rebuild();
-            this.write();
+            if (!this.updating) {
+                this.updating = true;
+                int currentGen = this.generation;
+                int[][] snapshot = new int[this.columns.length][];
+                for (int i = 0; i < this.columns.length; i++) {
+                    snapshot[i] = this.columns[i].toIntArray();
+                }
+                this.worker.submit(() -> {
+                    try {
+                        this.rebuildAsync(snapshot, currentGen);
+                    } finally {
+                        this.updating = false;
+                    }
+                });
+            }
         }
     }
 
@@ -108,53 +152,95 @@ public final class LightColorGrid {
         if (chunk == null) return;
         int minSection = Math.max(level.getMinSectionY(), this.originY >> 4);
         int maxSection = Math.min(level.getMaxSectionY(), (this.originY + HEIGHT * CELL - 1) >> 4);
+
+        Arrays.fill(this.columnCellLights, 0);
+
         for (int sectionY = minSection; sectionY <= maxSection; sectionY++) {
             LevelChunkSection section = chunk.getSection(chunk.getSectionIndexFromSectionY(sectionY));
             if (section.hasOnlyAir()) continue;
             for (int y = 0; y < 16; y++) {
+                int blockY = (sectionY << 4) + y;
+                int cy = (blockY - this.originY) / CELL;
+                if (cy < 0 || cy >= HEIGHT) continue;
                 for (int z = 0; z < 16; z++) {
+                    int cz = z / CELL;
                     for (int x = 0; x < 16; x++) {
                         var state = section.getBlockState(x, y, z);
                         int light = state.getLightEmission();
                         if (light <= 0) continue;
-                        int blockX = (chunkX << 4) + x, blockY = (sectionY << 4) + y, blockZ = (chunkZ << 4) + z;
+
+                        // Skip fluid blocks completely surrounded by the same fluid: interior fluid blocks emit no escape light.
+                        if (state.getFluidState().is(FluidTags.LAVA)) {
+                            if (x > 0 && x < 15 && y > 0 && y < 15 && z > 0 && z < 15
+                                    && section.getBlockState(x - 1, y, z).getFluidState().is(FluidTags.LAVA)
+                                    && section.getBlockState(x + 1, y, z).getFluidState().is(FluidTags.LAVA)
+                                    && section.getBlockState(x, y - 1, z).getFluidState().is(FluidTags.LAVA)
+                                    && section.getBlockState(x, y + 1, z).getFluidState().is(FluidTags.LAVA)
+                                    && section.getBlockState(x, y, z - 1).getFluidState().is(FluidTags.LAVA)
+                                    && section.getBlockState(x, y, z + 1).getFluidState().is(FluidTags.LAVA)) {
+                                continue;
+                            }
+                        }
+
+                        int color = BlockTypes.lightColor(state);
+                        int cx = x / CELL;
+                        int cellKey = (cy << 6) | (cz << 3) | cx;
+                        int existing = this.columnCellLights[cellKey];
+                        int currentPacked = (color << 4) | Math.min(light, 15);
+                        // Within one 2x2x2 grid cell, one emitter of the same color and brightness is sufficient.
+                        if (existing == currentPacked || ((existing >> 4) == color && (existing & 15) >= (currentPacked & 15))) {
+                            continue;
+                        }
+                        this.columnCellLights[cellKey] = currentPacked;
+
+                        int blockX = (chunkX << 4) + x, blockZ = (chunkZ << 4) + z;
                         emitters.add(((blockX - this.originX) << 20) | ((blockY - this.originY) << 12) | ((blockZ - this.originZ) << 4) | 0);
-                        emitters.add(BlockTypes.lightColor(state) << 4 | Math.min(light, 15));
+                        emitters.add(currentPacked);
                     }
                 }
             }
         }
     }
 
-    /** Adds every known light-giving block into the cells it reaches. */
-    private void rebuild() {
-        float[] sum = this.sum;
+    /** Adds every known light-giving block into the cells it reaches, running in the background. */
+    private void rebuildAsync(final int[][] snapshot, final int gen) {
+        float[] sum = this.workerSum;
         Arrays.fill(sum, 0.0F);
-        for (IntArrayList emitters : this.columns) {
-            for (int i = 0; i < emitters.size(); i += 2) {
-                int packed = emitters.getInt(i);
-                int info = emitters.getInt(i + 1);
-                float x = ((packed >> 20) & 0xFFF) / (float) CELL, y = ((packed >> 12) & 0xFF) / (float) CELL, z = ((packed >> 4) & 0xFF) / (float) CELL;
+        for (int[] emitters : snapshot) {
+            if (emitters == null) continue;
+            for (int i = 0; i < emitters.length; i += 2) {
+                int packed = emitters[i];
+                int info = emitters[i + 1];
+                float x = ((packed >> 20) & 0xFFF) / (float) CELL;
+                float y = ((packed >> 12) & 0xFF) / (float) CELL;
+                float z = ((packed >> 4) & 0xFF) / (float) CELL;
                 int level = info & 15;
                 int[] color = BlockTypes.LIGHT_COLORS[(info >> 4) & 7];
                 float reach = Math.max(level * REACH, 1.0F);
+                float reachSq = reach * reach;
                 int span = (int) Math.ceil(reach);
                 int cx = (int) x, cy = (int) y, cz = (int) z;
                 for (int dz = -span; dz <= span; dz++) {
                     int tz = cz + dz;
                     if (tz < 0 || tz >= DEPTH) continue;
+                    float fz = tz + 0.5F - z;
+                    float fzSq = fz * fz;
+                    if (fzSq >= reachSq) continue;
                     for (int dy = -span; dy <= span; dy++) {
                         int ty = cy + dy;
                         if (ty < 0 || ty >= HEIGHT) continue;
+                        float fy = ty + 0.5F - y;
+                        float fyzSq = fzSq + fy * fy;
+                        if (fyzSq >= reachSq) continue;
                         for (int dx = -span; dx <= span; dx++) {
                             int tx = cx + dx;
                             if (tx < 0 || tx >= WIDTH) continue;
-                            float fx = tx + 0.5F - x, fy = ty + 0.5F - y, fz = tz + 0.5F - z;
-                            float distance = (float) Math.sqrt(fx * fx + fy * fy + fz * fz);
-                            if (distance >= reach) continue;
-                            // The nearest light decides the color: weight falls off steeply with distance.
+                            float fx = tx + 0.5F - x;
+                            float distSq = fyzSq + fx * fx;
+                            if (distSq >= reachSq) continue;
+                            float distance = (float) Math.sqrt(distSq);
                             float falloff = 1.0F - distance / reach;
-                            float weight = level * falloff * falloff / (distance * distance * 0.5F + 0.25F);
+                            float weight = level * falloff * falloff / (distSq * 0.5F + 0.25F);
                             int at = ((ty * DEPTH + tz) * WIDTH + tx) * 4;
                             sum[at] += color[0] * weight;
                             sum[at + 1] += color[1] * weight;
@@ -165,25 +251,31 @@ public final class LightColorGrid {
                 }
             }
         }
-    }
 
-    private void write() {
-        if (this.texture == null) return;
-        ByteBuffer out = this.upload;
-        out.clear();
-        float[] sum = this.sum;
+        if (this.generation != gen) return;
+
+        this.staging.clear();
         for (int i = 0; i < TEXELS; i++) {
             float weight = sum[i * 4 + 3];
             if (weight > 0.0F) {
-                out.put((byte) (int) (sum[i * 4] / weight)).put((byte) (int) (sum[i * 4 + 1] / weight)).put((byte) (int) (sum[i * 4 + 2] / weight));
-                // How sure the color is: faint light far from any source leaves the color at its default.
-                out.put((byte) (int) Math.min(255.0F, weight * 40.0F));
+                this.staging.put((byte) (int) (sum[i * 4] / weight))
+                        .put((byte) (int) (sum[i * 4 + 1] / weight))
+                        .put((byte) (int) (sum[i * 4 + 2] / weight));
+                this.staging.put((byte) (int) Math.min(255.0F, weight * 40.0F));
             } else {
-                out.putInt(0);
+                this.staging.putInt(0);
             }
         }
-        out.flip();
-        RenderSystem.getDevice().createCommandEncoder().writeToTexture(this.texture, out, 0, 0, 0, 0, WIDTH * DEPTH, HEIGHT);
+        this.staging.flip();
+
+        synchronized (this.uploadLock) {
+            if (this.generation == gen) {
+                this.upload.clear();
+                this.upload.put(this.staging);
+                this.upload.flip();
+                this.ready = true;
+            }
+        }
     }
 
     public void close() {
@@ -192,6 +284,8 @@ public final class LightColorGrid {
         this.view = null;
         this.texture = null;
         this.placed = false;
+        this.ready = false;
+        this.updating = false;
         for (IntArrayList column : this.columns) column.clear();
     }
 }

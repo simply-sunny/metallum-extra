@@ -921,7 +921,8 @@ public final class PackTests {
                 java.util.Arrays.equals(f.buffers().get(0).colorToClear(fog), fog) && java.util.Arrays.equals(f.buffers().get(1).colorToClear(fog), new float[] {1, 1, 1, 1})
                         && java.util.Arrays.equals(f.buffers().get(2).colorToClear(fog), new float[] {0, 0, 0, 0}));
         check("colortexNClearColor sets the clear color", java.util.Arrays.equals(f.buffers().get(4).colorToClear(fog), new float[] {0.25F, 0.5F, 0.75F, 1.0F}));
-        planFails("a format that does not exist here is refused", dir, "BadFormat", Map.of("composite", fragment("uniform sampler2D colortex0;\nconst int colortex0Format = RGBA32UI;")), null, "RGBA32UI");
+        planFails("a format that does not exist here is refused", dir, "BadFormat", Map.of("composite", fragment("uniform sampler2D colortex0;\nconst int colortex0Format = RGBA128F;")), null, "RGBA128F");
+        check("RGBA32UI is accepted as integer format", IrisPlan.build(openStandard(dir.resolve("IntFormat.zip"), Map.of("composite.fsh", "#version 330\nconst int colortex0Format = RGBA32UI;\nvoid main(){}\n", "composite.vsh", VERTEX, "final.fsh", "#version 330\nvoid main(){}\n", "final.vsh", VERTEX)), null).buffers().get(0).format() == com.mojang.renderpearl.api.GpuFormat.RGBA32_UINT);
 
         // Depth and old names.
         IrisPlan depth = planOf(dir, "Depth", Map.of("composite", fragment("uniform sampler2D depthtex0;\nuniform sampler2D depthtex2;\nuniform sampler2D gaux1;")), null);
@@ -959,6 +960,12 @@ public final class PackTests {
             ZipPack bloop = ZipPack.open(bloopZip);
             IrisPlan bloopPlan = IrisPlan.build(bloop, "world0");
             check("Bloop buffer 8 is full size for world render pass", bloopPlan.buffers().get(8).fullSize());
+        }
+        Path photonZip = Path.of("run/shaderpacks/photon_v1.3b.zip");
+        if (Files.exists(photonZip)) {
+            ZipPack photonPack = ZipPack.open(photonZip);
+            IrisPlan photonPlan = IrisPlan.build(photonPack, "world0");
+            check("Photon colortex4 is RGBA16F and does not clear", photonPlan.buffers().get(4).format() == com.mojang.renderpearl.api.GpuFormat.RGBA16_FLOAT && !photonPlan.buffers().get(4).clear());
         }
         Path track1 = dir.resolve("Track1Test.zip");
         TestPacks.writeTrack1Pack(track1);

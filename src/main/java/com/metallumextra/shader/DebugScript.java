@@ -305,6 +305,10 @@ public final class DebugScript {
                 IrisPipeline.trace(Integer.parseInt(rest));
                 pause(100);
             }
+            case "photon", "logphoton" -> {
+                IrisPipeline.logPhoton();
+                pause(100);
+            }
             case "resize" -> {
                 // resize <width>x<height>: sets the window's size and logs the buffer sizes a moment later.
                 String[] size = rest.split("x");

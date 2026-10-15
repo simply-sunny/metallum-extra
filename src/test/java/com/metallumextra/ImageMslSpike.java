@@ -40,10 +40,9 @@ public final class ImageMslSpike {
             """;
 
     public static void main(final String[] args) throws Exception {
-        for (boolean vertex : new boolean[] {true, false}) {
-            System.out.println("==== " + (vertex ? "vertex" : "fragment"));
-            System.out.println(toMsl(spirv(vertex ? VERTEX : FRAGMENT, vertex), vertex));
-        }
+        String csh = java.nio.file.Files.readString(java.nio.file.Path.of("build/d4a.csh"));
+        // Remove includes or load it
+        System.out.println("d4a.csh length: " + csh.length());
     }
 
     private static ByteBuffer spirv(final String source, final boolean vertex) {

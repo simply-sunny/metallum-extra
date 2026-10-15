@@ -520,6 +520,9 @@ public final class IrisPipeline {
                 colorZeroIntoWorld(main);
             }
             if (DEBUG_BUFFER >= 0 && TARGETS.hasBuffer(DEBUG_BUFFER)) blit(TARGETS.read(DEBUG_BUFFER), main.getColorTextureView(), GpuFormat.RGBA8_UNORM);
+            if (LOG_PHOTON || (traceFrames > 0 && PackManager.activeId().toLowerCase(java.util.Locale.ROOT).contains("photon"))) {
+                logPhoton();
+            }
             worldCopied = false;
             debugStopped = false;
             if (traceFrames > 0) traceFrames--;
@@ -528,6 +531,76 @@ public final class IrisPipeline {
 
     /** Development aid: {@code -Dmetallumextra.debugBuffer=N} shows buffer colortexN on the screen instead of the pack's final picture. */
     private static final int DEBUG_BUFFER = Integer.getInteger("metallumextra.debugBuffer", -1);
+    private static final boolean LOG_PHOTON = Boolean.getBoolean("metallumextra.logPhoton");
+
+    /** Logs detailed Photon lighting and sky spherical harmonics data from colortex4 and center screen. */
+    public static void logPhoton() {
+        if (!TARGETS.hasBuffer(4)) {
+            MetallumExtra.LOGGER.info("[Photon Diagnostic] colortex4 is not present in active pack");
+            return;
+        }
+        TextureTarget t4 = TARGETS.readTarget(4);
+        TextureTarget t0 = TARGETS.readTarget(0);
+        if (t4 == null || t0 == null) return;
+        GpuFormat format4 = TARGETS.spec(4).format();
+        int bpp4 = IrisTargets.bytesPerPixel(format4);
+        int w4 = t4.width, h4 = t4.height;
+        GpuBuffer buf4 = RenderSystem.getDevice().createBuffer(() -> "Photon Diag 4", GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, (long) w4 * h4 * bpp4);
+        RenderSystem.getDevice().createCommandEncoder().copyTextureToBuffer(t4.getColorTexture(), buf4, 0, () -> {
+            try (var view = buf4.map(true, false)) {
+                java.nio.ByteBuffer data = view.data().order(java.nio.ByteOrder.nativeOrder());
+                int col191 = Math.min(191, w4 - 1);
+                float[] lightColor = readVec3(data, w4, col191, 0, bpp4, format4);
+                float[] ambientColor = readVec3(data, w4, col191, 1, bpp4, format4);
+                float[] sh0 = readVec3(data, w4, col191, 2, bpp4, format4);
+                float[] skylightUp = readVec3(data, w4, col191, 11, bpp4, format4);
+                double[] sunAngleArr = uniformValues.get("sunAngle");
+                double[] rainArr = uniformValues.get("rainStrength");
+                double sa = sunAngleArr != null && sunAngleArr.length > 0 ? sunAngleArr[0] : 0.0;
+                double rain = rainArr != null && rainArr.length > 0 ? rainArr[0] : 0.0;
+                MetallumExtra.LOGGER.info(String.format(java.util.Locale.ROOT,
+                        "[Photon Diagnostic] Frame %d: sunAngle=%.4f rain=%.2f | light_color=(R:%.4f, G:%.4f, B:%.4f) ambient=(R:%.4f, G:%.4f, B:%.4f) skylight_up=(R:%.4f, G:%.4f, B:%.4f) sh0=(R:%.4f, G:%.4f, B:%.4f)",
+                        frame, sa, rain, lightColor[0], lightColor[1], lightColor[2], ambientColor[0], ambientColor[1], ambientColor[2], skylightUp[0], skylightUp[1], skylightUp[2], sh0[0], sh0[1], sh0[2]));
+            } finally {
+                buf4.close();
+            }
+        }, 0);
+
+        GpuFormat format0 = TARGETS.spec(0).format();
+        int bpp0 = IrisTargets.bytesPerPixel(format0);
+        int w0 = t0.width, h0 = t0.height;
+        int cx = w0 / 2, cy = h0 / 2;
+        GpuBuffer buf0 = RenderSystem.getDevice().createBuffer(() -> "Photon Diag 0", GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, (long) w0 * h0 * bpp0);
+        RenderSystem.getDevice().createCommandEncoder().copyTextureToBuffer(t0.getColorTexture(), buf0, 0, () -> {
+            try (var view = buf0.map(true, false)) {
+                java.nio.ByteBuffer data = view.data().order(java.nio.ByteOrder.nativeOrder());
+                float[] centerColor = readVec3(data, w0, cx, cy, bpp0, format0);
+                float r = centerColor[0], g = centerColor[1], b = centerColor[2];
+                String tintWarning = (r > b * 1.15f && g > b * 1.15f) ? " [YELLOW/PEE TINT DETECTED: R/B=" + String.format(java.util.Locale.ROOT, "%.2f", r / Math.max(1e-4f, b)) + ", G/B=" + String.format(java.util.Locale.ROOT, "%.2f", g / Math.max(1e-4f, b)) + "]" : "";
+                MetallumExtra.LOGGER.info(String.format(java.util.Locale.ROOT,
+                        "[Photon Diagnostic] Center Screen (%d, %d): shaded_color=(R:%.4f, G:%.4f, B:%.4f)%s", cx, cy, r, g, b, tintWarning));
+            } finally {
+                buf0.close();
+            }
+        }, 0);
+    }
+
+    private static float[] readVec3(final java.nio.ByteBuffer data, final int width, final int x, final int y, final int pixelBytes, final GpuFormat format) {
+        int at = (y * width + x) * pixelBytes;
+        if (at + pixelBytes > data.capacity()) return new float[] {0, 0, 0};
+        String name = format.name();
+        int channels = name.startsWith("RGBA") ? 4 : name.startsWith("RGB") ? 3 : name.startsWith("RG") ? 2 : 1;
+        int bytes = pixelBytes / channels;
+        float[] res = new float[3];
+        for (int c = 0; c < 3; c++) {
+            if (c < channels) {
+                int pos = at + c * bytes;
+                res[c] = (float) (name.contains("FLOAT") ? (bytes == 4 ? data.getFloat(pos) : Float.float16ToFloat(data.getShort(pos)))
+                        : bytes == 1 ? (data.get(pos) & 255) / 255.0 : (data.getShort(pos) & 65535) / 65535.0);
+            }
+        }
+        return res;
+    }
 
     private static boolean ready(final RenderTarget main) {
         return TARGETS.width() == Math.max(main.width, 1) && TARGETS.height() == Math.max(main.height, 1);

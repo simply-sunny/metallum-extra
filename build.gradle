@@ -32,7 +32,13 @@ dependencies {
 	// The dev client runs the oldest supported release unless told otherwise: -Pmetallum_run_version=<version>
 	compileOnly "maven.modrinth:metallum-mc:${project.metallum_version}"
 	compileOnly "io.github.kokodio:metal-jvm:${project.metal_jvm_version}"
-	runtimeOnly "maven.modrinth:metallum-mc:${project.findProperty('metallum_run_version') ?: project.metallum_version}"
+
+	def withIris = project.hasProperty('withIris')
+	if (withIris) {
+		runtimeOnly "maven.modrinth:iris:1.11.7+26.3-fabric"
+	} else {
+		runtimeOnly "maven.modrinth:metallum-mc:${project.findProperty('metallum_run_version') ?: project.metallum_version}"
+	}
 
 	// Optional: only for the in-game settings screen entry in Mod Menu. Not needed at runtime.
 	compileOnly "maven.modrinth:modmenu:${project.modmenu_version}"
@@ -42,6 +48,22 @@ dependencies {
 	// Sodium is also compiled against for its video-settings API (the page is only loaded when Sodium is present).
 	implementation "maven.modrinth:sodium:${project.sodium_version}"
 	runtimeOnly "maven.modrinth:fabric-api:${project.fabric_api_version}"
+}
+
+loom {
+	runs {
+		client {
+			client()
+			name "Minecraft Client (Metal)"
+			runDir "run"
+		}
+		clientIris {
+			client()
+			name "Minecraft Client (Iris OpenGL)"
+			runDir "run-iris"
+			vmArg "-Dmetallumextra.disabled=true"
+		}
+	}
 }
 
 // A small deterministic test suite for the parts of the shader pipeline that do not need a running game.

@@ -522,7 +522,7 @@ public final class LegacyGlsl {
         return out.toString();
     }
 
-    private static final Pattern PLANNER_COMMENT = Pattern.compile("(?s)/\\*\\s*(?:RENDERTARGETS|DRAWBUFFERS)\\s*:.*\\*/");
+    private static final Pattern PLANNER_COMMENT = Pattern.compile("(?s)/\\*.*?(?:RENDERTARGETS|DRAWBUFFERS|colortex\\d+).*?\\*/");
 
     /**
      * The text with its block comments blanked (the lines stay), except the ones the planner reads ({@code RENDERTARGETS}, {@code DRAWBUFFERS}). What a comment holds is no code: a program that comments out a stretch with {@code #extension} or {@code #version} lines in it must not have a prelude put in there.

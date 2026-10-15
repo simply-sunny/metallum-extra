@@ -11,10 +11,12 @@ import java.util.Set;
 /** Only patch Metallum on macOS (Metallum itself only activates there). */
 public final class ExtraMixinPlugin implements IMixinConfigPlugin {
     private boolean isMacOs;
+    private boolean disabled;
 
     @Override
     public void onLoad(final String mixinPackage) {
         this.isMacOs = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac");
+        this.disabled = Boolean.getBoolean("metallumextra.disabled");
     }
 
     @Override
@@ -24,6 +26,10 @@ public final class ExtraMixinPlugin implements IMixinConfigPlugin {
 
     @Override
     public boolean shouldApplyMixin(final String targetClassName, final String mixinClassName) {
+        if (this.disabled) return false;
+        if (targetClassName.startsWith("com.metallum.")) {
+            return this.isMacOs && net.fabricmc.loader.api.FabricLoader.getInstance().isModLoaded("metallum");
+        }
         return this.isMacOs;
     }
 

@@ -27,6 +27,8 @@ public final class PackTextures {
     }
 
     private static final Map<String, Loaded> LOADED = new HashMap<>();
+    /** Built-in pictures outlive pack changes, so they are never remade while a pass is recording. */
+    private static final Map<String, Loaded> OWN = new HashMap<>();
     private static @Nullable ShaderPack owner;
     private static final Pattern BLUR = Pattern.compile("\"blur\"\\s*:\\s*(true|false)");
     private static final Pattern CLAMP = Pattern.compile("\"clamp\"\\s*:\\s*(true|false)");
@@ -35,6 +37,15 @@ public final class PackTextures {
     }
 
     private static synchronized @Nullable Loaded get(final ShaderPack pack, final String path) {
+        if (path.startsWith(BUILTIN) && path.indexOf(' ') < 0) {
+            Loaded own = OWN.get(path);
+            if (own == null) {
+                own = builtin(path);
+                if (own != null) OWN.put(path, own);
+            }
+            LOADED.remove(path);
+            return own;
+        }
         if (owner != pack) {
             release();
             owner = pack;
@@ -68,7 +79,8 @@ public final class PackTextures {
      * given a one-pixel picture to hand to the programs, and the real texture is bound in its place (see {@link com.metallum.render.MetallumExtraNative}).
      */
     private static @Nullable Loaded raw(final ShaderPack pack, final String key, final com.metallumextra.shader.pack.TextureSpec spec) {
-        byte[] bytes = pack.bytes(spec.path());
+        // An image the pack declares (image.* in shaders.properties) that nothing writes to: zeros.
+        byte[] bytes = spec.path().equals("mx:zero") ? new byte[spec.width() * spec.height() * spec.depth() * spec.sourceChannels() * spec.sourceBytes()] : pack.bytes(spec.path());
         if (bytes == null) return null;
         try {
             Object real = com.metallum.render.MetallumExtraNative.create("Metallum Extra pack texture " + spec.path(), spec.target(), spec.format(), spec.width(), spec.height(), spec.depth(),

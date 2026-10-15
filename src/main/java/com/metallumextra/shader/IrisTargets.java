@@ -35,6 +35,8 @@ final class IrisTargets {
     }
 
     private final Slot[] slots = new Slot[IrisPlan.COLOR_BUFFERS];
+    /** One attachment for each group of packed buffers (see {@link IrisPlan#packGroups}): four 32-bit integers per pixel, a buffer in each. */
+    private final java.util.List<TextureTarget> packed = new java.util.ArrayList<>();
     private @Nullable TextureTarget depthWithoutTranslucent;
     private @Nullable TextureTarget depthAll;
     private @Nullable TextureTarget shadow;
@@ -74,6 +76,7 @@ final class IrisTargets {
             if (needsAlternate(newPlan, entry.getKey())) slot.alternate = create("colortex" + entry.getKey() + " alternate", slot.spec.format(), w, h);
             slots[entry.getKey()] = slot;
         }
+        for (int g = 0; g < newPlan.packGroups().size(); g++) packed.add(create("packed buffers " + g, GpuFormat.RGBA32_UINT, width, height));
         shadowResolution = newPlan.hasShadow() ? newPlan.shadowResolution() : 0;
         if (shadowResolution > 0) {
             shadow = createShadow("shadow map", shadowResolution);
@@ -145,6 +148,8 @@ final class IrisTargets {
         for (Slot slot : slots) {
             if (slot != null && slot.spec.clear()) clear(slot.main, slot.spec.colorToClear(fog));
         }
+        // What was packed is cleared to zero, which is what every buffer in a group is cleared to (see IrisPlan#packable).
+        for (TextureTarget target : packed) clear(target, new float[] {0, 0, 0, 0});
     }
 
     /**
@@ -155,6 +160,11 @@ final class IrisTargets {
         try (RenderPass pass = RenderSystem.getDevice().createCommandEncoder().createRenderPass(() -> "Metallum Extra buffer clear",
                 target.getColorTextureView(), Optional.of(new Vector4f(color[0], color[1], color[2], color[3])))) {
         }
+    }
+
+    /** The attachment of packed group {@code group}. */
+    GpuTextureView packedView(final int group) {
+        return packed.get(group).getColorTextureView();
     }
 
     /** What programs read of buffer {@code index}. */
@@ -262,6 +272,8 @@ final class IrisTargets {
             if (slot.alternate != null) slot.alternate.destroyBuffers();
             slots[i] = null;
         }
+        for (TextureTarget target : packed) target.destroyBuffers();
+        packed.clear();
         if (depthAll != null) depthAll.destroyBuffers();
         if (depthWithoutTranslucent != null) depthWithoutTranslucent.destroyBuffers();
         depthAll = null;

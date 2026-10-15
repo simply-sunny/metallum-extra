@@ -19,6 +19,9 @@ public final class ShaderMacros {
     /** The names and values, in the order they are written. */
     public static Map<String, String> builtin() {
         Map<String, String> macros = new LinkedHashMap<>();
+        // The values of biome_category, as Iris names them.
+        String[] categories = {"NONE", "TAIGA", "EXTREME_HILLS", "JUNGLE", "MESA", "PLAINS", "SAVANNA", "ICY", "THE_END", "BEACH", "FOREST", "OCEAN", "DESERT", "RIVER", "SWAMP", "MUSHROOM", "NETHER", "UNDERGROUND", "MOUNTAIN"};
+        for (int i = 0; i < categories.length; i++) macros.put("CAT_" + categories[i], String.valueOf(i));
         macros.put("MC_VERSION", "26020");
         macros.put("IS_IRIS", "");
         macros.put("IRIS_VERSION", "11100");
@@ -30,6 +33,9 @@ public final class ShaderMacros {
         macros.put("MC_RENDER_QUALITY", "1.0");
         macros.put("MC_SHADOW_QUALITY", "1.0");
         macros.put("MC_HAND_DEPTH", "0.125");
+        // Iris defines these always: the pack may read the resource pack's normal and specular maps (this loader gives it flat ones, see IrisPlan).
+        macros.put("MC_NORMAL_MAP", "");
+        macros.put("MC_SPECULAR_MAP", "");
         // The render stages, numbered as in Iris. The renderStage uniform is zero (none) until the game says which stage a draw belongs to.
         String[] stages = {"NONE", "SKY", "SUNSET", "CUSTOM_SKY", "SUN", "MOON", "STARS", "VOID", "TERRAIN_SOLID", "TERRAIN_CUTOUT_MIPPED", "TERRAIN_CUTOUT",
                 "ENTITIES", "BLOCK_ENTITIES", "DESTROY", "OUTLINE", "DEBUG", "HAND_SOLID", "TERRAIN_TRANSLUCENT", "TRIPWIRE", "PARTICLES", "CLOUDS",

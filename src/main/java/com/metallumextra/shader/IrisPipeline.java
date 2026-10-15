@@ -59,6 +59,8 @@ import java.util.Set;
  */
 public final class IrisPipeline {
     private static final Identifier BLIT_VERTEX = Identifier.fromNamespaceAndPath(com.metallumextra.MetallumExtra.MOD_ID, "internal/fullscreen");
+    private static final Identifier UNPACK_FRAGMENT = Identifier.fromNamespaceAndPath(com.metallumextra.MetallumExtra.MOD_ID, "internal/unpack");
+    private static final Map<Integer, RenderPipeline> UNPACKS = new HashMap<>();
     private static final Identifier BLIT_FRAGMENT = Identifier.fromNamespaceAndPath(com.metallumextra.MetallumExtra.MOD_ID, "internal/blit");
 
     private static final IrisTargets TARGETS = new IrisTargets();
@@ -261,10 +263,13 @@ public final class IrisPipeline {
         RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
         if (TARGETS.width() == 0 || !ready(main) || descriptor.colorAttachments().get(0) == null
                 || descriptor.colorAttachments().get(0).textureView().texture() != main.getColorTexture()) return descriptor;
-        GpuTextureView[] extra = new GpuTextureView[plan.worldBuffers().size()];
-        int i = 0;
-        for (int buffer : plan.worldBuffers()) extra[i++] = TARGETS.read(buffer);
-        return withColorAttachments(descriptor, extra);
+        // The buffers in the order of their attachments (see IrisPlan#attachment): the ones that stand alone, then one for each group packed together.
+        java.util.List<GpuTextureView> extra = new java.util.ArrayList<>();
+        for (int buffer : plan.worldBuffers()) {
+            if (plan.packGroupOf(buffer) < 0) extra.add(TARGETS.read(buffer));
+        }
+        for (int group = 0; group < plan.packGroups().size(); group++) extra.add(TARGETS.packedView(group));
+        return withColorAttachments(descriptor, extra.toArray(new GpuTextureView[0]));
     }
 
     /** The descriptor with more color attachments after its own (it is a record: a new one is made). */
@@ -376,6 +381,7 @@ public final class IrisPipeline {
         PIPELINES.clear();
         KERNELS.clear();
         BLITS.clear();
+        UNPACKS.clear();
         TARGETS.release();
         if (uniformBuffer != null) {
             uniformBuffer.close();
@@ -443,6 +449,7 @@ public final class IrisPipeline {
             List<IrisPlan.Step> deferred = current.steps(ProgramSet.Stage.DEFERRED);
             RenderTarget main = Minecraft.getInstance().gameRenderer.mainRenderTarget();
             if (!ready(main)) return;
+            unpackBuffers(current);
             snapshotDepth(main, false);
             if (handDepth != null) overlayHandDepth(handDepth, false);
             if (current.usesDepth(1) || current.usesDepth(2)) copies++;
@@ -501,6 +508,7 @@ public final class IrisPipeline {
             // An item drawn after the rest has only the game's own depth buffer to say where it is.
             if (handDepth == null) overlayHandDepth(main.getDepthTextureView(), true);
             handDepth = null;
+            unpackBuffers(current);
             // Translucent things and the held item were drawn into the game's image after the deferred programs: it, not buffer 0, is the finished world.
             worldIntoColor0(main);
             run(current.steps(ProgramSet.Stage.COMPOSITE), main);
@@ -1048,6 +1056,37 @@ public final class IrisPipeline {
             blit(TARGETS.read(0), main.getColorTextureView(), GpuFormat.RGBA8_UNORM);
         }
         copies++;
+    }
+
+    /**
+     * The buffers the world was drawn into packed together (see {@link IrisPlan#packGroups}) are taken apart into the buffers themselves, which the programs after the
+     * world read. Done before the deferred programs and again before the composite ones, since translucent things and the held item are drawn in between.
+     */
+    private static void unpackBuffers(final IrisPlan current) {
+        for (int group = 0; group < current.packGroups().size(); group++) {
+            java.util.List<Integer> buffers = current.packGroups().get(group);
+            int count = buffers.size();
+            RenderPipeline pipeline = UNPACKS.computeIfAbsent(count, c -> {
+                RenderPipeline.Builder builder = RenderPipeline.builder()
+                        .withLocation(Identifier.fromNamespaceAndPath(MetallumExtra.MOD_ID, "pipeline/internal/unpack_" + c))
+                        .withVertexShader(BLIT_VERTEX)
+                        .withFragmentShader(UNPACK_FRAGMENT)
+                        .withShaderDefine("COUNT", c)
+                        .withBindGroupLayout(BindGroupLayout.builder().withUniform("packedBuffers", UniformType.COMBINED_IMAGE_SAMPLER).build())
+                        .withPrimitiveTopology(PrimitiveTopology.TRIANGLES);
+                for (int i = 0; i < c; i++) builder.withColorTargetState(i, new ColorTargetState(Optional.empty(), GpuFormat.RGBA8_UNORM, ColorTargetState.WRITE_ALL));
+                return builder.build();
+            });
+            RenderPassDescriptor.Builder descriptor = RenderPassDescriptor.builder(() -> "Metallum Extra unpack buffers")
+                    .withRenderArea(new RenderPass.RenderArea(0, 0, TARGETS.width(), TARGETS.height()));
+            for (int buffer : buffers) descriptor.withColorAttachment(TARGETS.read(buffer));
+            try (RenderPass pass = RenderSystem.getDevice().createCommandEncoder().createRenderPass(descriptor.build())) {
+                pass.setPipeline(RenderSystem.getCompiledPipeline(pipeline));
+                pass.setUniform("packedBuffers", TARGETS.packedView(group), RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST));
+                pass.draw(3, 1, 0, 0);
+            }
+            passes++;
+        }
     }
 
     /** Draws one image into another of a different format, which a plain copy cannot do. */

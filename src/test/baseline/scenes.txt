@@ -1,0 +1,114 @@
+# Phase 0 baseline: fixed scenes for comparing renderers, run by run.sh. Every scene is shot (with a .txt of what it was
+# taken with) and then timed for 10 seconds. Wind and waves are stood still by -Dmetallumextra.freezeTime=true.
+world PackTest
+wait 2000
+screen close
+hud off
+cmd gamerule advance_time false
+cmd gamerule advance_weather false
+cmd weather clear
+cmd time set 2000
+cmd difficulty peaceful
+pack builtin
+set shaders on
+set quality medium
+set shadows on
+set bloom on
+set reflections on
+set waving on
+set rays off
+set ao on
+set colored on
+set edges on
+cmd gamemode spectator @a
+cmd tp @a 0.5 203 -9 0 25
+wait 3000
+# The arena: a grass platform with stone, leaves, grass, a pool, lights and mobs.
+cmd fill -12 199 -12 12 199 12 minecraft:grass_block
+cmd fill -12 200 -12 12 215 12 minecraft:air
+cmd fill 3 200 3 3 210 3 minecraft:stone
+cmd fill -4 200 5 -2 203 7 minecraft:stone
+cmd fill -3 203 2 3 205 6 minecraft:oak_leaves
+cmd fill -6 200 0 6 200 8 minecraft:short_grass
+cmd fill -6 200 -3 6 201 -3 minecraft:tall_grass
+cmd fill 6 198 -11 11 198 -5 minecraft:stone
+cmd fill 6 199 -11 11 199 -5 minecraft:water
+cmd setblock -8 200 -6 minecraft:torch
+cmd setblock -9 200 -8 minecraft:soul_lantern
+cmd setblock -10 200 -6 minecraft:glowstone
+cmd setblock -7 200 -9 minecraft:lantern
+cmd summon minecraft:cow -9 200 2 {NoAI:1b,NoGravity:1b,Rotation:[20f,0f]}
+cmd summon minecraft:pig -7 200 3 {NoAI:1b,NoGravity:1b,Rotation:[-30f,0f]}
+cmd summon minecraft:armor_stand -5 200 2 {NoGravity:1b,ShowArms:1b,Pose:{RightArm:[-40f,20f,0f]}}
+cmd summon minecraft:item -11 200 3 {Item:{id:"minecraft:diamond",count:1},NoGravity:1b,Age:-32768s}
+cmd summon minecraft:item_frame -12 201 6 {Facing:5b,Item:{id:"minecraft:compass",count:1}}
+wait 4000
+
+# 1 day
+cmd time set 2000
+cmd tp @a 0.5 203 -9 0 25
+wait 3000
+shot day
+perf 10000 day
+
+# 2 night, with lights
+cmd time set 18000
+wait 2500
+shot night
+perf 10000 night
+
+# 3 water, low sun
+cmd time set 1000
+cmd tp @a 8.5 202.5 -15 0 32
+wait 3000
+shot water
+perf 10000 water
+
+# 4 vegetation, close
+cmd time set 2000
+cmd tp @a 0.5 201.6 -1.5 0 12
+wait 3000
+shot vegetation
+perf 10000 vegetation
+
+# 5 entities
+cmd time set 3000
+cmd tp @a -7.5 201.5 -3 0 8
+wait 3000
+shot entities
+perf 10000 entities
+
+# 6 inventory
+cmd time set 2000
+cmd tp @a 0.5 203 -9 0 25
+wait 2500
+screen inventory
+wait 1500
+shot inventory
+perf 10000 inventory
+screen close
+wait 500
+
+# 7 cave: a closed room under the platform, lit by glowstone and lava
+cmd fill -8 168 -8 8 178 8 minecraft:stone
+cmd fill -7 169 -7 7 177 7 minecraft:air
+cmd setblock 0 177 0 minecraft:glowstone
+cmd fill 3 169 3 5 169 5 minecraft:lava
+cmd setblock -5 170 -5 minecraft:torch
+cmd tp @a -6 171.6 -6 -45 5
+wait 3500
+shot cave
+perf 10000 cave
+
+# 8 nether
+cmd execute in minecraft:the_nether run tp @a 0.5 80 0.5 0 20
+wait 6000
+cmd execute in minecraft:the_nether run fill -10 79 -10 10 79 10 minecraft:netherrack
+cmd execute in minecraft:the_nether run fill -2 79 2 4 79 6 minecraft:lava
+cmd execute in minecraft:the_nether run fill -6 80 4 -4 83 4 minecraft:nether_bricks
+cmd execute in minecraft:the_nether run setblock 0 80 4 minecraft:shroomlight
+cmd execute in minecraft:the_nether run tp @a 0.5 82 -6 0 15
+wait 4000
+shot nether
+perf 10000 nether
+quit

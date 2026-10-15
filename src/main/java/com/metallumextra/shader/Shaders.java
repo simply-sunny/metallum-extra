@@ -57,7 +57,7 @@ public final class Shaders {
 
     private static final boolean HAND_LOG = Boolean.getBoolean("metallumextra.logHand");
     /** Unfinished: drawing the held item before the deferred programs (see HandSource) draws nothing yet, so it is off unless asked for. */
-    private static final boolean EARLY_HAND = !"false".equals(System.getProperty("metallumextra.earlyHand"));
+    private static final boolean EARLY_HAND = Boolean.getBoolean("metallumextra.earlyHand");
     private static final ShaderGlobals GLOBALS = new ShaderGlobals();
     private static final LightColorGrid LIGHT_COLORS = new LightColorGrid();
 

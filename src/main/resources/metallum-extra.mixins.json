@@ -40,6 +40,7 @@
     "shader.SodiumMeshBufferShaderMixin",
     "shader.SodiumSectionDataShaderMixin",
     "shader.SodiumTerrainPipelineMixin",
+    "shader.SodiumTerrainCompileGuardMixin",
     "shader.SodiumTerrainPrograms",
     "shader.SodiumWorldRendererShaderMixin"
   ],

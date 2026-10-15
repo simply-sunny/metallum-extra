@@ -299,6 +299,11 @@ public final class IrisWorld {
         } catch (RuntimeException e) {
             // A sky that cannot be drawn is never a crash: the pack is put aside, and the game draws its own sky from the next frame.
             sky = null;
+            // The group the draw opened is closed, or the pass is refused at its end for leaving one open.
+            try {
+                pass.popDebugGroup();
+            } catch (RuntimeException ignored) {
+            }
             if (!com.metallumextra.shader.pack.PackManager.fail(e)) throw e;
         }
         return true;
@@ -400,6 +405,8 @@ public final class IrisWorld {
             builder.withColorTargetState(0, new ColorTargetState(writesZero ? blend : Optional.empty(), zero.format(), writesZero ? zero.writeMask() : ColorTargetState.WRITE_NONE));
         }
         for (int buffer : plan.worldBuffers()) {
+            // A buffer packed with others has no attachment of its own (see below).
+            if (plan.packGroupOf(buffer) >= 0) continue;
             boolean writes = false;
             if (step != null) {
                 for (int written : step.writes()) writes |= written == buffer;
@@ -411,6 +418,19 @@ public final class IrisWorld {
                 else if (setting instanceof IrisPlan.BlendSetting.Default && buffer == step.writes()[0]) blend = blendOfFirst;
             }
             builder.withColorTargetState(plan.attachment(buffer), new ColorTargetState(blend, plan.buffers().get(buffer).format(), writes ? ColorTargetState.WRITE_ALL : ColorTargetState.WRITE_NONE));
+        }
+        // One attachment of four 32-bit integers for each group of packed buffers: the channels of the buffers the program writes are written, the others left as they are.
+        int[] channelBits = {ColorTargetState.WRITE_RED, ColorTargetState.WRITE_GREEN, ColorTargetState.WRITE_BLUE, ColorTargetState.WRITE_ALPHA};
+        for (int group = 0; group < plan.packGroups().size(); group++) {
+            int mask = ColorTargetState.WRITE_NONE;
+            if (step != null) {
+                for (int buffer : plan.packGroups().get(group)) {
+                    for (int written : step.writes()) {
+                        if (written == buffer) mask |= channelBits[plan.packChannelOf(buffer)];
+                    }
+                }
+            }
+            builder.withColorTargetState(plan.attachmentOfGroup(group), new ColorTargetState(Optional.empty(), GpuFormat.RGBA32_UINT, mask));
         }
     }
 }

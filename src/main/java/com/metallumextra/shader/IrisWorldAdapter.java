@@ -68,6 +68,7 @@ public final class IrisWorldAdapter {
     /** The samplers of the buffers and shadow maps, by the names the pack reads them with and the internal names they are bound by (see {@link ShaderBindings}). */
     private static final java.util.Map<String, String> BOUND_SAMPLERS = java.util.Map.ofEntries(
             java.util.Map.entry("shadowtex0", ShaderBindings.SHADOW_MAP), java.util.Map.entry("shadowtex1", ShaderBindings.SHADOW_MAP),
+            java.util.Map.entry("shadow", ShaderBindings.SHADOW_MAP), java.util.Map.entry("watershadow", ShaderBindings.SHADOW_MAP),
             java.util.Map.entry("shadowcolor0", ShaderBindings.SHADOW_COLOR), java.util.Map.entry("shadowcolor1", ShaderBindings.SHADOW_COLOR1),
             java.util.Map.entry("colortex0", ShaderBindings.COLOR0), java.util.Map.entry("gcolor", ShaderBindings.COLOR0),
             java.util.Map.entry("depthtex0", ShaderBindings.DEPTH0), java.util.Map.entry("gdepthtex", ShaderBindings.DEPTH0),
@@ -175,9 +176,7 @@ public final class IrisWorldAdapter {
                 + "#define modelViewMatrix gbufferModelView\n#define projectionMatrix gbufferProjection\n#define modelViewMatrixInverse gbufferModelViewInverse\n"
                 + "#define projectionMatrixInverse gbufferProjectionInverse\n#define normalMatrix mat3(gbufferModelView)\n#define chunkOffset vec3(0.0)\n#define textureMatrix mat4(1.0)\n#define alphaTestRef 0.0\n");
         p.append(bound[1]);
-        int at = 0;
-        Matcher header = HEADER_LINE.matcher(text);
-        while (header.find()) at = header.end();
+        int at = com.metallumextra.shader.pack.LegacyGlsl.headerEnd(text);
         String result = text.substring(0, at) + p + text.substring(at);
         if (!vertex) return result;
         Matcher main = MAIN.matcher(result);
@@ -207,8 +206,22 @@ public final class IrisWorldAdapter {
      *
      * @return the source, and the lines to put after the header
      */
+    /** A pack that defines a name the pipeline's prelude defines too (Noble's {@code projectionMatrix}) is believed: the prelude's is undefined just before the pack's. */
+    public static String withPipelineNamesUndefined(final String source) {
+        return Pattern.compile("(?m)^([ \\t]*)#[ \\t]*define[ \\t]+(modelViewMatrix|projectionMatrix|modelViewMatrixInverse|projectionMatrixInverse|normalMatrix|chunkOffset|textureMatrix|alphaTestRef|atlasSize|gtexture|lightmap)\\b").matcher(source)
+                .replaceAll(m -> Matcher.quoteReplacement(m.group(1) + "#undef " + m.group(2) + "\n" + m.group(1) + "#define " + m.group(2)));
+    }
+
+    /** The declaration of the white texel's sampler, which more than one thing may ask for. */
+    static final String WHITE_DECLARATION = "#ifndef MX_WHITE_DECLARED\n#define MX_WHITE_DECLARED\nuniform sampler2D " + ShaderBindings.WHITE + ";\n#endif\n";
+
     static String[] boundSamplers(final String source) {
-        String text = source;
+        // A list of samplers on one line becomes one declaration each, on a line of its own, so that each can be bound or dropped alone.
+        String text = Pattern.compile("(?m)^([ \\t]*)uniform\\s+((?:(?:highp|mediump|lowp)\\s+)?sampler2D)\\s+(\\w+(?:\\s*,\\s*\\w+)+)\\s*;[ \\t]*$").matcher(source).replaceAll(m -> {
+            java.util.List<String> parts = new java.util.ArrayList<>();
+            for (String name : m.group(3).split(",")) parts.add(m.group(1) + "uniform " + m.group(2) + " " + name.strip() + ";");
+            return Matcher.quoteReplacement(String.join("\n", parts));
+        });
         java.util.LinkedHashMap<String, java.util.List<String>> internal = new java.util.LinkedHashMap<>();
         for (java.util.Map.Entry<String, String> entry : BOUND_SAMPLERS.entrySet()) {
             Pattern declaration = Pattern.compile("(?m)^[ \\t]*uniform\\s+(?:(?:highp|mediump|lowp)\\s+)?sampler2D\\s+" + entry.getKey() + "\\s*;[ \\t]*$");
@@ -217,21 +230,35 @@ public final class IrisWorldAdapter {
             internal.computeIfAbsent(entry.getValue(), k -> new java.util.ArrayList<>()).add(entry.getKey());
         }
         // Anything else the programs that draw the world read goes through a slot the plan gave it (see IrisPlan#worldSlots).
+        java.util.Map<String, String> slotTypes = new java.util.HashMap<>();
         IrisPlan plan = IrisPipeline.currentPlan();
         if (plan != null) {
-            Matcher any = Pattern.compile("(?m)^[ \\t]*uniform\\s+(?:(?:highp|mediump|lowp)\\s+)?sampler2D\\s+(\\w+)\\s*;[ \\t]*$").matcher(text);
-            java.util.List<String> declared = new java.util.ArrayList<>();
-            while (any.find()) declared.add(any.group(1));
-            for (String name : declared) {
+            Matcher any = Pattern.compile("(?m)^[ \\t]*uniform\\s+(?:(?:highp|mediump|lowp)\\s+)?([iu]?sampler[23]D)\\s+(\\w+)\\s*;[ \\t]*$").matcher(text);
+            java.util.List<String[]> declared = new java.util.ArrayList<>();
+            while (any.find()) declared.add(new String[] {any.group(1), any.group(2)});
+            for (String[] pair : declared) {
+                String type = pair[0], name = pair[1];
+                Pattern declaration = Pattern.compile("(?m)^[ \\t]*uniform\\s+(?:(?:highp|mediump|lowp)\\s+)?" + type + "\\s+" + name + "\\s*;[ \\t]*$");
                 int slot = plan.worldSlotOf(name);
-                if (slot < 0) continue;
-                text = Pattern.compile("(?m)^[ \\t]*uniform\\s+(?:(?:highp|mediump|lowp)\\s+)?sampler2D\\s+" + name + "\\s*;[ \\t]*$").matcher(text).replaceAll("");
-                internal.computeIfAbsent(ShaderBindings.WORLD_SLOT + slot, k -> new java.util.ArrayList<>()).add(name);
+                if (slot < 0) {
+                    // A sampler of no buffer this pipeline can bind (the pack declares colortex6, the plan has no slot for it): the declaration goes, and a program that
+                    // reads it gets a white texel, as for a texture the pipeline does not have. Left in, the game's compiler refuses the pipeline.
+                    if (name.startsWith("Mx")) continue;
+                    text = declaration.matcher(text).replaceAll("");
+                    if (type.equals("sampler2D") && Pattern.compile("\\b" + name + "\\b").matcher(text).find()) {
+                        internal.computeIfAbsent(ShaderBindings.WHITE, k -> new java.util.ArrayList<>()).add(name);
+                    }
+                    continue;
+                }
+                text = declaration.matcher(text).replaceAll("");
+                String slotName = ShaderBindings.WORLD_SLOT + slot;
+                slotTypes.put(slotName, type);
+                internal.computeIfAbsent(slotName, k -> new java.util.ArrayList<>()).add(name);
             }
         }
         StringBuilder lines = new StringBuilder();
         for (java.util.Map.Entry<String, java.util.List<String>> entry : internal.entrySet()) {
-            lines.append("uniform sampler2D ").append(entry.getKey()).append(";\n");
+            lines.append(entry.getKey().equals(ShaderBindings.WHITE) ? WHITE_DECLARATION : "uniform " + slotTypes.getOrDefault(entry.getKey(), "sampler2D") + " " + entry.getKey() + ";\n");
             for (String name : entry.getValue()) lines.append("#define ").append(name).append(' ').append(entry.getKey()).append('\n');
         }
         return new String[] {text, lines.toString()};
@@ -251,9 +278,7 @@ public final class IrisWorldAdapter {
     public static String withRenderStage(final String source, final int stage) {
         if (stage == 0) return source;
         String text = Pattern.compile("(?m)^[ \\t]*uniform[ \\t]+int[ \\t]+renderStage[ \\t]*;[ \\t]*$").matcher(source).replaceAll("");
-        Matcher header = HEADER_LINE.matcher(text);
-        int at = 0;
-        while (header.find()) at = header.end();
+        int at = com.metallumextra.shader.pack.LegacyGlsl.headerEnd(text);
         return text.substring(0, at) + "\nconst int renderStage = " + stage + ";\n" + text.substring(at);
     }
 
@@ -275,10 +300,13 @@ public final class IrisWorldAdapter {
         for (String name : names) {
             text = Pattern.compile("(?m)^[ \\t]*uniform\\s+(?:(?:highp|mediump|lowp)\\s+)?\\w+\\s+" + name + "\\s*;[ \\t]*$").matcher(text).replaceAll("");
         }
+        // The pack's own variable may have the name of a vertex input of the game's models ("Normal"): it is renamed, since both would be one name.
+        text = com.metallumextra.shader.pack.LegacyGlsl.prefixIdentifiers(text, java.util.List.of("Position", "Color", "UV0", "UV1", "UV2", "Normal"), "mx_pk_");
+        text = withPipelineNamesUndefined(text);
         boolean atlas = uses(text, "gtexture") && format.atlas();
         // A sampler is only bound if the pipeline has it (a program may declare one it never reads).
         boolean light = uses(text, "lightmap") && format.light();
-        text = Pattern.compile("(?m)^[ \\t]*uniform\\s+sampler2D\\s+(gtexture|lightmap)\\s*;[ \\t]*$").matcher(text).replaceAll("");
+        text = withoutOwnSamplers(text);
         String[] bound = boundSamplers(text);
         text = bound[0];
 
@@ -321,13 +349,11 @@ public final class IrisWorldAdapter {
         if (light) p.append("uniform sampler2D Sampler2;\n#define lightmap Sampler2\n");
         // A program that reads a texture this pipeline has none of (the clouds have no atlas) reads a white texel, so what it multiplies by is left alone.
         boolean wantsAtlas = uses(text, "gtexture") && !format.atlas(), wantsLight = uses(text, "lightmap") && !format.light();
-        if (wantsAtlas || wantsLight) p.append("uniform sampler2D ").append(ShaderBindings.WHITE).append(";\n");
+        if (wantsAtlas || wantsLight) p.append(WHITE_DECLARATION);
         if (wantsAtlas) p.append("#define gtexture ").append(ShaderBindings.WHITE).append("\n#define atlasSize ivec2(1)\n");
         if (wantsLight) p.append("#define lightmap ").append(ShaderBindings.WHITE).append('\n');
 
-        int at = 0;
-        Matcher header = HEADER_LINE.matcher(text);
-        while (header.find()) at = header.end();
+        int at = com.metallumextra.shader.pack.LegacyGlsl.headerEnd(text);
         String result = text.substring(0, at) + p + text.substring(at);
         return shadow && vertex ? shadowClip(result) : result;
     }
@@ -344,7 +370,8 @@ public final class IrisWorldAdapter {
      * @param plan the plan whose attachments the outputs are moved to (see {@link IrisPlan#attachment}); null leaves each output at the number of its buffer
      * @param alphaThreshold what the first output's alpha must be above to be kept; zero or less keeps everything
      */
-    public static String remapOutputs(final String fragment, final int[] writes, final @Nullable IrisPlan plan, final float alphaThreshold) {
+    public static String remapOutputs(final String fragment0, final int[] writes, final @Nullable IrisPlan plan, final float alphaThreshold) {
+        String fragment = plan == null || plan.packGroups().isEmpty() ? fragment0 : packedOutputs(fragment0, writes, plan);
         // Outputs the program declares beyond the buffers it writes go to attachments nothing else uses.
         java.util.Set<Integer> taken = new java.util.HashSet<>();
         for (int buffer : writes) taken.add(plan == null ? buffer : plan.attachment(buffer));
@@ -357,6 +384,11 @@ public final class IrisWorldAdapter {
         Matcher match = OUTPUT_LOCATION.matcher(fragment);
         StringBuilder out = new StringBuilder();
         while (match.find()) {
+            // The attachment of a packed group is already where it should be.
+            if (fragment.startsWith("uvec4 mx_pk_", match.end() + (fragment.substring(match.end()).length() - fragment.substring(match.end()).stripLeading().length()))) {
+                match.appendReplacement(out, Matcher.quoteReplacement(match.group()));
+                continue;
+            }
             int n = Integer.parseInt(match.group(1));
             int to = n < writes.length ? (plan == null ? writes[n] : plan.attachment(writes[n])) : spareFor.computeIfAbsent(n, k -> spare.isEmpty() ? k : spare.poll());
             match.appendReplacement(out, Matcher.quoteReplacement("layout(location = " + to + ")" + match.group(2)));
@@ -371,6 +403,49 @@ public final class IrisWorldAdapter {
         }
         match.appendTail(named);
         return alphaTest(named.toString(), alphaThreshold, firstName);
+    }
+
+    private static final Pattern OUTPUT_DECLARATION = Pattern.compile(
+            "(?m)^([ \\t]*)(?:layout\\s*\\(\\s*location\\s*=\\s*(\\d+)\\s*\\)\\s*)?(?:flat\\s+)?out\\s+(?:(?:highp|mediump|lowp)\\s+)?(float|vec2|vec3|vec4)\\s+(\\w+)\\s*;[ \\t]*$");
+
+    /**
+     * The outputs that go to buffers packed with others (see {@link IrisPlan#packGroups}) become plain variables, and what {@code main} leaves in them is written, 8 bits a
+     * component, into the channel of the buffer in the group's attachment of four 32-bit integers.
+     */
+    private static String packedOutputs(final String fragment, final int[] writes, final IrisPlan plan) {
+        Matcher match = OUTPUT_DECLARATION.matcher(fragment);
+        StringBuilder out = new StringBuilder();
+        StringBuilder epilogue = new StringBuilder();
+        java.util.Set<Integer> declared = new java.util.HashSet<>();
+        int outputNumber = 0;
+        while (match.find()) {
+            java.util.regex.Matcher numbered = Pattern.compile("outColor(\\d+)").matcher(match.group(4));
+            int n = match.group(2) != null ? Integer.parseInt(match.group(2)) : numbered.matches() ? Integer.parseInt(numbered.group(1)) : outputNumber;
+            outputNumber++;
+            if (n >= writes.length) continue;
+            int group = plan.packGroupOf(writes[n]);
+            if (group < 0) continue;
+            String type = match.group(3), name = match.group(4);
+            String value = switch (type) {
+                case "float" -> "vec4(" + name + ", 0.0, 0.0, 1.0)";
+                case "vec2" -> "vec4(" + name + ", 0.0, 1.0)";
+                case "vec3" -> "vec4(" + name + ", 1.0)";
+                default -> name;
+            };
+            StringBuilder replacement = new StringBuilder(match.group(1)).append(type).append(' ').append(name).append(" = ").append(type).append("(0.0);");
+            if (declared.add(group)) {
+                replacement.append(" layout(location = ").append(plan.attachmentOfGroup(group)).append(") out uvec4 mx_pk_").append(group).append(';');
+            }
+            match.appendReplacement(out, Matcher.quoteReplacement(replacement.toString()));
+            epilogue.append("    mx_pk_").append(group).append('.').append("xyzw".charAt(plan.packChannelOf(writes[n]))).append(" = mx_packUnorm4x8(").append(value).append(");\n");
+        }
+        match.appendTail(out);
+        if (epilogue.length() == 0) return fragment;
+        String text = out.toString();
+        Matcher main = MAIN.matcher(text);
+        if (!main.find()) return fragment;
+        return main.replaceAll("void mx_pk_main()") + "\nuint mx_packUnorm4x8(vec4 v) {\n    uvec4 b = uvec4(floor(clamp(v, 0.0, 1.0) * 255.0 + 0.5));\n    return b.x | (b.y << 8) | (b.z << 16) | (b.w << 24);\n}\n"
+                + "void main() {\n    mx_pk_main();\n" + epilogue + "}\n";
     }
 
     private static final Pattern FIRST_OUTPUT = Pattern.compile("layout\\s*\\(\\s*location\\s*=\\s*0\\s*\\)\\s*out\\s+(?:(?:highp|mediump|lowp)\\s+)?vec4\\s+(\\w+)\\s*;");
@@ -388,5 +463,14 @@ public final class IrisWorldAdapter {
 
     private static boolean uses(final String text, final String name) {
         return Pattern.compile("\\b" + name + "\\b").matcher(text).find();
+    }
+
+    /** The pipeline declares {@code gtexture} and {@code lightmap} itself: they leave a declaration of the pack's, alone or in a list ("uniform sampler2D gaux3, lightmap;"). */
+    public static String withoutOwnSamplers(final String source) {
+        return Pattern.compile("(?m)^([ \\t]*)uniform\\s+sampler2D\\s+([\\w\\s,]*\\b(?:gtexture|lightmap)\\b[\\w\\s,]*);[ \\t]*$").matcher(source).replaceAll(m -> {
+            java.util.List<String> kept = new java.util.ArrayList<>();
+            for (String name : m.group(2).split(",")) if (!name.strip().equals("gtexture") && !name.strip().equals("lightmap")) kept.add(name.strip());
+            return Matcher.quoteReplacement(kept.isEmpty() ? "" : m.group(1) + "uniform sampler2D " + String.join(", ", kept) + ";");
+        });
     }
 }

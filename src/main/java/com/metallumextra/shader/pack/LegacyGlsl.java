@@ -36,8 +36,9 @@ public final class LegacyGlsl {
 
     private static final Pattern VERSION = Pattern.compile("(?m)^[ \\t]*#[ \\t]*version[ \\t]+(\\d+)(?:[ \\t]+(\\w+))?[ \\t]*$");
     private static final Pattern HEADER_LINE = Pattern.compile("(?m)^[ \\t]*(#[ \\t]*version[^\\n]*|#[ \\t]*extension[^\\n]*)$");
-    private static final Pattern WORD = Pattern.compile("\\b(?:gl_Fog\\s*\\.\\s*[a-z]+|gl_[A-Za-z0-9_]+|ftransform|texture2D|texture2DLod|texture2DGrad|texture2DGradARB|texture2DLodARB|texture2DProj|texture3D|texture3DLod|shadow2D|varying|attribute)\\b");
+    private static final Pattern WORD = Pattern.compile("\\b(?:gl_Fog\\s*\\.\\s*[a-z]+|gl_[A-Za-z0-9_]+|ftransform|texture2D|texture2DLod|texture2DGrad|texture2DGradARB|texture2DLodARB|texture2DProj|texture3D|texture3DLod|texelFetch2D|texelFetch3D|textureSize2D|textureSize3D|shadow2D|varying|attribute)\\b");
     private static final Pattern FRAG_DATA = Pattern.compile("gl_FragData\\s*\\[\\s*(\\d+)\\s*\\]");
+    private static final Pattern TEX_COORD = Pattern.compile("gl_TexCoord\\s*\\[\\s*(\\d+)\\s*\\]");
     private static final Pattern TEXTURE_MATRIX = Pattern.compile("gl_TextureMatrix\\s*\\[\\s*(\\d+)\\s*\\]");
     private static final Pattern ATTRIBUTE = Pattern.compile("(?m)^([ \\t]*)(?:layout\\s*\\([^)]*\\)\\s*)?(?:attribute|in)\\s+(?:(?:highp|mediump|lowp)\\s+)?(\\w+)\\s+(\\w+)\\s*;[ \\t]*$");
     /** The inputs an Iris program may declare, with the type the loader expects them to have. A legacy program often declares another ({@code vec4 mc_Entity}). */
@@ -84,22 +85,26 @@ public final class LegacyGlsl {
         StringBuilder macros = new StringBuilder();
         StringBuilder declarations = new StringBuilder();
         result = renameInputs(result, vertex, macros);
+        // A block entity's id is a vertex input in some packs; the terrain's vertices carry none, so it is 0 (no block entity).
+        Pattern blockEntity = Pattern.compile("(?m)^[ \\t]*in\\s+int\\s+blockEntityId\\s*;[ \\t]*$");
+        if (vertex && blockEntity.matcher(result).find() && !Pattern.compile("\\buniform\\s+\\w+\\s+blockEntityId\\b").matcher(result).find()) {
+            result = blockEntity.matcher(result).replaceAll("");
+            macros.append("#define blockEntityId 0\n");
+        }
         provide(uses, vertex, kind, fragmentOutputs, macros, declarations);
         // The program's own version stays when it is one the compiler knows (400's implicit int to uint, 430's compute and images); older ones become 330.
         Matcher declared = VERSION.matcher(source);
         int number = declared.find() ? Math.max(330, Math.min(460, Integer.parseInt(declared.group(1)))) : 330;
         result = VERSION.matcher(result).replaceFirst("#version " + number + " core");
         if (!VERSION.matcher(source).find()) result = "#version 330 core\n" + result;
-        int at = 0;
-        Matcher header = HEADER_LINE.matcher(result);
-        while (header.find()) at = header.end();
+        int at = headerEnd(result);
         result = result.substring(0, at) + "\n" + macros + declarations + result.substring(at);
         untranslatable(result);
         return result;
     }
 
     /** Words that GLSL leaves free but C++ (and so Metal Shading Language) reserves: a pack may name a variable {@code new}. */
-    private static final Pattern CPP_KEYWORDS = Pattern.compile("\\b(sampler|new|delete|operator|private|protected|friend|try|catch|throw|virtual|mutable|explicit|typename|export|and|or|not|xor|bitand|bitor|compl|nullptr|constexpr|decltype|alignas|alignof|wchar_t|char|signed|static_cast|dynamic_cast|reinterpret_cast|const_cast|thread_local)\\b");
+    private static final Pattern CPP_KEYWORDS = Pattern.compile("\\b(sampler|new|delete|operator|private|protected|friend|try|catch|throw|virtual|mutable|explicit|typename|export|and|or|not|xor|bitand|bitor|compl|nullptr|constexpr|decltype|alignas|alignof|wchar_t|char|signed|static_cast|dynamic_cast|reinterpret_cast|const_cast|thread_local|bias|level|gradient2d|gradient3d|gradientcube|min_lod_clamp|mag_filter|min_filter|mip_filter|address|filter)\\b");
 
     /** Every variable or function the pack names with a word of {@link #CPP_KEYWORDS} gets a prefix, in code only (never in a comment). */
     public static String cppKeywords(final String source) {
@@ -120,7 +125,10 @@ public final class LegacyGlsl {
      */
     private static final java.util.List<String> METAL_FUNCTIONS = java.util.List.of("saturate", "length_squared", "distance_squared", "rsqrt", "select", "mad", "copysign", "fmod",
             "fmin", "fmax", "fabs", "isnormal", "isfinite", "isunordered", "signbit", "rint", "powr", "exp10", "log10", "sinpi", "cospi", "tanpi", "clz", "ctz", "popcount", "rotate",
-            "median3", "max3", "min3", "absdiff", "addsat", "subsat", "hadd", "rhadd", "mulhi", "mad24", "mul24", "sincos", "atan2", "lerp", "step_fast", "fdim", "nextafter", "ldexp", "frexp", "modf");
+            "median3", "max3", "min3", "absdiff", "addsat", "subsat", "hadd", "rhadd", "mulhi", "mad24", "mul24", "sincos", "atan2", "lerp", "step_fast", "fdim", "nextafter", "ldexp", "frexp", "modf",
+            // Built-ins of GLSL 130 and later that a program for 120 may define itself.
+            "round", "roundEven", "trunc", "sinh", "cosh", "tanh", "asinh", "acosh", "atanh", "isnan", "isinf", "bitCount", "findLSB", "findMSB", "inverse", "transpose", "determinant", "outerProduct",
+            "fma", "packSnorm4x8", "unpackSnorm4x8", "packUnorm4x8", "unpackUnorm4x8", "packSnorm2x16", "unpackSnorm2x16", "packUnorm2x16", "unpackUnorm2x16", "packHalf2x16", "unpackHalf2x16");
 
     /** A function of the pack's with the name of one of Metal's gets another name, in code only. */
     static String metalFunctions(final String source) {
@@ -175,9 +183,7 @@ public final class LegacyGlsl {
             for (String name : names) text = text.replaceAll("\\btexture\\s*\\(\\s*" + name + "\\s*,", "mx_shadowCompare(" + name + ",");
         }
         if (!code(text).contains("mx_shadowCompare") || code(text).contains("float mx_shadowCompare")) return text;
-        Matcher header = HEADER_LINE.matcher(text);
-        int at = 0;
-        while (header.find()) at = header.end();
+        int at = headerEnd(text);
         return text.substring(0, at) + "\n" + SHADOW_COMPARE + text.substring(at);
     }
 
@@ -203,6 +209,14 @@ public final class LegacyGlsl {
         }
         frag.appendTail(sb);
         text = sb.toString();
+        Matcher coord = TEX_COORD.matcher(text);
+        sb = new StringBuilder();
+        while (coord.find()) {
+            uses.add("TexCoord" + coord.group(1));
+            coord.appendReplacement(sb, "mx_TexCoord" + coord.group(1));
+        }
+        coord.appendTail(sb);
+        text = sb.toString();
         Matcher matrix = TEXTURE_MATRIX.matcher(text);
         sb = new StringBuilder();
         while (matrix.find()) {
@@ -223,6 +237,8 @@ public final class LegacyGlsl {
                 case "texture2DLod", "texture3DLod", "texture2DLodARB" -> "textureLod";
                 case "texture2DGrad", "texture2DGradARB" -> "textureGrad";
                 case "texture2DProj" -> "textureProj";
+                case "texelFetch2D", "texelFetch3D" -> "texelFetch";
+                case "textureSize2D", "textureSize3D" -> "textureSize";
                 case "shadow2D" -> {
                     uses.add("shadow2D");
                     yield "iris_shadow2D";
@@ -233,7 +249,9 @@ public final class LegacyGlsl {
                 }
                 case "gl_Vertex" -> use(uses, "Vertex", "iris_Vertex");
                 case "gl_Normal" -> use(uses, "Normal", "iris_Normal");
-                case "gl_Color" -> use(uses, "Color", "iris_Color");
+                // The color the vertex stage writes as gl_FrontColor is what the fragment stage reads as gl_Color.
+                case "gl_Color" -> vertex ? use(uses, "Color", "iris_Color") : use(uses, "FrontColor", "mx_FrontColor");
+                case "gl_FrontColor", "gl_FrontSecondaryColor" -> use(uses, "FrontColor", "mx_FrontColor");
                 case "gl_MultiTexCoord0" -> use(uses, "MultiTexCoord0", "iris_MultiTexCoord0");
                 case "gl_MultiTexCoord1" -> use(uses, "MultiTexCoord1", "iris_MultiTexCoord1");
                 case "gl_ModelViewMatrix" -> use(uses, "ModelViewMatrix", "iris_ModelViewMatrix");
@@ -250,8 +268,14 @@ public final class LegacyGlsl {
                     outputs[0] = true;
                     yield "outColor0";
                 }
+                case "gl_FogFragCoord" -> use(uses, "FogFragCoord", "mx_FogFragCoord");
                 case "gl_Fog.start" -> use(uses, "FogStart", "fogStart");
                 case "gl_Fog.end" -> use(uses, "FogEnd", "fogEnd");
+                case "gl_Fog.color" -> {
+                    uses.add("FogColor");
+                    yield "vec4(fogColor, 1.0)";
+                }
+                case "gl_Fog.density" -> use(uses, "FogDensity", "fogDensity");
                 case "gl_Fog.scale" -> {
                     uses.add("FogStart");
                     uses.add("FogEnd");
@@ -313,6 +337,12 @@ public final class LegacyGlsl {
             uses.add("ModelViewMatrix");
             uses.add("ProjectionMatrix");
             uses.add("Vertex");
+        }
+        // The fog distance the vertex stage writes and the fragment stage reads is an ordinary varying here.
+        if (uses.contains("FogFragCoord")) declarations.append(vertex ? "out float mx_FogFragCoord;\n" : "in float mx_FogFragCoord;\n");
+        if (uses.contains("FrontColor")) declarations.append(vertex ? "out vec4 mx_FrontColor;\n" : "in vec4 mx_FrontColor;\n");
+        for (String use : uses) {
+            if (use.startsWith("TexCoord")) declarations.append(vertex ? "out vec4 mx_" : "in vec4 mx_").append(use).append(";\n");
         }
         if (uses.contains("Vertex")) {
             if (world) {
@@ -404,6 +434,8 @@ public final class LegacyGlsl {
         if (uses.contains("textureMatrixOther")) macros.append("#define iris_TextureMatrixOther mat4(1.0)\n");
         if (uses.contains("FogStart")) declarations.append("uniform float fogStart;\n");
         if (uses.contains("FogEnd")) declarations.append("uniform float fogEnd;\n");
+        if (uses.contains("FogColor")) declarations.append("uniform vec3 fogColor;\n");
+        if (uses.contains("FogDensity")) declarations.append("uniform float fogDensity;\n");
         if (uses.contains("shadow2D")) {
             macros.append("#define iris_shadow2D(s, p) vec4(vec3(mx_shadowCompare((s), (p))), 1.0)\n");
         }
@@ -415,6 +447,28 @@ public final class LegacyGlsl {
     }
 
     /**
+     * Reads the sampler {@code from} as {@code to} (OptiFine's {@code tex} and {@code texture} are {@code colortex0} in the programs that are not for drawing the world):
+     * its declaration goes if the program declares {@code to} too, or becomes the declaration of {@code to}, and every use in code is renamed.
+     */
+    public static String aliasSampler(final String source, final String from, final String to) {
+        Pattern declaration = Pattern.compile("(?m)^[ \\t]*uniform\\s+(?:(?:highp|mediump|lowp)\\s+)?sampler2D\\s+" + from + "\\s*;");
+        if (!declaration.matcher(code(source)).find()) return source;
+        boolean toDeclared = Pattern.compile("(?m)^[ \\t]*uniform\\s+(?:(?:highp|mediump|lowp)\\s+)?sampler2D\\s+" + to + "\\s*;").matcher(code(source)).find();
+        Pattern word = Pattern.compile("(?<![\\w.])" + from + "(?!\\w)(?!\\s*\\()");
+        StringBuilder out = new StringBuilder(source.length());
+        scan(source, (start, end, isCode) -> {
+            String part = source.substring(start, end);
+            if (!isCode) {
+                out.append(part);
+                return;
+            }
+            part = toDeclared ? declaration.matcher(part).replaceAll("") : part;
+            out.append(word.matcher(part).replaceAll(to));
+        });
+        return out.toString();
+    }
+
+    /**
      * Renames the sampler {@code from} to {@code to} where the program declares it ({@code uniform sampler2D tex;}): the declaration and every use in code.
      * The program is left alone when it does not declare {@code from} or already declares {@code to}.
      */
@@ -422,7 +476,7 @@ public final class LegacyGlsl {
         Pattern declaration = Pattern.compile("(?m)^[ \\t]*uniform\\s+(?:(?:highp|mediump|lowp)\\s+)?sampler2D\\s+" + from + "\\s*;");
         if (!declaration.matcher(code(source)).find()) return source;
         if (Pattern.compile("\\b" + to + "\\b").matcher(code(source)).find()) return source;
-        Pattern word = Pattern.compile("(?<![\\w.])" + from + "(?!\\w)");
+        Pattern word = Pattern.compile("(?<![\\w.])" + from + "(?!\\w)(?!\\s*\\()");
         StringBuilder out = new StringBuilder(source.length());
         scan(source, (start, end, isCode) -> {
             String part = source.substring(start, end);
@@ -463,6 +517,124 @@ public final class LegacyGlsl {
             }
         });
         return out.toString();
+    }
+
+    private static final Pattern PLANNER_COMMENT = Pattern.compile("(?s)/\\*\\s*(?:RENDERTARGETS|DRAWBUFFERS)\\s*:.*\\*/");
+
+    /**
+     * The text with its block comments blanked (the lines stay), except the ones the planner reads ({@code RENDERTARGETS}, {@code DRAWBUFFERS}). What a comment holds is no code: a program that comments out a stretch with {@code #extension} or {@code #version} lines in it must not have a prelude put in there.
+     */
+    public static String blankBlockComments(final String source) {
+        StringBuilder out = new StringBuilder(source.length());
+        scan(source, (start, end, isCode) -> {
+            String part = source.substring(start, end);
+            boolean block = !isCode && part.startsWith("/*");
+            out.append(block && !PLANNER_COMMENT.matcher(part).matches() ? part.replaceAll("[^\\n]", " ") : part);
+        });
+        // The game puts its own defines after the first line of a program, so #version has to be there: when only blank lines come before it (a header comment was there), it
+        // changes places with the first line, and no line moves.
+        String text = out.toString();
+        Matcher version = VERSION.matcher(text);
+        if (version.find() && version.start() > 0 && text.substring(0, version.start()).isBlank()) {
+            int firstEnd = text.indexOf('\n');
+            String versionLine = version.group().strip();
+            String rest = text.substring(firstEnd + 1, version.start()) + text.substring(version.end());
+            text = versionLine + "\n" + rest;
+        }
+        return text;
+    }
+
+    /** Every name in {@code names} used in the code (not in comments) gets {@code prefix} in front: a pack's own variable must not take a name the pipeline's inputs have. */
+    public static String prefixIdentifiers(final String source, final java.util.List<String> names, final String prefix) {
+        Pattern any = Pattern.compile("\\b(" + String.join("|", names) + ")\\b");
+        if (!any.matcher(code(source)).find()) return source;
+        StringBuilder out = new StringBuilder(source.length() + 32);
+        scan(source, (start, end, isCode) -> {
+            String part = source.substring(start, end);
+            out.append(isCode ? any.matcher(part).replaceAll(prefix + "$1") : part);
+        });
+        return out.toString();
+    }
+
+    private static final Pattern ZERO_INPUT = Pattern.compile("(?m)^([ \\t]*)(?:layout\\s*\\([^)]*\\)\\s*)?(?:attribute|in)\\s+(?:(?:highp|mediump|lowp)\\s+)?(\\w+)\\s+(at_velocity)\\s*;[ \\t]*$");
+
+    /** Vertex inputs Iris has and this loader has no data for ({@code at_velocity}, the motion of a vertex since the last frame) are zero, so the program still loads. */
+    public static String zeroInputs(final String source) {
+        if (!source.contains("at_velocity")) return source;
+        return ZERO_INPUT.matcher(source).replaceAll(m -> Matcher.quoteReplacement(m.group(1) + "const " + m.group(2) + " " + m.group(3) + " = " + m.group(2) + "(0.0);"));
+    }
+
+    private static final Pattern DEFINE_NAME = Pattern.compile("^([ \\t]*)#[ \\t]*define[ \\t]+(\\w+)");
+
+    /**
+     * A macro the program defines more than once (two files of a pack each define {@code diagonal3}) is undefined before each later definition: a GPU driver lets
+     * the newest win, glslang calls it an error. The undefinition takes a line of its own.
+     */
+    public static String undefineRedefinitions(final String source) {
+        if (!source.contains("#") ) return source;
+        String[] lines = source.split("\n", -1);
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        StringBuilder out = new StringBuilder(source.length() + 64);
+        boolean changed = false;
+        for (int i = 0; i < lines.length; i++) {
+            Matcher m = lines[i].indexOf('#') < 0 ? null : DEFINE_NAME.matcher(lines[i]);
+            if (m != null && m.find()) {
+                if (!seen.add(m.group(2))) {
+                    out.append(m.group(1)).append("#undef ").append(m.group(2)).append('\n');
+                    changed = true;
+                }
+            }
+            out.append(lines[i]);
+            if (i < lines.length - 1) out.append('\n');
+        }
+        return changed ? out.toString() : source;
+    }
+
+    private static final Pattern PRECISION_STATEMENT = Pattern.compile("(?m)^[ \\t]*precision\\s+(?:highp|mediump|lowp)\\s+\\w+\\s*;[ \\t]*$");
+    private static final Pattern PRECISION_WORD = Pattern.compile("\\b(?:highp|mediump|lowp)\\s+");
+
+    /**
+     * The code without precision qualifiers, which desktop GLSL ignores and its compiler checks anyway: two overloads that differ only in a {@code highp}
+     * on a parameter are an error.
+     */
+    public static String withoutPrecision(final String source) {
+        if (!source.contains("highp") && !source.contains("mediump") && !source.contains("lowp")) return source;
+        StringBuilder out = new StringBuilder(source.length());
+        scan(source, (start, end, isCode) -> {
+            String part = source.substring(start, end);
+            out.append(isCode ? PRECISION_WORD.matcher(PRECISION_STATEMENT.matcher(part).replaceAll("")).replaceAll("") : part);
+        });
+        return out.toString();
+    }
+
+    /**
+     * Where the lines a program starts with end: after the last {@code #version} or {@code #extension} line that comes before any code. A pack may have {@code #extension}
+     * lines further down (inside code it has switched off); a prelude put after one of those would come after the code that needs it.
+     */
+    public static int headerEnd(final String text) {
+        String code = code(text);
+        int at = 0;
+        int lineStart = 0;
+        while (lineStart < code.length()) {
+            int lineEnd = code.indexOf('\n', lineStart);
+            if (lineEnd < 0) lineEnd = code.length();
+            String line = code.substring(lineStart, lineEnd).strip();
+            if (!line.isEmpty()) {
+                if (line.startsWith("#")) {
+                    String directive = line.substring(1).strip();
+                    if (directive.startsWith("version") || directive.startsWith("extension")) at = lineEnd;
+                } else {
+                    break;
+                }
+            }
+            lineStart = lineEnd + 1;
+        }
+        return at;
+    }
+
+    /** The source with its comments blanked, same length (for tests and tools). */
+    public static String blankComments(final String source) {
+        return code(source);
     }
 
     /** The source with its comments blanked, same length. */

@@ -145,8 +145,11 @@ public final class ProgramSet {
                 unsupported.add(name + " (needs shadow maps)");
                 continue;
             }
-            programs.add(new Program(name, stage, numberOf(name), find(files, dimension, name, "vsh"), find(files, dimension, name, "fsh"),
-                    find(files, dimension, name, "gsh") != null));
+            String vertex = find(files, dimension, name, "vsh");
+            String fragment = find(files, dimension, name, "fsh");
+            // Without a vertex shader a full-screen program gets the default one, as in Iris; a program without a fragment shader draws nothing and is left out.
+            if (vertex == null && fragment != null && stage != Stage.GBUFFERS && stage != Stage.SHADOW) vertex = ShaderPack.DEFAULT_VERTEX;
+            programs.add(new Program(name, stage, numberOf(name), vertex, fragment, find(files, dimension, name, "gsh") != null));
         }
         programs.sort(java.util.Comparator.comparing(Program::stage).thenComparingInt(Program::number).thenComparingInt(Program::letter));
         unsupported.sort(String::compareTo);
@@ -239,6 +242,24 @@ public final class ProgramSet {
     }
 
     /**
+     * The custom image a pack declares for a sampler: {@code image.<name> = <sampler> <format> <internal format> <type> <clear> <relative> <size ...>}. Nothing here
+     * writes to an image yet, so what the sampler reads is an image of zeros; its size does not matter for that, so it is one texel.
+     */
+    private @Nullable String imageFor(final String sampler) {
+        for (String key : properties.stringPropertyNames()) {
+            if (!key.startsWith("image.")) continue;
+            String[] parts = property(key).split("\\s+");
+            if (parts.length < 8 || !parts[0].equals(sampler)) continue;
+            boolean relative = parts[5].equals("true");
+            int sizes = parts.length - 6 - (relative ? 2 : 0);
+            if (sizes < 1 || sizes > 3) continue;
+            String target = sizes == 1 ? "TEXTURE_1D" : sizes == 2 ? "TEXTURE_2D" : "TEXTURE_3D";
+            return "mx:zero " + target + " " + parts[2] + " " + "1 ".repeat(sizes) + parts[1] + " " + parts[3];
+        }
+        return null;
+    }
+
+    /**
      * The picture a pack gives a sampler in a stage: {@code texture.<stage>.<sampler>=<path>} in {@code shaders.properties}, or {@code texture.noise} for
      * {@code noisetex} everywhere. The stage is begin, prepare, shadow, deferred, composite (which includes final) or gbuffers. Null when there is none.
      */
@@ -265,6 +286,9 @@ public final class ProgramSet {
             }
         }
         if (value == null && sampler.equals("noisetex")) value = property("texture.noise");
+        // customTexture.<sampler> gives a sampler a picture in every stage.
+        if (value == null) value = property("customTexture." + sampler);
+        if (value == null) value = imageFor(sampler);
         if (value == null || value.isBlank()) return null;
         String path = TextureSpec.pathOf(value);
         // A picture, or a file of raw numbers that says how to read it.
@@ -427,9 +451,6 @@ public final class ProgramSet {
         List<String> others = new ArrayList<>();
         for (String dimension : DIMENSIONS) {
             ProgramSet set = discover(pack, dimension);
-            for (String name : set.incomplete()) {
-                throw new PackException(name + " needs both " + name + ".vsh and " + name + ".fsh");
-            }
             for (String name : set.withGeometry()) {
                 throw new PackException(name + " has a geometry shader, which this version cannot run yet");
             }

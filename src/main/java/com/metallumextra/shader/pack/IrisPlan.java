@@ -882,6 +882,11 @@ public final class IrisPlan {
     }
 
     private void settleBuffers(final Map<String, String> fragments) throws PackException {
+        for (Step step : stages.get(ProgramSet.Stage.GBUFFERS.ordinal())) {
+            for (int index : step.writes()) {
+                if (index != 0) worldBuffers.add(index);
+            }
+        }
         Map<Integer, GpuFormat> formats = new TreeMap<>();
         Map<Integer, Boolean> clears = new TreeMap<>();
         Map<Integer, float[]> colors = new TreeMap<>();
@@ -898,8 +903,9 @@ public final class IrisPlan {
         if (afterWorld() && !buffers.containsKey(0)) buffers.put(0, null);
         for (int index : new ArrayList<>(buffers.keySet())) {
             float[] size = size(index);
+            boolean isWorld = worldBuffers.contains(index) || index == 0;
             Buffer made = new Buffer(index, formats.getOrDefault(index, GpuFormat.RGBA8_UNORM), clears.getOrDefault(index, true), colors.get(index),
-                    size == null ? 1.0F : size[0], size == null ? 1.0F : size[1], size == null ? 0 : (int) size[2], size == null ? 0 : (int) size[3]);
+                    (isWorld || size == null) ? 1.0F : size[0], (isWorld || size == null) ? 1.0F : size[1], (isWorld || size == null) ? 0 : (int) size[2], (isWorld || size == null) ? 0 : (int) size[3]);
             if (index == 0 && !made.fullSize()) throw new PackException("colortex0 is the world's image, and cannot have a size of its own (size.buffer.colortex0)");
             buffers.put(index, made);
         }

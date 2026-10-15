@@ -397,11 +397,23 @@ public final class ProgramSet {
         return result;
     }
 
+    public boolean isPassthroughGeometry(final Program program) {
+        if (!program.geometry || pack == null) return false;
+        String gsh = find(pack.files(), dimension.isEmpty() ? null : dimension, program.name, "gsh");
+        if (gsh == null) return false;
+        try {
+            String text = pack.load(gsh);
+            return text != null && (text.contains("max_vertices = 3") || text.contains("max_vertices=3"));
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
     /** Programs with a geometry shader, which this version cannot run. */
     public List<String> withGeometry() {
         List<String> result = new ArrayList<>();
         for (Program program : runnable()) {
-            if (program.geometry) result.add(program.name);
+            if (program.geometry && !isPassthroughGeometry(program)) result.add(program.name);
         }
         return result;
     }

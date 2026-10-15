@@ -948,6 +948,18 @@ public final class PackTests {
         }
         check("a program with only a compute shader is found as a compute program", ProgramSet.discover(openStandard(dir.resolve("Compute.zip"), Map.of("composite.csh", "#version 430\n", "final.vsh", VERTEX, "final.fsh", one)), null)
                 .runnable().stream().anyMatch(p -> p.name().equals("composite") && p.isCompute()));
+        Path iterZip = Path.of("run/shaderpacks/iterationT 3.2.0.zip");
+        if (Files.exists(iterZip)) {
+            ZipPack iterPack = ZipPack.open(iterZip);
+            ProgramSet.validate(iterPack);
+            check("iterationT validates without geometry error", true);
+        }
+        Path bloopZip = Path.of("run/shaderpacks/Bloop-1.8.0-Alpha-3.zip");
+        if (Files.exists(bloopZip)) {
+            ZipPack bloop = ZipPack.open(bloopZip);
+            IrisPlan bloopPlan = IrisPlan.build(bloop, "world0");
+            check("Bloop buffer 8 is full size for world render pass", bloopPlan.buffers().get(8).fullSize());
+        }
         Path track1 = dir.resolve("Track1Test.zip");
         TestPacks.writeTrack1Pack(track1);
         ZipPack track1Pack = ZipPack.open(track1);

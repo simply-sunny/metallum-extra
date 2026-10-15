@@ -112,6 +112,16 @@ public final class GlslLocations {
                 shared.put(v.name, location);
             }
         }
+        // When a fragment input (color) corresponds to a vertex output (v_color), link them to the same location.
+        for (Statement st : fragmentSide) {
+            if (!st.out) {
+                for (Variable v : st.variables) {
+                    if (shared.containsKey("v_" + v.name) && !shared.containsKey(v.name)) {
+                        shared.put(v.name, shared.get("v_" + v.name));
+                    }
+                }
+            }
+        }
 
         // The stage's own inputs (vertex) or outputs (fragment).
         BitSet own = new BitSet();
@@ -194,7 +204,7 @@ public final class GlslLocations {
                 if (st.out || structTypes.containsKey(st.type)) continue;
                 for (Variable v : st.variables) {
                     Integer location = shared.get(v.name);
-                    if (location == null || !written.add(v.name)) continue;
+                    if (location == null || written.contains(v.name) || written.contains("v_" + v.name) || !written.add(v.name)) continue;
                     missing.append("layout(location = ").append(location).append(") ").append(st.interpolation).append("out ").append(st.type).append(' ').append(v.name).append(v.array).append("; ");
                 }
             }

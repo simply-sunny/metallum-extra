@@ -167,6 +167,9 @@ public final class LegacyGlsl {
                 float d = p.z <= texelFetch(s, clamp(i + ivec2(1, 1), ivec2(0), hi), 0).r ? 1.0 : 0.0;
                 return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
             }
+            float mx_shadowCompare(sampler2D s, vec3 p, float lod) {
+                return mx_shadowCompare(s, p);
+            }
             """;
 
     /**
@@ -180,7 +183,7 @@ public final class LegacyGlsl {
             Matcher declared = Pattern.compile("\\buniform\\s+(?:(?:highp|mediump|lowp)\\s+)?sampler2DShadow\\s+([\\w\\s,]+);").matcher(code(text));
             while (declared.find()) for (String name : declared.group(1).split(",")) names.add(name.trim());
             text = text.replaceAll("\\bsampler2DShadow\\b", "sampler2D");
-            for (String name : names) text = text.replaceAll("\\btexture\\s*\\(\\s*" + name + "\\s*,", "mx_shadowCompare(" + name + ",");
+            for (String name : names) text = text.replaceAll("\\b(?:texture|textureLod|texture2DLod)\\s*\\(\\s*" + name + "\\s*,", "mx_shadowCompare(" + name + ",");
         }
         if (!code(text).contains("mx_shadowCompare") || code(text).contains("float mx_shadowCompare")) return text;
         int at = headerEnd(text);

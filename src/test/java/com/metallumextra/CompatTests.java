@@ -265,8 +265,9 @@ final class CompatTests {
         check("only the outputs that are written are declared", !has(fragment, "outColor2"));
         String colored = LegacyGlsl.translate("#version 120\nvoid main() { gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }\n", false, LegacyGlsl.Kind.FULLSCREEN);
         check("gl_FragColor is output 0", has(colored, "outColor0 = vec4(1.0, 0.0, 0.0, 1.0);") && has(colored, "layout(location = 0) out vec4 outColor0;"));
-        String shadow = LegacyGlsl.translate("#version 120\nuniform sampler2DShadow s;\nvoid main() { float f = shadow2D(s, vec3(0.5)).z; }\n", false, LegacyGlsl.Kind.WORLD);
+        String shadow = LegacyGlsl.shadowSamplers(LegacyGlsl.translate("#version 120\nuniform sampler2DShadow s;\nvoid main() { float f = shadow2D(s, vec3(0.5)).z; float l = textureLod(s, vec3(0.5), 0.0).r; }\n", false, LegacyGlsl.Kind.WORLD));
         check("shadow2D is a texture read of the shadow sampler, made a vec4 as it was", has(shadow, "iris_shadow2D(s, vec3(0.5)).z") && has(shadow, "#define iris_shadow2D(s, p) vec4(vec3(mx_shadowCompare((s), (p))), 1.0)"));
+        check("textureLod on sampler2DShadow becomes mx_shadowCompare with lod", has(shadow, "mx_shadowCompare(s, vec3(0.5), 0.0)"));
         String fog = LegacyGlsl.translate("#version 120\nvoid main() { float a = gl_Fog.start; float b = gl_Fog.scale; }\n", false, LegacyGlsl.Kind.WORLD);
         check("gl_Fog.start and .scale are made of fogStart and fogEnd", has(fog, "float a = fogStart;") && has(fog, "(1.0 / (fogEnd - fogStart))") && has(fog, "uniform float fogStart;"));
         try {

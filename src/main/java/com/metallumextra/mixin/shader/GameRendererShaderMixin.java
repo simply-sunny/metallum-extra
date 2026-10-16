@@ -53,7 +53,6 @@ public abstract class GameRendererShaderMixin implements com.metallumextra.shade
         this.metallumExtra$handDrawn = false;
         Shaders.setHandPart(Shaders.HAND_ALL);
         Shaders.endWorld();
-        com.metallumextra.fx.Upscale.end(this.mainRenderTarget);
     }
 
     @org.spongepowered.asm.mixin.Shadow
@@ -148,9 +147,4 @@ public abstract class GameRendererShaderMixin implements com.metallumextra.shade
         Shaders.setHandPart(Shaders.HAND_REST);
     }
 
-    /** MetalFX: while the world is drawn, the game's image is the smaller one. */
-    @Inject(method = "renderLevel", at = @At("HEAD"))
-    private void metallumExtra$beginUpscale(final CallbackInfo ci) {
-        com.metallumextra.fx.Upscale.begin(this.mainRenderTarget);
-    }
 }

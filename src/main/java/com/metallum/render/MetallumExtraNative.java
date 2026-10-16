@@ -44,7 +44,7 @@ public final class MetallumExtraNative {
 
     /** The Metal device; null until the first frame's first pass has been made. */
     public static MTLDevice device() {
-        MetalCommandEncoder encoder = MetallumExtraUpscale.encoder();
+        MetalCommandEncoder encoder = MetallumExtraEncoder.encoder();
         return encoder == null ? null : encoder.commandBuffer().device();
     }
 

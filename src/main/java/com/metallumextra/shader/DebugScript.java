@@ -227,7 +227,6 @@ public final class DebugScript {
                     case "colored" -> BuiltinOptions.set("COLORED_LIGHT", on);
                     case "edges" -> BuiltinOptions.set("SMOOTH_EDGES", on);
                     case "chat" -> config.shaderMessages = on;
-                    case "upscale" -> config.setUpscaleMode(com.metallumextra.fx.UpscaleMode.of(parts[1]));
                     case "quality" -> config.setShaderQuality(Quality.valueOf(parts[1].toUpperCase(java.util.Locale.ROOT)));
                     default -> MetallumExtra.LOGGER.warn("[Metallum Extra] debug script: unknown setting {}", parts[0]);
                 }

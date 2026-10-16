@@ -1,3 +1,0 @@
-gradle.projectsEvaluated {
-    rootProject.apply from: new File(rootProject.projectDir, 'local-testing.gradle')
-}

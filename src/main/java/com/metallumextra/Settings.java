@@ -60,17 +60,6 @@ public final class Settings {
                 value -> BuiltinOptions.setValue("shadowPixelSize", Integer.toString(value.pixels)), value -> value.pixels + (value.pixels == 1 ? " pixel" : " pixels"));
     }
 
-    /** The shader quality preset. */
-    public static Choice<com.metallumextra.fx.UpscaleMode> upscaling() {
-        ExtraConfig c = ExtraConfig.get();
-        return new Choice<>("upscaling", "MetalFX Upscaling",
-                "Draws the world at a smaller size and scales it up to your window with Apple's MetalFX. Faster, a little softer; "
-                        + "the menus and the HUD stay sharp. Quality 1.5x, Balanced 1.7x, Performance 2x, Ultra Performance 3x. "
-                        + "Saved per shader pack and for no shader: what you pick here applies to the shader you have on "
-                        + "right now, and every shader starts at Off. Works with shaders on or off. Changes apply immediately.",
-                Impact.HIGH, com.metallumextra.fx.UpscaleMode.class, c::effectiveUpscaleMode, c::setUpscaleMode, mode -> mode.label);
-    }
-
     public static Choice<Quality> shaderQuality() {
         ExtraConfig c = ExtraConfig.get();
         return new Choice<>("shader_quality", "Shader Quality",

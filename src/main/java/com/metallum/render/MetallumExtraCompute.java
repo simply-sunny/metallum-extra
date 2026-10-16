@@ -20,7 +20,7 @@ import java.util.List;
  * <p>
  * A program runs between two render passes: whatever encoder is open is ended first (Metallum opens the next one when the next pass starts), and what the
  * program reads and writes has its deferred clears drawn before. Metallum's textures are not tracked by Metal, so what ran before the program is waited for
- * with an event, and the program is waited for the same way (as the upscaler is).
+ * with an event, and the program is waited for the same way (as the encoder's other work is).
  */
 public final class MetallumExtraCompute {
     private static MTLEvent event;
@@ -35,7 +35,7 @@ public final class MetallumExtraCompute {
 
     /** Makes the Metal source into a kernel; null if Metal would not take it (Metallum has logged why). */
     public static Kernel create(final String label, final String metal, final String entry) {
-        MetalCommandEncoder encoder = MetallumExtraUpscale.encoder();
+        MetalCommandEncoder encoder = MetallumExtraEncoder.encoder();
         if (encoder == null) throw new IllegalStateException("no frame has been recorded yet");
         MTLDevice device = encoder.commandBuffer().device();
         MTLLibrary library = MetalUtilities.newLibrary(device, metal);
@@ -54,7 +54,7 @@ public final class MetallumExtraCompute {
 
     /** Runs the kernel over {@code groups} work groups of {@code local} threads. Returns null when it has been recorded, or why it could not be. */
     public static String dispatch(final Kernel kernel, final List<ComputeBinding> bindings, final int[] groups, final int[] local) {
-        MetalCommandEncoder current = MetallumExtraUpscale.encoder();
+        MetalCommandEncoder current = MetallumExtraEncoder.encoder();
         if (current == null) return "no frame is being recorded";
         try {
             for (ComputeBinding binding : bindings) {

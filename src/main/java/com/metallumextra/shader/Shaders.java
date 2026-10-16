@@ -56,8 +56,13 @@ public final class Shaders {
     };
 
     private static final boolean HAND_LOG = Boolean.getBoolean("metallumextra.logHand");
-    /** Unfinished: drawing the held item before the deferred programs (see HandSource) draws nothing yet, so it is off unless asked for. */
-    private static final boolean EARLY_HAND = Boolean.getBoolean("metallumextra.earlyHand");
+    /** Development aid: {@code -Dmetallumextra.earlyHand=false} draws all of the held item after the deferred programs again, as before it was drawn ahead of them (see HandSource). */
+    private static final boolean EARLY_HAND = !"false".equals(System.getProperty("metallumextra.earlyHand"));
+    /** The parts of the held item: all of it, what the deferred programs light (drawn ahead of them), and the rest (drawn in the game's own turn after that). */
+    public static final int HAND_ALL = 0;
+    public static final int HAND_SOLID = 1;
+    public static final int HAND_REST = 2;
+    private static int handPart = HAND_ALL;
     private static final ShaderGlobals GLOBALS = new ShaderGlobals();
     private static final LightColorGrid LIGHT_COLORS = new LightColorGrid();
 
@@ -238,10 +243,12 @@ public final class Shaders {
         if (HAND_LOG) MetallumExtra.LOGGER.info("HANDDBG ready={} source={}", IrisPipeline.readyForHand(), Minecraft.getInstance().gameRenderer instanceof HandSource);
         if (EARLY_HAND && IrisPipeline.readyForHand() && Minecraft.getInstance().gameRenderer instanceof HandSource hand) {
             setPhase(PHASE_HAND);
+            handPart = HAND_SOLID;
             try {
                 hand.metallumExtra$drawHandNow();
                 IrisPipeline.handDrawn(hand.metallumExtra$handDepth());
             } finally {
+                handPart = HAND_ALL;
                 setPhase(PHASE_WORLD);
             }
         }
@@ -268,6 +275,22 @@ public final class Shaders {
         drawingWorld = false;
         setPhase(PHASE_NONE);
         ShadowPass.endFrame();
+    }
+
+    /** Which part of the held item is being drawn (see {@link #HAND_SOLID}); the game's turn for it draws {@link #HAND_REST} once the solid part went ahead. */
+    public static void setHandPart(final int part) {
+        handPart = part;
+    }
+
+    public static int handPart() {
+        return handPart;
+    }
+
+    /** Whether a draw of the held item with {@code pipeline} belongs to the part not being drawn now, and is left out. */
+    public static boolean skipsHandDraw(final com.mojang.renderpearl.api.pipeline.RenderPipeline pipeline) {
+        if (phase != PHASE_HAND || handPart == HAND_ALL) return false;
+        boolean solid = IrisWorld.isSolidHand(pipeline);
+        return handPart == HAND_SOLID ? !solid : solid;
     }
 
     static void setPhase(final int value) {

@@ -25,9 +25,14 @@ import java.util.List;
 public abstract class FrontendRenderPassShaderMixin {
     @Shadow @Final private List<?> colorAttachments;
 
+    /** Whether the draws with the pipeline set last belong to the other part of the held item's (see {@link Shaders#skipsHandDraw}). */
+    @org.spongepowered.asm.mixin.Unique
+    private boolean metallumExtra$skipDraws;
+
     @WrapMethod(method = "setPipeline")
     private void metallumExtra$packPipeline(final CompiledRenderPipeline pipeline, final Operation<Void> original) {
         RenderPipeline origin = PipelineOrigin.of(pipeline);
+        this.metallumExtra$skipDraws = origin != null && Shaders.skipsHandDraw(origin);
         if (origin == null) {
             original.call(pipeline);
             return;
@@ -46,5 +51,21 @@ public abstract class FrontendRenderPassShaderMixin {
             RenderPipeline plain = IrisWorld.withoutPack(origin);
             original.call(plain == origin ? pipeline : RenderSystem.getCompiledPipeline(plain));
         }
+    }
+
+    @WrapMethod(method = "drawIndexed")
+    private void metallumExtra$handDrawIndexed(final int baseVertex, final int firstIndex, final int indexCount, final int instanceCount, final int firstInstance, final Operation<Void> original) {
+        if (!this.metallumExtra$skipDraws) original.call(baseVertex, firstIndex, indexCount, instanceCount, firstInstance);
+    }
+
+    @WrapMethod(method = "drawMultipleIndexed")
+    private <T> void metallumExtra$handDrawMultiple(final java.util.Collection<com.mojang.renderpearl.api.commands.RenderPass.Draw<T>> draws, final com.mojang.renderpearl.api.buffers.GpuBuffer indexBuffer,
+                                                   final com.mojang.renderpearl.api.pipeline.IndexType indexType, final java.util.Collection<String> dynamicUniforms, final T userData, final Operation<Void> original) {
+        if (!this.metallumExtra$skipDraws) original.call(draws, indexBuffer, indexType, dynamicUniforms, userData);
+    }
+
+    @WrapMethod(method = "draw")
+    private void metallumExtra$handDraw(final int firstVertex, final int vertexCount, final int instanceCount, final int firstInstance, final Operation<Void> original) {
+        if (!this.metallumExtra$skipDraws) original.call(firstVertex, vertexCount, instanceCount, firstInstance);
     }
 }

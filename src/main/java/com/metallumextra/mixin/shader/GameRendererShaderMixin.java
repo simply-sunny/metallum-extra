@@ -40,12 +40,18 @@ public abstract class GameRendererShaderMixin implements com.metallumextra.shade
 
     @Inject(method = "renderItemInHand", at = @At("RETURN"))
     private void metallumExtra$afterHand(final CallbackInfo ci) {
+        // The item drawn ahead of the rest goes through here too, before the deferred programs: the picture is finished only after the game's own turn.
+        if (this.metallumExtra$drawingEarly) return;
+        Shaders.setHandPart(Shaders.HAND_ALL);
         Shaders.afterHand();
     }
 
     @Inject(method = "renderLevel()V", at = @At("RETURN"))
     private void metallumExtra$endWorld(final CallbackInfo ci) {
         if (metallumExtra$handBuffers != null) metallumExtra$handBuffers.endFrame();
+        // The game's turn for the item may not have come (another view, or the hud hidden): the next frame starts afresh.
+        this.metallumExtra$handDrawn = false;
+        Shaders.setHandPart(Shaders.HAND_ALL);
         Shaders.endWorld();
         com.metallumextra.fx.Upscale.end(this.mainRenderTarget);
     }
@@ -93,6 +99,8 @@ public abstract class GameRendererShaderMixin implements com.metallumextra.shade
 
     @Unique
     private boolean metallumExtra$handDrawn;
+    @Unique
+    private boolean metallumExtra$drawingEarly;
 
     @Override
     public void metallumExtra$drawHandNow() {
@@ -112,9 +120,15 @@ public abstract class GameRendererShaderMixin implements com.metallumextra.shade
                     parts.metallumExtra$atlasManager(), parts.metallumExtra$font(), parts.metallumExtra$gameRenderState());
         }
         this.featureRenderDispatcher = metallumExtra$handDispatcher;
+        // The level has the camera's rotation on the model-view stack while it is drawn; the item brings its own, as it does after the level.
+        org.joml.Matrix4fStack modelView = com.mojang.blaze3d.systems.RenderSystem.getModelViewStack();
+        modelView.pushMatrix().identity();
+        this.metallumExtra$drawingEarly = true;
         try {
             this.renderItemInHand(cameraState, playerState, this.hud3DTarget.getDepthTextureView());
         } finally {
+            this.metallumExtra$drawingEarly = false;
+            modelView.popMatrix();
             this.featureRenderDispatcher = own;
         }
         com.mojang.blaze3d.systems.RenderSystem.setProjectionMatrix(worldProjection, worldType);
@@ -126,13 +140,12 @@ public abstract class GameRendererShaderMixin implements com.metallumextra.shade
         return this.hud3DTarget.getDepthTextureView();
     }
 
-    /** The item was drawn ahead of the rest of the picture: the game's own turn for it is skipped, and the picture is finished in its place. */
-    @Inject(method = "renderItemInHand", at = @At("HEAD"), cancellable = true)
+    /** The solid part of the item was drawn ahead of the rest of the picture: the game's own turn for it draws what is left (translucent items, the glint). */
+    @Inject(method = "renderItemInHand", at = @At("HEAD"))
     private void metallumExtra$handAlreadyDrawn(final CallbackInfo ci) {
-        if (!this.metallumExtra$handDrawn) return;
+        if (this.metallumExtra$drawingEarly || !this.metallumExtra$handDrawn) return;
         this.metallumExtra$handDrawn = false;
-        Shaders.afterHand();
-        ci.cancel();
+        Shaders.setHandPart(Shaders.HAND_REST);
     }
 
     /** MetalFX: while the world is drawn, the game's image is the smaller one. */

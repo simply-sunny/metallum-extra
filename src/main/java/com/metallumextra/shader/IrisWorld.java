@@ -263,11 +263,22 @@ public final class IrisWorld {
         }
     }
 
-    /** The kind of thing a pipeline draws while the held item and arm are drawn: all of it is the hand. */
+    /**
+     * The kind of thing a pipeline draws while the held item and arm are drawn: all of it is the hand, and a translucent item (stained glass) is the
+     * translucent hand. The arm is drawn translucent like a player's skin, but it is solid, as Iris has it.
+     */
     public static IrisPlan.@Nullable Use classifyHand(final RenderPipeline pipeline) {
         String shader = vertexOf(pipeline).getPath();
         if (!shader.equals("core/entity") && !shader.equals("core/item") && !shader.equals("core/block")) return null;
-        return pipeline.getLocation().getPath().contains("translucent") ? IrisPlan.Use.HAND_WATER : IrisPlan.Use.HAND;
+        return !shader.equals("core/entity") && pipeline.getLocation().getPath().contains("translucent") ? IrisPlan.Use.HAND_WATER : IrisPlan.Use.HAND;
+    }
+
+    /**
+     * Whether a draw of the held item fills the pack's gbuffers ({@code gbuffers_hand}), so it is drawn ahead of the deferred programs; the rest (translucent
+     * items, the glint) is drawn after them, in the game's own turn.
+     */
+    public static boolean isSolidHand(final RenderPipeline pipeline) {
+        return classifyHand(COPIES.getOrDefault(pipeline, pipeline)) == IrisPlan.Use.HAND;
     }
 
     // ---- the sky ----

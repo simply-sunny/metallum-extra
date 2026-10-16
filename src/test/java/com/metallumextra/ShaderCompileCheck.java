@@ -163,7 +163,7 @@ public final class ShaderCompileCheck {
 
     private static String terrain(final String source, final boolean vertex, final boolean shadow, final IrisPlan plan, final IrisPlan.Step step) throws PackException {
         String adapted = IrisTerrain.adapt(source, vertex, shadow, "true".equals(plan.programs().property("mx.blockTypes")), plan.usesBlockIds());
-        return finish(vertex ? adapted : IrisWorldAdapter.remapOutputs(adapted, step.writes(), shadow ? null : plan, plan.alphaThreshold(step.program().name())), vertex, step);
+        return finish(vertex ? adapted : IrisWorldAdapter.remapOutputs(adapted, step.writes(), shadow ? null : plan, step == plan.terrainStep(IrisPlan.Layer.SOLID) ? plan.terrainAlphaThreshold(step.program().name(), IrisPlan.Layer.SOLID) : plan.alphaThreshold(step.program().name())), vertex, step);
     }
 
     private static String finish(final String adapted, final boolean vertex, final IrisPlan.Step step) throws PackException {

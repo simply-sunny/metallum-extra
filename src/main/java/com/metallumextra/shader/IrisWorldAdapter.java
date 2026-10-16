@@ -64,6 +64,7 @@ public final class IrisWorldAdapter {
             + "#define modelViewMatrixInverse inverse(modelViewMatrix)\n#define projectionMatrixInverse inverse(shadowProjection)\n"
             + "#define normalMatrix transpose(inverse(mat3(modelViewMatrix)))\n";
     private static final Pattern MAIN = Pattern.compile("\\bvoid\\s+main\\s*\\(\\s*(?:void)?\\s*\\)");
+    private static final Pattern ENTITY_COLOR = Pattern.compile("(?m)^([ \\t]*)uniform\\s+(?:(?:highp|mediump|lowp)\\s+)?vec4\\s+entityColor\\s*;[ \\t]*(?://.*)?$");
 
     /** The samplers of the buffers and shadow maps, by the names the pack reads them with and the internal names they are bound by (see {@link ShaderBindings}). */
     private static final java.util.Map<String, String> BOUND_SAMPLERS = java.util.Map.ofEntries(
@@ -361,8 +362,32 @@ public final class IrisWorldAdapter {
         if (wantsAtlas) p.append("#define gtexture ").append(ShaderBindings.WHITE).append("\n#define atlasSize ivec2(1)\n");
         if (wantsLight) p.append("#define lightmap ").append(ShaderBindings.WHITE).append('\n');
 
+        if (vertex && !shadow) {
+            p.append("out vec4 entityColor;\n");
+        }
         int at = com.metallumextra.shader.pack.LegacyGlsl.headerEnd(text);
         String result = text.substring(0, at) + p + text.substring(at);
+        if (!shadow) {
+            if (vertex) {
+                result = ENTITY_COLOR.matcher(result).replaceAll("$1// uniform vec4 entityColor;");
+                Matcher main = MAIN.matcher(result);
+                if (main.find()) {
+                    // The overlay tint is only read when the pipeline has both its sampler and the overlay
+                    // coordinate: a pipeline with the sampler but no UV1 (an end portal) gets no tint, not a
+                    // reference to an undeclared input.
+                    String overlayLogic = format.overlay() && format.uv1()
+                            ? "    vec4 mx_ov = texelFetch(Sampler1, UV1, 0);\n    entityColor = vec4(mx_ov.rgb, 1.0 - mx_ov.a);\n    entityColor.rgb *= float(entityColor.a != 0.0);\n"
+                            : "    entityColor = vec4(0.0);\n";
+                    result = main.replaceAll("void mx_entity_main()") + "\nvoid main() {\n" + overlayLogic + "    mx_entity_main();\n}\n";
+                }
+            } else {
+                if (format.overlay()) {
+                    result = ENTITY_COLOR.matcher(result).replaceAll("$1in vec4 entityColor;");
+                } else {
+                    result = ENTITY_COLOR.matcher(result).replaceAll("$1const vec4 entityColor = vec4(0.0);");
+                }
+            }
+        }
         return shadow && vertex ? shadowClip(result) : result;
     }
 

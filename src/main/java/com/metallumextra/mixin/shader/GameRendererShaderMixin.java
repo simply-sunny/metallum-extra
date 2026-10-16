@@ -17,6 +17,12 @@ public abstract class GameRendererShaderMixin implements com.metallumextra.shade
     @Unique
     private static final String DRAW_LEVEL = "Lnet/minecraft/client/renderer/LevelRenderer;render(Lcom/mojang/blaze3d/resource/GraphicsResourceAllocator;ZLnet/minecraft/client/renderer/state/level/CameraRenderState;Lcom/mojang/renderpearl/api/buffers/GpuBufferSlice;Lorg/joml/Vector4f;ZZ)V";
 
+    /** A pack that draws its own clouds turns the game's off for as long as it is in use, without touching the player's option. */
+    @com.llamalad7.mixinextras.injector.ModifyExpressionValue(method = "extractOptions", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/Options;getCloudStatus()Lnet/minecraft/client/CloudStatus;"))
+    private net.minecraft.client.CloudStatus metallumExtra$packClouds(final net.minecraft.client.CloudStatus chosen) {
+        return com.metallumextra.shader.IrisPipeline.hidesClouds() ? net.minecraft.client.CloudStatus.OFF : chosen;
+    }
+
     @Inject(method = "render()V", at = @At("HEAD"))
     private void metallumExtra$beginFrame(final CallbackInfo ci) {
         Shaders.beginFrame();

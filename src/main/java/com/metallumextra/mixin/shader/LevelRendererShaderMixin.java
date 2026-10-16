@@ -3,6 +3,7 @@ package com.metallumextra.mixin.shader;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.llamalad7.mixinextras.sugar.Local;
+import com.metallumextra.shader.IrisPipeline;
 import com.metallumextra.shader.Shaders;
 import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.systems.RenderSystem;
@@ -12,6 +13,7 @@ import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.client.renderer.chunk.ChunkSectionsToRender;
 import net.minecraft.client.renderer.feature.FeatureRenderDispatcher;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -45,6 +47,9 @@ public abstract class LevelRendererShaderMixin {
             original.call(self, chunkSections, featureFrame, renderPass);
             return;
         }
+        // Translucent entities the pack lights in its deferred programs are drawn with the solid world, as Iris does, and not again after.
+        metallumExtra$translucentEntitiesDrawn = IrisPipeline.translucentEntitiesDeferred();
+        if (metallumExtra$translucentEntitiesDrawn) featureFrame.executeTranslucent(renderPass);
         // The pass is closed here; the game closes it again when it leaves its block, which does nothing.
         renderPass.close();
         Shaders.beforeTranslucentTerrain();
@@ -53,6 +58,17 @@ public abstract class LevelRendererShaderMixin {
                 main.getColorTextureView(), Optional.empty(), main.getDepthTextureView(), OptionalDouble.empty())) {
             RenderSystem.bindDefaultUniforms(translucent);
             original.call(self, chunkSections, featureFrame, translucent);
+        } finally {
+            metallumExtra$translucentEntitiesDrawn = false;
         }
+    }
+
+    @Unique
+    private static boolean metallumExtra$translucentEntitiesDrawn;
+
+    @WrapOperation(method = "executeClassicTransparency",
+            at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/feature/FeatureRenderDispatcher$PreparedFrame;executeTranslucent(Lcom/mojang/renderpearl/api/commands/RenderPass;)V"))
+    private void metallumExtra$translucentEntitiesOnce(final FeatureRenderDispatcher.PreparedFrame featureFrame, final RenderPass renderPass, final Operation<Void> original) {
+        if (!metallumExtra$translucentEntitiesDrawn) original.call(featureFrame, renderPass);
     }
 }

@@ -76,7 +76,7 @@ public interface ShaderPack {
             } else {
                 translated = IrisUniforms.zeroWorldOnly(LegacyGlsl.aliasSampler(translated, "tex", "colortex0"));
             }
-            if (vertex) translated = LegacyGlsl.zeroInputs(translated);
+            if (vertex) translated = LegacyGlsl.zeroInputs(translated, kind);
             return IrisUniforms.zeroUndefined(ProgramSet.withoutUnusedUniforms(LegacyGlsl.cppKeywords(LegacyGlsl.shadowSamplers(translated))));
         } catch (PackException e) {
             throw new IllegalStateException(path + ": " + e.getMessage(), e);

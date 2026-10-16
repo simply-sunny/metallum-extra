@@ -893,6 +893,16 @@ public final class PackTests {
         check("without either, as many buffers as the program has outputs, from 0", java.util.Arrays.equals(steps.get(2).writes(), new int[] {0, 1}) && java.util.Arrays.equals(steps.get(3).writes(), new int[] {0}));
         check("only the buffers the programs touch exist", w.buffers().keySet().equals(java.util.Set.of(0, 1, 2, 3, 7)));
         planFails("more than 8 buffers at once is refused", dir, "Nine", Map.of("composite", fragment("/* RENDERTARGETS: 0,1,2,3,4,5,6,7,8 */")), null, "at most 8");
+        // Nine buffers drawn by the world share eight attachments when the 8-bit ones are left uncleared but never read back.
+        Map<String, String> packed = new java.util.LinkedHashMap<>();
+        packed.put("gbuffers_terrain", fragment("const bool colortex1Clear = false;\nconst bool colortex2Clear = false;\nconst bool colortex3Clear = false;\nconst bool colortex4Clear = false;\n"
+                + "/* RENDERTARGETS: 0,1,2,3,4 */\nlayout(location = 0) out vec4 a;\nlayout(location = 1) out vec4 b;\nlayout(location = 2) out vec4 c;\nlayout(location = 3) out vec4 d;\nlayout(location = 4) out vec4 e;"));
+        packed.put("gbuffers_entities", fragment("const bool colortex5Clear = false;\nconst bool colortex6Clear = false;\nconst bool colortex7Clear = false;\nconst bool colortex8Clear = false;\n"
+                + "/* RENDERTARGETS: 0,5,6,7,8 */\nlayout(location = 0) out vec4 a;\nlayout(location = 1) out vec4 b;\nlayout(location = 2) out vec4 c;\nlayout(location = 3) out vec4 d;\nlayout(location = 4) out vec4 e;"));
+        IrisPlan packedPlan = planOf(dir, "Packed", packed, null);
+        boolean packedFits = !packedPlan.packGroups().isEmpty();
+        for (int b = 1; b <= 8 && packedFits; b++) packedFits = packedPlan.attachment(b) < IrisPlan.MAX_OUTPUTS;
+        check("uncleared 8-bit buffers the world never reads share an attachment, so nine fit in eight", packedFits);
         planFails("a buffer past colortex15 is refused", dir, "Sixteen", Map.of("composite", fragment("/* RENDERTARGETS: 16 */")), null, "colortex16");
         planFails("the same buffer twice is refused", dir, "Twice", Map.of("composite", fragment("/* RENDERTARGETS: 2,2 */")), null, "twice");
 
@@ -923,6 +933,13 @@ public final class PackTests {
         check("colortexNClearColor sets the clear color", java.util.Arrays.equals(f.buffers().get(4).colorToClear(fog), new float[] {0.25F, 0.5F, 0.75F, 1.0F}));
         planFails("a format that does not exist here is refused", dir, "BadFormat", Map.of("composite", fragment("uniform sampler2D colortex0;\nconst int colortex0Format = RGBA128F;")), null, "RGBA128F");
         check("RGBA32UI is accepted as integer format", IrisPlan.build(openStandard(dir.resolve("IntFormat.zip"), Map.of("composite.fsh", "#version 330\nconst int colortex0Format = RGBA32UI;\nvoid main(){}\n", "composite.vsh", VERTEX, "final.fsh", "#version 330\nvoid main(){}\n", "final.vsh", VERTEX)), null).buffers().get(0).format() == com.mojang.renderpearl.api.GpuFormat.RGBA32_UINT);
+        IrisPlan alphaPlan = planOf(dir, "AlphaSolid", Map.of("gbuffers_terrain_solid", fragment(""), "gbuffers_terrain", fragment("")), "alphaTest.gbuffers_terrain = off\n");
+        check("solid terrain is not alpha-tested unless the pack asks (Photon keeps light levels in alpha), cutout is",
+                alphaPlan.terrainAlphaThreshold("gbuffers_terrain_solid", IrisPlan.Layer.SOLID) == 0.0F && alphaPlan.terrainAlphaThreshold("gbuffers_terrain_solid", IrisPlan.Layer.CUTOUT) == 0.1F
+                        && alphaPlan.terrainAlphaThreshold("gbuffers_terrain", IrisPlan.Layer.CUTOUT) == 0.0F);
+        IrisPlan alphaAsked = planOf(dir, "AlphaSolidAsked", Map.of("gbuffers_terrain_solid", fragment("")), "alphaTest.gbuffers_terrain_solid = GREATER 0.5\n");
+        check("a solid terrain alpha test the pack asks for is kept", alphaAsked.terrainAlphaThreshold("gbuffers_terrain_solid", IrisPlan.Layer.SOLID) == 0.5F);
+        check("RGBA4 is accepted as format", IrisPlan.build(openStandard(dir.resolve("Rgba4Format.zip"), Map.of("composite.fsh", "#version 330\nconst int colortex0Format = RGBA4;\nvoid main(){}\n", "composite.vsh", VERTEX, "final.fsh", "#version 330\nvoid main(){}\n", "final.vsh", VERTEX)), null).buffers().get(0).format() == com.mojang.renderpearl.api.GpuFormat.RGBA8_UNORM);
 
         // Depth and old names.
         IrisPlan depth = planOf(dir, "Depth", Map.of("composite", fragment("uniform sampler2D depthtex0;\nuniform sampler2D depthtex2;\nuniform sampler2D gaux1;")), null);
@@ -1171,6 +1188,9 @@ public final class PackTests {
         check("the sky, text, lines and the interface are left to the game's own shaders", useOf(pipeline("sky", "core/sky")).equals("none") && useOf(pipeline("text", "core/text")).equals("none")
                 && useOf(pipeline("lines", "core/rendertype_lines")).equals("none") && useOf(pipeline("gui", "core/gui")).equals("none"));
         check("glowing entity layers are eyes, clouds are clouds", useOf(pipeline("eyes", "core/entity", "EMISSIVE")).equals("EYES") && useOf(pipeline("clouds", "core/rendertype_clouds")).equals("CLOUDS"));
+        check("portals and gateways are shaded as translucent entities so the pack's fog reaches them",
+                useOf(pipeline("rendertype_portal", "core/rendertype_portal")).equals("ENTITY_TRANSLUCENT") && useOf(pipeline("rendertype_end_portal", "core/rendertype_end_portal")).equals("ENTITY_TRANSLUCENT")
+                        && useOf(pipeline("rendertype_end_gateway", "core/rendertype_end_gateway")).equals("ENTITY_TRANSLUCENT"));
 
         // Which program draws each kind: the first in Iris's chain.
         Map<String, String> all = new java.util.LinkedHashMap<>();
@@ -1216,6 +1236,18 @@ public final class PackTests {
 
         // Fitting a program to a pipeline.
         IrisWorldAdapter.Format entity = new IrisWorldAdapter.Format(true, true, true, true, true, false, true, true, false, false);
+        IrisWorldAdapter.Format entityWithOverlay = new IrisWorldAdapter.Format(true, true, true, true, true, false, true, true, false, true);
+        String entityVertex = IrisWorldAdapter.adapt("#version 330 core\nvoid main() { }\n", true, entityWithOverlay);
+        check("entity vertex shader outputs entityColor varying from overlay", entityVertex.contains("out vec4 entityColor;") && entityVertex.contains("texelFetch(Sampler1, UV1, 0)"));
+        String entityFragmentWithOverlay = IrisWorldAdapter.adapt("#version 330 core\nuniform vec4 entityColor;\nout vec4 c;\nvoid main() { c = entityColor; }\n", false, entityWithOverlay);
+        check("entity fragment with overlay receives entityColor as in varying", entityFragmentWithOverlay.contains("in vec4 entityColor;"));
+        String entityFragmentWithoutOverlay = IrisWorldAdapter.adapt("#version 330 core\nuniform vec4 entityColor;\nout vec4 c;\nvoid main() { c = entityColor; }\n", false, entity);
+        check("fragment without overlay replaces entityColor with zero const", entityFragmentWithoutOverlay.contains("const vec4 entityColor = vec4(0.0);"));
+        // An end portal has the overlay sampler but no UV1 input: the tint must fall back to none, not reference an undeclared input.
+        IrisWorldAdapter.Format portalLike = new IrisWorldAdapter.Format(false, false, false, false, false, false, false, false, false, true);
+        String portalVertex = IrisWorldAdapter.adapt("#version 330 core\nvoid main() { }\n", true, portalLike);
+        check("a pipeline with the overlay sampler but no overlay coordinate gets no tint and no raw UV1", portalVertex.contains("entityColor = vec4(0.0);") && !portalVertex.contains("texelFetch(Sampler1, UV1")
+                && !portalVertex.contains("in ivec2 UV1;"));
         String vertex = IrisWorldAdapter.adapt("#version 330 core\nin vec3 vaPosition;\nin ivec2 vaUV1;\nuniform mat4 modelViewMatrix;\nuniform mat4 projectionMatrix;\nuniform mat3 normalMatrix;\nuniform vec3 chunkOffset;\nvoid main() { }\n", true, entity);
         check("the vertex stage loses its declarations and gets the game's inputs and blocks, with Iris's names defined over them",
                 !vertex.contains("in vec3 vaPosition;") && !vertex.contains("uniform mat4 modelViewMatrix;") && !vertex.contains("uniform mat3 normalMatrix;") && vertex.contains("in vec3 Position;") && vertex.contains("in ivec2 UV1;")

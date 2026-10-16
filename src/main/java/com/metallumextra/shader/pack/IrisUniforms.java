@@ -76,7 +76,6 @@ public final class IrisUniforms {
             new Uniform("heldItemId", "int"), new Uniform("heldItemId2", "int"), new Uniform("heldBlockLightValue", "int"), new Uniform("heldBlockLightValue2", "int"),
             // What is being drawn right now: not one value for the frame, so the block holds the last one set (see IrisPipeline).
             new Uniform("entityId", "int", true), new Uniform("renderStage", "int", true), new Uniform("blockEntityId", "int", true), new Uniform("currentRenderedItemId", "int", true),
-            new Uniform("entityColor", "vec4", true),
             // Not Iris: the table from the mesh's palette index to the id block.properties gave (see BlockIds). Programs do not declare it; the terrain's prelude uses it.
             new Uniform("MxBlockIds", "ivec4[128]"));
 

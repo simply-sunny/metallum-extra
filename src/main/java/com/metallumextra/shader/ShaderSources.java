@@ -144,17 +144,21 @@ public final class ShaderSources {
 
     /**
      * A standard pack's program for a layer of terrain, fitted to Sodium's pipeline; null if the id belongs to a plan that is no longer
-     * current. The id is {@code blocks/iris_<generation>_<program>}.
+     * current. The id is {@code blocks/iris_<generation>_<layer>_<program>}.
      */
     private static @Nullable String terrain(final Lookup current, final Identifier id, final ShaderType type) {
-        String[] parts = id.getPath().substring("blocks/iris_".length()).split("_", 2);
+        String[] parts = id.getPath().substring("blocks/iris_".length()).split("_", 3);
         IrisPlan plan = IrisPipeline.currentPlan();
-        if (plan == null || parts.length != 2 || Integer.parseInt(parts[0]) != IrisPipeline.generation()) return null;
-        IrisPlan.Step step = plan.step(parts[1]);
+        if (plan == null || parts.length != 3 || Integer.parseInt(parts[0]) != IrisPipeline.generation()) return null;
+        IrisPlan.Layer layer = IrisPlan.Layer.valueOf(parts[1].toUpperCase(java.util.Locale.ROOT));
+        IrisPlan.Step step = plan.step(parts[2]);
         ProgramSet.Program program = step == null ? null : step.program();
         String file = program == null ? null : type == ShaderType.VERTEX ? program.vertex() : program.fragment();
         if (file == null) return null;
-        return current.files.computeIfAbsent(file, f -> {
+        // The fragment stage is alpha-tested by layer, so the same file may be fitted twice.
+        String key = type == ShaderType.VERTEX ? file : file + "#" + layer;
+        return current.files.computeIfAbsent(key, k -> {
+            String f = file;
             String text;
             try (var timer = com.metallumextra.ResourceLog.step("read-program", f)) {
                 text = readExpanded(current.pack, f);
@@ -169,7 +173,7 @@ public final class ShaderSources {
                 try (var t = com.metallumextra.ResourceLog.step("ad-terrain-adapt", f)) {
                     adapted = IrisTerrain.adapt(clean, type == ShaderType.VERTEX, false, "true".equals(plan.programs().property("mx.blockTypes")), plan.usesBlockIds());
                 }
-                if (type != ShaderType.VERTEX) adapted = IrisWorldAdapter.remapOutputs(adapted, step.writes(), plan, plan.alphaThreshold(program.name()));
+                if (type != ShaderType.VERTEX) adapted = IrisWorldAdapter.remapOutputs(adapted, step.writes(), plan, plan.terrainAlphaThreshold(program.name(), layer));
                 java.util.List<String> declared;
                 try (var t = com.metallumextra.ResourceLog.step("ad-declared", f)) {
                     declared = IrisUniforms.declared(adapted);

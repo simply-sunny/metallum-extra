@@ -814,6 +814,15 @@ public final class IrisPlan {
     }
 
     /**
+     * The alpha threshold of a program drawing a layer of terrain. As in Iris, solid terrain is not alpha-tested unless the pack asks for it: a pack may keep
+     * data other than coverage in its first output's alpha (Photon keeps the light levels there, so an unlit face would be thrown away).
+     */
+    public float terrainAlphaThreshold(final String program, final Layer layer) {
+        if (layer == Layer.SOLID && programs.property("alphaTest." + program) == null) return 0.0F;
+        return alphaThreshold(program);
+    }
+
+    /**
      * The attachment of the passes that draw the world that holds {@code buffer}: colortex0 is the first, the others follow in the order of their numbers
      * (so the pack may use any of colortex0 to colortex15 as long as the world's programs write eight at most).
      */
@@ -834,18 +843,23 @@ public final class IrisPlan {
     public static final int PACK_SIZE = 4;
     private final List<List<Integer>> packGroups = new ArrayList<>();
 
-    /** Whether a buffer of the world can share an attachment: 8-bit, cleared to zero every frame, read by no program of the world, written by no other stage before the composites. */
+    /** Whether a buffer of the world can share an attachment: 8-bit, full-size, read by no program of the world, and with no contents any later reader could miss. A buffer cleared to zero every frame qualifies, as does one the pack leaves uncleared but never reads back before the composites (its unwritten pixels are don't-care by the pack's own declaration) — unless a composite program writes it, which would carry the previous frame into the next. */
     private boolean packable(final int buffer) {
         Buffer spec = buffers.get(buffer);
-        if (spec == null || spec.format() != GpuFormat.RGBA8_UNORM || !spec.clear() || spec.scaleX() != 1.0F || spec.scaleY() != 1.0F || spec.width() != 0) return false;
-        if (spec.clearColor() != null) {
-            for (float c : spec.clearColor()) if (c != 0.0F) return false;
+        if (spec == null || spec.format() != GpuFormat.RGBA8_UNORM || spec.scaleX() != 1.0F || spec.scaleY() != 1.0F || spec.width() != 0) return false;
+        if (spec.clear()) {
+            if (spec.clearColor() != null) {
+                for (float c : spec.clearColor()) if (c != 0.0F) return false;
+            }
         }
         for (ProgramSet.Stage stage : ProgramSet.Stage.values()) {
             for (Step step : stages.get(stage.ordinal())) {
                 if (stage == ProgramSet.Stage.GBUFFERS) {
                     for (Input input : step.inputs()) if (input.colorBuffer() == buffer) return false;
                 } else if (stage != ProgramSet.Stage.COMPOSITE && stage != ProgramSet.Stage.FINAL) {
+                    for (int written : step.writes()) if (written == buffer) return false;
+                } else if (!spec.clear()) {
+                    // An uncleared buffer a composite writes would carry this frame into the next; packing clears it.
                     for (int written : step.writes()) if (written == buffer) return false;
                 }
             }
@@ -950,7 +964,7 @@ public final class IrisPlan {
         GpuFormat format = switch (name) {
             case "R8" -> GpuFormat.R8_UNORM;
             case "RG8" -> GpuFormat.RG8_UNORM;
-            case "RGBA8", "RGB8" -> GpuFormat.RGBA8_UNORM;
+            case "RGBA4", "RGB4", "RGB5_A1", "RGBA8", "RGB8" -> GpuFormat.RGBA8_UNORM;
             case "R16" -> GpuFormat.R16_UNORM;
             case "RG16" -> GpuFormat.RG16_UNORM;
             case "RGBA16", "RGB16" -> GpuFormat.RGBA16_UNORM;

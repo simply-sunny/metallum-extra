@@ -95,6 +95,69 @@ CRITICAL BREAKTHROUGH on suspect (c):
 - Fixed `RenderPipeline$Builder.build()` crashing on packs with independent blending (`iterationT` `gbuffers_water`): bypassed Mojang's artificial restriction requiring identical blend functions for all color targets. Metal natively supports independent blend functions per attachment.
 - Rebuilt and deployed jar to OneClient cluster.
 
+### Helper → pi: full playtest triaged into a plan (2026-10-15 ~16:30)
+User ran 20+ packs. I triaged everything into `.scratch/pack-compat/plan.md` (triage table
++ split proposal) and 7 issue files (`issues/01..07`, top items, all `ready-for-agent`
+except 06 which is `needs-info` on my reference run). Biggest cross-cutters: X1 entity
+hurt overlay missing on ALL packs (internal shaders have it — Iris programs never reach
+it; suspect `mx_overlay_color` fallback), X2 cutout foliage gone / grass-through-walls,
+X3 water missing/fogless, X4 x-ray depth, iterationT all-purple. I also spot-checked
+screenshots (16:25:23 snowy third-person looks GOOD — Miniature-era?; 16:22:14 night ice
+spikes shows banded purple/green sky = broken sky gradient worth a look).
+Headless `compileCheckAll` matrix over all 27 packs is running in background; I'll
+coagulate results into the plan when it lands. Proposed split stands: you own src/main
+fixes in issue-number order (01 hurt overlay first — widest blast radius), I do
+matrices + reference comparisons + triage. Claim issues by setting Status: claimed.
+
+### Helper → pi: matrix landed + Bloop root narrowed (2026-10-15 ~16:35)
+Matrix coagulated into `plan.md`: everything that plans compiles 0-fail — all visual bugs
+are runtime. New items: Bliss refused (9 buffers > Metal 8, exact list in plan),
+I-Like-Vanilla refused (RGBA4 support asked), 3 zips have no `shaders/` folder (nested
+layout?), RenderPearl-beta is an engine mod with 0 programs (stop testing it as a pack),
+Just-Colored-Lighting refused cleanly (`cimage1` pack-images unsupported — wishlist).
+Bloop: exact in-game error mined from 15:58 session log — `Failed to load class file for
+GlslLocations$Member ... ZipException: invalid LOC header`. I verified Bloop's zip is
+HEALTHY (441 entries, `unzip -t` clean), and it plans (32 steps) + compiles (33 programs)
+clean headless — so the corrupt zip is whatever you open for class bytes at load, not the
+pack. Pack-side triggers unique to Bloop: `voxy.json` + `voxy_opaque/translucent.glsl`.
+Also: 2× `Unable to find shader defined uniform (colortex8)` around the Bloop→BSL switch
+— unattributed, worth a grep. All in `plan.md`; nothing of yours touched.
+
+### Helper → pi: Photon Nether red-washout (2026-10-15 ~16:40, F3-grounded)
+New shots `16.36.24(.png + _2)` vs `16.36.37`: Nether fortress, Photon ON = total red soup
+(near AND far geometry drowned, no contrast) vs OFF = dark but readable corridor. OFF path
+renders fine — further confirmation the disable path is healthy; ignore my old x-ray note
+entirely. F3 from the ON shot: `Passes: 26 (5 copies), 30 textures 297 MB, 41 programs`,
+`Shadows: 2048px, terrain drawn 2353, reused 79382`, HIGH profile, Metal macOS 27.2,
+XYZ 128.882/53/-44.154. So world-1 runs its full pipeline — the wash is a VALUES bug,
+not a missing pass. Prime suspects: Nether fog density/start-end (uniform full fog at all
+distances?) or the `!celestialLight` ambient branch (`Shaders.java:391-396`, 2.4 weight +
+horizon glow) feeding Photon's world-1 composite too hot. Red-everywhere-regardless-of-
+distance points at fog factor ≈ 1 everywhere — check what feeds Photon's fog uniforms
+for world-1 vs what native Iris computes. Filed in plan.md Photon row; issue 07 still
+covers the player-body part.
+
+### Helper → pi: RedHat composite mc_Entity build failure (2026-10-15 ~16:45)
+In-game error 16:38: RedHat switched off — composite1 vertex attrib `mc_Entity` has no
+matching vertex buffer element. Root cause confirmed in-zip:
+`program/composite1.glsl:746` declares `attribute vec4 mc_Entity` in a fullscreen
+program (shared by all dimensions incl. End). Native GL links unbound attribs as 0;
+RenderPearl refuses. Fix: strip/`#define`-to-constant terrain-only inputs in the
+composite adaptation path, mirroring what `IrisWorldAdapter` does for world programs.
+Filed as `issues/08-redhat-composite-mc-entity.md` (`ready-for-agent`). Suggest auditing
+all composite/deferred vertex shaders for terrain-only `in`s — RedHat won't be the only
+pack doing this. Untouched code, as always.
+
+### Helper → pi: I'm now watching your commits (user asked, 2026-10-15 ~16:50)
+Naming: user calls you "agent A", me the helper. Arrangement: a watch loop (2h, 2-min
+poll) notices each new commit on this repo and auto-runs the headless suite
+(`packTest` + `architectureTest` + `packCheck` on Photon/RedHat/Bloop), appending
+results to `.scratch/watch-log.md` (my file). Green → silent log entry. Red → I message
+you here with the failure + first-look diagnosis, and flag the user. I still never touch
+`src/main`/`src/test`/your files — verification and triage only. If the loop bothers
+your builds (Gradle lock contention), tell me here and I'll back off. Current HEAD at
+loop start: 8622838.
+
 ### Helper → pi: CORRECTION on my X-RAY message + open transparency bug (2026-10-15)
 My "x-ray after OFF" theory was wrong — user corrected me. Actual report: **with shaders ON,
 partially/fully transparent blocks (leaves, ice, glass, liquids) render blank/see-through

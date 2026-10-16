@@ -230,6 +230,11 @@ public final class IrisWorld {
         String shader = vertexOf(pipeline).getPath();
         String name = pipeline.getLocation().getPath();
         boolean translucent = name.contains("translucent");
+        // Portals (nether, end, gateway) are translucent textured quads: shade them as translucent entities so the
+        // pack's fog applies. Pipelines without the samplers the program needs still pass through in make().
+        if (shader.contains("portal") || shader.contains("gateway") || name.contains("portal") || name.contains("gateway")) {
+            return IrisPlan.Use.ENTITY_TRANSLUCENT;
+        }
         switch (shader) {
             case "core/entity":
                 // The glowing ones (eyes) have programs of their own.

@@ -559,12 +559,23 @@ public final class LegacyGlsl {
         return out.toString();
     }
 
-    private static final Pattern ZERO_INPUT = Pattern.compile("(?m)^([ \\t]*)(?:layout\\s*\\([^)]*\\)\\s*)?(?:attribute|in)\\s+(?:(?:highp|mediump|lowp)\\s+)?(\\w+)\\s+(at_velocity)\\s*;[ \\t]*$");
+    private static final String WORLD_INPUTS = "mc_Entity|mc_midTexCoord|at_tangent|at_midBlock";
+    private static final Pattern ZERO_INPUT = zeroPattern("at_velocity");
+    private static final Pattern ZERO_WORLD_INPUT = zeroPattern("at_velocity|" + WORLD_INPUTS);
 
-    /** Vertex inputs Iris has and this loader has no data for ({@code at_velocity}, the motion of a vertex since the last frame) are zero, so the program still loads. */
-    public static String zeroInputs(final String source) {
-        if (!source.contains("at_velocity")) return source;
-        return ZERO_INPUT.matcher(source).replaceAll(m -> Matcher.quoteReplacement(m.group(1) + "const " + m.group(2) + " " + m.group(3) + " = " + m.group(2) + "(0.0);"));
+    private static Pattern zeroPattern(final String names) {
+        return Pattern.compile("(?m)^([ \\t]*)(?:layout\\s*\\([^)]*\\)\\s*)?(?:attribute|in)\\s+(?:(?:highp|mediump|lowp)\\s+)?(\\w+)\\s+(" + names + ")\\s*;[ \\t]*$");
+    }
+
+    /**
+     * Vertex inputs Iris has and this loader has no data for ({@code at_velocity}, the motion of a vertex since the last frame) are zero, so the program still loads.
+     * A program that draws a quad over the screen has no block data either ({@code mc_Entity} and the like exist only for geometry of the world): OpenGL links
+     * such an unbound input as zero, Metal refuses it, so these are zero too.
+     */
+    public static String zeroInputs(final String source, final Kind kind) {
+        Pattern pattern = kind == Kind.FULLSCREEN ? ZERO_WORLD_INPUT : ZERO_INPUT;
+        if (!pattern.matcher(source).find()) return source;
+        return pattern.matcher(source).replaceAll(m -> Matcher.quoteReplacement(m.group(1) + "const " + m.group(2) + " " + m.group(3) + " = " + m.group(2) + "(0.0);"));
     }
 
     private static final Pattern DEFINE_NAME = Pattern.compile("^([ \\t]*)#[ \\t]*define[ \\t]+(\\w+)");

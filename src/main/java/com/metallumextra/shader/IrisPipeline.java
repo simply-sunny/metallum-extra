@@ -222,6 +222,23 @@ public final class IrisPipeline {
         return plan;
     }
 
+    /**
+     * Whether translucent entities are drawn with a program that fills the pack's gbuffers (the pack has no {@code gbuffers_entities_translucent}, or turns it off,
+     * so Iris falls back to {@code gbuffers_entities}). Iris draws them with the other entities, before the deferred programs light what is in the gbuffers; drawn
+     * after those, as the game would, they are never lit and vanish (a player's skin is a translucent entity).
+     */
+    public static boolean translucentEntitiesDeferred() {
+        IrisPlan current = inUse() ? plan : null;
+        IrisPlan.Step step = current == null ? null : current.worldStep(IrisPlan.Use.ENTITY_TRANSLUCENT);
+        return step != null && !step.program().name().equals("gbuffers_entities_translucent");
+    }
+
+    /** Whether the pack in use draws its own clouds and asks for the game's to be off ({@code clouds = off} in {@code shaders.properties}), as Iris does. */
+    public static boolean hidesClouds() {
+        IrisPlan current = plan;
+        return current != null && Shaders.active() && "off".equalsIgnoreCase(current.programs().property("clouds"));
+    }
+
     // ---- the world: Sodium and the game draw it with the pack's programs ----
 
     private static boolean inStage;
@@ -233,13 +250,13 @@ public final class IrisPipeline {
 
     /**
      * The id of the shader for a layer of terrain, which Sodium builds its pipeline with in place of its own; null when the pack has no
-     * program for the layer. The id names the program and the plan it comes from ({@code sodium:blocks/iris_<generation>_<program>}),
-     * and is read back by {@link ShaderSources}. Sodium keeps its pipelines, so they are thrown away whenever the plan changes.
+     * program for the layer. The id names the plan, the layer and the program ({@code sodium:blocks/iris_<generation>_<layer>_<program>}),
+     * and is read back by {@link ShaderSources}: one program can draw two layers, which are alpha-tested differently. Sodium keeps its pipelines, so they are thrown away whenever the plan changes.
      */
     public static net.minecraft.resources.@Nullable Identifier terrainShaderId(final IrisPlan.Layer layer) {
         IrisPlan current = inUse() ? plan : null;
         IrisPlan.Step step = current == null ? null : current.terrainStep(layer);
-        return step == null ? null : net.minecraft.resources.Identifier.fromNamespaceAndPath("sodium", "blocks/iris_" + generation + "_" + step.program().name());
+        return step == null ? null : net.minecraft.resources.Identifier.fromNamespaceAndPath("sodium", "blocks/iris_" + generation + "_" + layer.name().toLowerCase(java.util.Locale.ROOT) + "_" + step.program().name());
     }
 
     /**

@@ -258,6 +258,10 @@ final class CompatTests {
                 has(vertex, "in vec2 mc_Entity;") && has(vertex, "#define iris_legacy_mc_Entity vec4(mc_Entity, 0.0, 1.0)") && has(vertex, "float id = iris_legacy_mc_Entity.x;"));
         check("the other names are not touched: no old name is left", !has(vertex.replaceAll("iris_\\w+", ""), "gl_Vertex") && !has(vertex, "gl_NormalMatrix") && !has(vertex, "attribute"));
 
+        String quadVertex = LegacyGlsl.zeroInputs(LegacyGlsl.translate("#version 140\nattribute vec3 mc_Entity;\nout vec2 uv;\nvoid main() { gl_Position = ftransform(); uv = gl_MultiTexCoord0.xy + mc_Entity.xy; }\n", true, LegacyGlsl.Kind.FULLSCREEN), LegacyGlsl.Kind.FULLSCREEN);
+        check("in a full-screen program the block inputs are zero, not vertex inputs Metal cannot bind", has(quadVertex, "const vec2 mc_Entity = vec2(0.0);") && !has(quadVertex, "in vec2 mc_Entity;"));
+        check("in a world program they stay inputs", has(LegacyGlsl.zeroInputs("in vec2 mc_Entity;\nin vec3 at_velocity;\n", LegacyGlsl.Kind.WORLD), "in vec2 mc_Entity;"));
+
         String screen = LegacyGlsl.translate("#version 120\nvarying vec2 texCoord;\nvoid main() { gl_Position = ftransform(); texCoord = gl_MultiTexCoord0.xy; }\n", true, LegacyGlsl.Kind.FULLSCREEN);
         check("in a full-screen program varying leaves the vertex stage as out", has(screen, "out vec2 texCoord;"));
         check("the screen's quad is made from the vertex number, and the projection takes 0..1 to the screen", has(screen, "gl_VertexIndex") && has(screen, "#define iris_ProjectionMatrix mat4(2.0, 0.0, 0.0, 0.0, 0.0, 2.0"));
